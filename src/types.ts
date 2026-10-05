@@ -103,6 +103,7 @@ export type FieldKind = 'input' | 'select' | 'textarea' | 'button';
 
 export interface FormField {
   name: string;
+  order: number;
   kind: FieldKind;
   type: string;
   value: string;
