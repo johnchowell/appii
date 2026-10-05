@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CaptureSession, CaptureStore, HarConverter, TrafficRecorder } from '../src/capture/index.js';
+import { BrowserLauncher, CaptureSession, CaptureStore, HarConverter, TrafficRecorder } from '../src/capture/index.js';
 import {
   BuildOptionGroup,
   CaptureOptionGroup,
@@ -94,7 +94,9 @@ describe('CliApp: global behavior', () => {
       for (const name of ['capture', 'build', 'list', 'export', 'run', 'help', 'version']) assert.match(run.stdout, new RegExp(`\\n  ${name} +\\S`));
       assert.match(run.stdout, /Workflow:\n  appii capture https:\/\/example\.com/);
       assert.match(run.stdout, /\n      --color, --no-color +Force/);
-      assert.match(run.stdout, /\n      --version +Print the version/);
+      assert.match(run.stdout, /\nGlobal options \(before the command\):\n  -V, --version +Print the version\n/);
+      const common = run.stdout.slice(run.stdout.indexOf('Common options:'), run.stdout.indexOf('Global options'));
+      assert.doesNotMatch(common, /--version/);
       assert.ok(CliHarness.isAscii(run.stdout));
     }
   });
@@ -274,6 +276,26 @@ describe('CliApp: global behavior', () => {
     assert.deepEqual(ErrorReporter.details({ suggestions: [], problems: 'no' }), []);
     assert.deepEqual(ErrorReporter.details(undefined), []);
   });
+
+  test('APPII_DEBUG prints the chain of causes, not only the outer stack', () => {
+    const io = cli.io({ env: { APPII_DEBUG: '1' } });
+    const ctx = new CliContext(io.io);
+    const root = new Error('browserType.launch: closed\nLooks like you launched a headed browser without having a XServer running.');
+    const wrapped = new AppiiError('BROWSER', 'Cannot open a browser window', { cause: new AppiiError('BROWSER', 'inner', { cause: root }) });
+    assert.equal(new ErrorReporter().report(wrapped, ctx), ExitCode.ERROR);
+    const text = io.stderr.text;
+    assert.match(text, /^error: Cannot open a browser window\nAppiiError: Cannot open a browser window\n    at /);
+    assert.match(text, /\nCaused by: AppiiError: inner\n    at /);
+    assert.match(text, /\nCaused by: Error: browserType\.launch: closed\nLooks like you launched a headed browser without having a XServer running\.\n    at /);
+    const loop = new Error('loop');
+    (loop as { cause?: unknown }).cause = loop;
+    assert.equal(ErrorReporter.trace(loop).length, 1);
+    assert.deepEqual(ErrorReporter.trace('text'), []);
+    assert.deepEqual(ErrorReporter.trace(new Error('outer', { cause: 'plain cause' })).slice(1), ['Caused by: plain cause']);
+    const quiet = cli.io();
+    new ErrorReporter().report(wrapped, new CliContext(quiet.io));
+    assert.equal(quiet.stderr.text, 'error: Cannot open a browser window\n');
+  });
 });
 
 describe('CliContext, StatusLine and the option groups', () => {
@@ -350,6 +372,28 @@ describe('CliContext, StatusLine and the option groups', () => {
     assert.equal(new CliContext({ stdout, stderr: new MemoryStream({ isTTY: true, columns: 300 }), env: {}, cwd: '/' }, { width: 90 }).progressWidth, 90);
   });
 
+  test('out() and err() never pass raw control characters to the terminal; only the Ansi styles stay', () => {
+    const raw = 'a\x1b]0;pwned\x07b\x1b[2Jc\rd\x08e\x9bf';
+    const stdout = new MemoryStream();
+    const stderr = new MemoryStream();
+    const plain = new CliContext({ stdout, stderr, env: {}, cwd: '/' }, { color: false });
+    plain.out(`${raw}\nnext`);
+    plain.err(raw);
+    assert.equal(stdout.text, 'a\\x1b]0;pwned\\x07b\\x1b[2Jc\\x0dd\\x08e\\x9bf\nnext\n');
+    assert.equal(stderr.text, 'a\\x1b]0;pwned\\x07b\\x1b[2Jc\\x0dd\\x08e\\x9bf\n');
+    plain.out(Ansi.color.red('styled'));
+    assert.ok(stdout.text.endsWith('\\x1b[31mstyled\\x1b[39m\n'));
+    const colorOut = new MemoryStream();
+    const colored = new CliContext({ stdout: colorOut, stderr: new MemoryStream(), env: {}, cwd: '/' }, { color: true });
+    colored.out(Ansi.color.red('styled') + raw);
+    assert.equal(colorOut.text, '\x1b[31mstyled\x1b[39ma\\x1b]0;pwned\\x07b\\x1b[2Jc\\x0dd\\x08e\\x9bf\n');
+    colored.write(raw);
+    assert.ok(colorOut.text.endsWith(raw));
+    const terminal = new MemoryStream({ isTTY: true });
+    new StatusLine(terminal).show(`busy ${raw}\nmore`);
+    assert.equal(terminal.text, '\rbusy a\\x1b]0;pwned\\x07b\\x1b[2Jc d\\x08e\\x9bf more\x1b[K');
+  });
+
   test('OptionReader parses strings, lists, integers and seconds strictly', () => {
     const values: OptionValues = { a: 'x', many: ['1,2', ' 3 ', ','], flag: true, num: '42', dur: '1.5', zero: '0', bad: '1e3', empty: '' };
     assert.equal(OptionReader.string(values, 'a'), 'x');
@@ -383,14 +427,26 @@ describe('CliContext, StatusLine and the option groups', () => {
       storageState: '/work/state.json',
       recorder: { maxBodyBytes: 1024 },
     });
+    assert.deepEqual(group.read({ 'max-total-body': '0', 'read-timeout': '2.5', 'user-agent': ' Mozilla/5.0 (X11) Test/1 ' }, ctx), {
+      headless: false,
+      userAgent: 'Mozilla/5.0 (X11) Test/1',
+      recorder: { maxTotalBodyBytes: 0, readTimeoutMs: 2500 },
+    });
     assert.throws(() => group.read({ duration: '0' }, ctx), /--duration must be more than 0 seconds/);
     assert.throws(() => group.read({ 'max-body': '-1' }, ctx), /--max-body must be a whole number/);
+    assert.throws(() => group.read({ 'max-total-body': '1.5' }, ctx), (err: unknown) => err instanceof UsageError && /--max-total-body must be a whole number/.test(err.message));
+    assert.throws(() => group.read({ 'read-timeout': '0' }, ctx), (err: unknown) => err instanceof UsageError && /--read-timeout must be more than 0 seconds/.test(err.message));
+    assert.throws(() => group.read({ 'user-agent': 'a\r\nX-Evil: 1' }, ctx), (err: unknown) => err instanceof UsageError && /--user-agent must not contain NUL, CR or LF/.test(err.message));
+    assert.throws(() => group.read({ 'user-agent': '   ' }, ctx), (err: unknown) => err instanceof UsageError && /--user-agent needs a non-empty value/.test(err.message));
   });
 
   test('CaptureOptionGroup help shows the defaults of the capture classes', () => {
     const docs = new CaptureOptionGroup().docs;
     assert.ok(docs.idle?.description.endsWith(`(default: ${CaptureSession.DEFAULT_IDLE_MS / 1000})`), docs.idle?.description);
     assert.ok(docs['max-body']?.description.endsWith(`(default: ${TrafficRecorder.DEFAULT_MAX_BODY_BYTES})`), docs['max-body']?.description);
+    assert.ok(docs['max-total-body']?.description.endsWith(`(default: ${TrafficRecorder.DEFAULT_MAX_TOTAL_BODY_BYTES})`), docs['max-total-body']?.description);
+    assert.ok(docs['read-timeout']?.description.endsWith(`(default: ${TrafficRecorder.READ_TIMEOUT_MS / 1000})`), docs['read-timeout']?.description);
+    assert.ok(docs['user-agent']?.description.includes('default: the identity of the installed Chromium'));
     assert.equal(CaptureOptionGroup.seconds(2500), '2.5');
   });
 
@@ -631,10 +687,14 @@ describe('Cli services', () => {
     const stderr = new MemoryStream({ isTTY: true });
     const ctx = new CliContext({ stdout, stderr, env: {}, cwd: '/', signals }, { width: 60 });
     const forwarded: string[] = [];
-    const pending = runner.record({ url: 'https://example.com/', headless: false, onExchange: (e) => forwarded.push(e.id) }, ctx);
+    let ready = 0;
+    const pending = runner.record({ url: 'https://example.com/', headless: false, onExchange: (e) => forwarded.push(e.id), onReady: () => ready++ }, ctx);
     assert.equal(signals.count('SIGINT'), 1);
     assert.equal(signals.count('SIGTERM'), 1);
     assert.equal(received?.url, 'https://example.com/');
+    assert.equal(stderr.text, '', 'no instructions before the browser is ready');
+    (received?.onReady as () => void)();
+    assert.equal(ready, 1);
     const onExchange = received?.onExchange as (e: Exchange) => void;
     onExchange(capture.exchanges[0]!);
     assert.deepEqual(forwarded, [capture.exchanges[0]!.id]);
@@ -662,10 +722,13 @@ describe('Cli services', () => {
   test('CaptureRunner explains headed browser launch failures and forwards other errors', async () => {
     const capture = CaptureFactory.fixture().capture;
     const ctx = new CliContext({ stdout: new MemoryStream(), stderr: new MemoryStream(), env: {}, cwd: '/', signals: new FakeSignals() });
-    const browser = new AppiiError('BROWSER', 'Cannot launch Chromium: Missing X server.');
+    const browser = BrowserLauncher.launchError(new Error('browserType.launch: Target page, context or browser has been closed\nBrowser logs:\nLooks like you launched a headed browser without having a XServer running.'));
+    assert.equal(browser.message, 'Cannot open a browser window: no display (X server) is available');
     const headed = new CaptureRunner({ sessions: () => fakeSession(capture, { fail: browser }).session });
-    await assert.rejects(headed.record({ url: 'https://example.com/', headless: false }, ctx), (err: unknown) => err instanceof AppiiError && err.code === 'BROWSER' && /Missing X server\. If this machine has no display, run the capture with --headless\.$/.test(err.message));
+    await assert.rejects(headed.record({ url: 'https://example.com/', headless: false }, ctx), (err: unknown) => err instanceof AppiiError && err.code === 'BROWSER' && err.message === 'Cannot open a browser window: no display (X server) is available. To record without a browser window, add --headless.');
     await assert.rejects(headed.record({ url: 'https://example.com/', headless: true }, ctx), (err: unknown) => err === browser);
+    const missing = new AppiiError('BROWSER', 'Cannot launch Chromium: Chromium is not installed.');
+    await assert.rejects(new CaptureRunner({ sessions: () => fakeSession(capture, { fail: missing }).session }).record({ url: 'https://example.com/', headless: false }, ctx), (err: unknown) => err === missing);
     const other = new AppiiError('CAPTURE', 'nav failed');
     const failing = new CaptureRunner({ sessions: () => fakeSession(capture, { fail: other }).session });
     await assert.rejects(failing.record({ url: 'https://example.com/', headless: false }, ctx), (err: unknown) => err === other);

@@ -59,6 +59,10 @@ export class Helpers {
     }
   }
 
+  static overwriteMessage(explicit: string | undefined, defaultName: string, input = 'input file'): string {
+    return explicit === undefined ? `the default output ${defaultName} is the ${input}; pass -o <file>` : `--out must not overwrite the ${input}`;
+  }
+
   static async outputFile(ctx: CliContext, out: string | undefined, filename: string): Promise<string> {
     if (out === undefined) return ctx.resolve(filename);
     const path = ctx.resolve(out);

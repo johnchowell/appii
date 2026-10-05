@@ -10,6 +10,7 @@ export interface PresenterOptions {
   width?: number;
   filter?: ListFilter;
   file?: string;
+  hints?: boolean;
 }
 
 export interface Presenter<T> {
@@ -27,12 +28,14 @@ export abstract class BasePresenter<T> implements Presenter<T> {
   protected readonly width: number;
   protected readonly filter: EndpointFilter;
   protected readonly file: string | undefined;
+  protected readonly hints: boolean;
 
   constructor(options: PresenterOptions = {}) {
     this.ansi = BasePresenter.ansiFor(options);
     this.width = TextLayout.checkWidth(options.width ?? BasePresenter.DEFAULT_WIDTH);
     this.filter = new EndpointFilter(options.filter);
     this.file = options.file;
+    this.hints = options.hints ?? true;
   }
 
   static ansiFor(options: PresenterOptions = {}): Ansi {
@@ -70,7 +73,7 @@ export abstract class BasePresenter<T> implements Presenter<T> {
       .map((block) => (typeof block === 'string' ? block : block.join('\n')))
       .join('\n\n')
       .split('\n')
-      .map((line) => TextLayout.fit(Text.isAscii(line) ? line : Text.toAscii(line, 'escape'), this.width))
+      .map((line) => TextLayout.fit(this.ansi.printable(line), this.width))
       .join('\n');
   }
 }

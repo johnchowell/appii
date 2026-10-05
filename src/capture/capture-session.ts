@@ -23,6 +23,7 @@ export interface CaptureSessionOptions extends BrowserLauncherOptions {
   script?: (page: Page) => Promise<void>;
   signal?: AbortSignal;
   onExchange?: (e: Exchange) => void;
+  onReady?: () => void;
 }
 
 export interface CaptureSessionDeps {
@@ -226,6 +227,7 @@ export class CaptureSession {
       }
     }
     await Helpers.settle(Promise.all([run.identity?.prepare(page), this.recorder.prepare(page), run.snapshots.prepare(page)]), CaptureSession.PREPARE_TIMEOUT_MS);
+    if (!this.#stopped) this.#options.onReady?.();
     const url = this.#options.url;
     if (url) await this.#open(run, page, url);
     if (this.#stopped) return;

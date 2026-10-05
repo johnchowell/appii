@@ -1,5 +1,6 @@
 import type { Endpoint } from '../model/index.js';
 import { Ansi, EndpointIndex, Schema } from '../shared/index.js';
+import { SchemaTree } from './schema-tree.js';
 import { TextLayout } from './text-layout.js';
 
 export class EndpointFormatter {
@@ -30,7 +31,7 @@ export class EndpointFormatter {
       const variables = Schema.properties(Schema.properties(shape.schema).variables);
       return Object.keys(variables).map((name) => '$' + name);
     }
-    return Object.keys(Schema.properties(shape.schema));
+    return SchemaTree.fieldNames(shape.schema);
   }
 
   method(endpoint: Endpoint): string {

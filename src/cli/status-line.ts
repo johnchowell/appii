@@ -1,7 +1,9 @@
+import { Ansi, Text } from '../shared/index.js';
+
 export type StatusStream = NodeJS.WritableStream & { isTTY?: boolean };
 
 export class StatusLine {
-  static readonly CLEAR_LINE = '\r\x1b[K';
+  static readonly CLEAR_LINE = Ansi.statusLine('');
 
   readonly #stream: StatusStream;
   #visible = false;
@@ -24,7 +26,7 @@ export class StatusLine {
       this.clear();
       return;
     }
-    this.#stream.write(`\r${text}\x1b[K`);
+    this.#stream.write(Ansi.statusLine(Text.printable(text)));
     this.#visible = true;
   }
 

@@ -1,3 +1,5 @@
+import { printable } from './text.js';
+
 const CODES = {
   bold: [1, 22],
   dim: [2, 22],
@@ -21,15 +23,40 @@ export const METHOD_COLORS: Readonly<Record<string, AnsiStyle>> = {
 };
 
 const ESCAPE_SOURCE = '\\x1b\\[[0-9;]*m';
+const RESET_CODE = 0;
+const STYLE_SOURCE = `\\x1b\\[(?:${[...new Set([RESET_CODE, ...Object.values(CODES).flat()])].join('|')})m`;
 
 export class Ansi {
   static readonly plain = new Ansi(false);
   static readonly color = new Ansi(true);
+  static readonly RESET = `\x1b[${RESET_CODE}m`;
+  static readonly CARRIAGE_RETURN = '\r';
+  static readonly ERASE_LINE = '\x1b[K';
 
   constructor(readonly enabled: boolean) {}
 
   static strip(input: string): string {
     return input.replace(new RegExp(ESCAPE_SOURCE, 'g'), '');
+  }
+
+  static printable(input: string, keepStyles = true): string {
+    if (!keepStyles) return printable(input, { lineBreaks: 'lf' });
+    const style = new RegExp(STYLE_SOURCE, 'g');
+    let out = '';
+    let last = 0;
+    for (const match of input.matchAll(style)) {
+      out += printable(input.slice(last, match.index), { lineBreaks: 'lf' }) + match[0];
+      last = match.index + match[0].length;
+    }
+    return out + printable(input.slice(last), { lineBreaks: 'lf' });
+  }
+
+  static statusLine(text: string): string {
+    return Ansi.CARRIAGE_RETURN + text + Ansi.ERASE_LINE;
+  }
+
+  printable(input: string): string {
+    return Ansi.printable(input, this.enabled);
   }
 
   static width(input: string): number {
@@ -59,7 +86,7 @@ export class Ansi {
       i++;
     }
     out += ellipsis.slice(0, max - visible);
-    return sawCode ? out + '\x1b[0m' : out;
+    return sawCode ? out + Ansi.RESET : out;
   }
 
   static padEnd(input: string, width: number): string {

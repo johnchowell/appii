@@ -19,6 +19,12 @@ export interface LaunchedBrowser {
 }
 
 export class BrowserLauncher {
+  static readonly NO_DISPLAY: RegExp = /XServer|Missing X server|\$DISPLAY/i;
+  static readonly NOT_INSTALLED: RegExp = /executable doesn't exist/i;
+  static readonly API_PREFIX: RegExp = /^[A-Za-z]+\.[A-Za-z]+: /;
+  static readonly NO_DISPLAY_MESSAGE = 'Cannot open a browser window: no display (X server) is available';
+  static readonly INSTALL_COMMAND = 'npx playwright install chromium';
+
   readonly options: Readonly<BrowserLauncherOptions>;
 
   constructor(options: BrowserLauncherOptions = {}) {
@@ -57,11 +63,7 @@ export class BrowserLauncher {
     try {
       browser = await chromium.launch(this.launchOptions());
     } catch (err) {
-      throw new AppiiError(
-        'BROWSER',
-        `Cannot launch Chromium: ${Text.errorMessage(err, { firstLine: true })}. Install it with "npx playwright install chromium" or pass an executable path.`,
-        { cause: err },
-      );
+      throw BrowserLauncher.launchError(err, this.options.executablePath);
     }
     try {
       const identity = this.headless && !this.options.userAgent ? await BrowserLauncher.#headedIdentity(browser) : undefined;
@@ -71,6 +73,17 @@ export class BrowserLauncher {
       await browser.close().catch(() => undefined);
       throw new AppiiError('BROWSER', `Cannot create a browser context: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
     }
+  }
+
+  static launchError(err: unknown, executablePath?: string): AppiiError {
+    const message = Text.errorMessage(err);
+    if (BrowserLauncher.NO_DISPLAY.test(message)) return new AppiiError('BROWSER', BrowserLauncher.NO_DISPLAY_MESSAGE, { cause: err });
+    if (BrowserLauncher.NOT_INSTALLED.test(message)) {
+      const reason = executablePath ? `the browser file ${executablePath} does not exist` : `Chromium is not installed. Install it with "${BrowserLauncher.INSTALL_COMMAND}"`;
+      return new AppiiError('BROWSER', `Cannot launch Chromium: ${reason}`, { cause: err });
+    }
+    const line = Text.errorMessage(err, { firstLine: true }).replace(BrowserLauncher.API_PREFIX, '');
+    return new AppiiError('BROWSER', `Cannot launch Chromium${executablePath ? ` from ${executablePath}` : ''}: ${line}`, { cause: err });
   }
 
   static async #headedIdentity(browser: Browser): Promise<UserAgentIdentity | undefined> {

@@ -96,6 +96,12 @@ describe('end to end: capture, build, list and export the fixture site through t
     assert.match(detail, /hidden-field/);
     const signup = endpoint(model, 'POST', '/signup');
     assert.equal(signup.form?.enctype, 'multipart/form-data');
+    const signupDetail = presenters.detail().render({ model, ref: signup.id });
+    assert.match(signupDetail, /\| username +\| string +\| if +\|/);
+    assert.match(signupDetail, /\nWhen intent=create \("Create"\):\n  Requires: username, email, country, terms\n/);
+    assert.match(signupDetail, /\nWhen intent=draft \("Save draft"\), no form validation:\n/);
+    assert.doesNotMatch(signupDetail, /Required if/);
+    assert.match(list, /\| multipart: username, email, age \+\d+ +\|/);
     const index = Shared.EndpointIndex.of(model);
     assert.equal(index.require(login.name), login);
   });

@@ -9,6 +9,7 @@ export interface BuildRequest {
   out: string;
   source?: string;
   options: BuildOptions;
+  hints?: boolean;
 }
 
 export interface BuildStepDeps {
@@ -37,13 +38,13 @@ export class BuildStep {
   async run(capture: Capture, request: BuildRequest, ctx: CliContext): Promise<ApiModel> {
     const model = this.build(capture, request.options, request.source);
     await this.#models.save(request.out, model, { private: request.options.redact === false });
-    ctx.out(this.report(model, request.out, ctx));
+    ctx.out(this.report(model, request.out, ctx, request.hints ?? true));
     return model;
   }
 
-  report(model: ApiModel, out: string, ctx: CliContext): string {
+  report(model: ApiModel, out: string, ctx: CliContext, hints = true): string {
     const file = ctx.display(out);
-    const presenters = new PresenterFactory(ctx.presenterOptions({ file }));
+    const presenters = new PresenterFactory(ctx.presenterOptions({ file, hints }));
     const wrote = TextLayout.clean(`Wrote ${file} (${Text.plural(model.endpoints.length, 'endpoint')})`);
     return [wrote, presenters.summary().render(model), presenters.list().render(model)].join('\n\n');
   }

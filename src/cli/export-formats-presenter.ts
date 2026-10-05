@@ -14,7 +14,7 @@ export class ExportFormatsPresenter extends BasePresenter<ExporterRegistry> {
   static readonly COLUMNS: readonly TableColumn[] = [
     { header: 'FORMAT' },
     { header: 'EXT' },
-    { header: 'ALIASES', flex: true, minWidth: 8, maxWidth: 28, wrap: true, optional: true, priority: 1 },
+    { header: 'ALIASES', flex: true, minWidth: 8, maxWidth: 28, wrap: true, breakWords: false, optional: true, priority: 1 },
     { header: 'DESCRIPTION', flex: true, minWidth: 20, wrap: true },
   ];
   static readonly MARKDOWN_HEADER = '| Format | Extension | Aliases | Description |\n| --- | --- | --- | --- |';

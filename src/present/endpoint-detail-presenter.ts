@@ -5,6 +5,7 @@ import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
 import { SchemaTree } from './schema-tree.js';
+import type { SchemaTreeBranch, SchemaTreeRow } from './schema-tree.js';
 import { ShellFolder } from './shell-folder.js';
 import type { TableColumn } from './table-renderer.js';
 import { TextLayout } from './text-layout.js';
@@ -30,6 +31,9 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     { header: 'EXAMPLES', flex: true, wrap: true, minWidth: 10, optional: true, priority: 1 },
   ];
   static readonly CONDITIONAL = 'if';
+  static readonly BRANCH_INDENT = 2;
+  static readonly NO_VALIDATION = 'no form validation';
+  static readonly NO_OTHER_RULES = 'No other rules.';
   static readonly SCHEMA_COLUMNS: readonly TableColumn[] = [
     { header: 'FIELD', flex: true, minWidth: 12 },
     { header: 'TYPE', flex: true, minWidth: 8 },
@@ -208,18 +212,30 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   #schema(body: BodyShape): string[] {
     if (body.kind === 'empty') return [];
     if (!body.schema) return body.examples.length === 0 && EndpointDetailPresenter.STRUCTURED_KINDS.has(body.kind) ? [this.ansi.dim('Schema unknown (the body was not captured).')] : [];
-    const tree = this.#tree.rows(body.schema);
-    const rows = tree.map((row) => [
+    const rows = this.#tree.rows(body.schema).map((row) => this.#schemaRow(row));
+    if (rows.length === 0) return [];
+    return [this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, rows), ...this.#tree.branches(body.schema).flatMap((branch) => this.#branch(branch))];
+  }
+
+  #schemaRow(row: SchemaTreeRow): string[] {
+    return [
       TextLayout.clean(row.path),
       TextLayout.clean(row.type),
       row.required ? 'yes' : row.requiredWhen ? EndpointDetailPresenter.CONDITIONAL : this.ansi.dim('no'),
       TextLayout.clean(row.constraints),
-    ]);
-    if (rows.length === 0) return [];
-    const conditions = new Map<string, string[]>();
-    for (const row of tree) for (const condition of row.requiredWhen ?? []) conditions.set(condition, [...(conditions.get(condition) ?? []), row.path]);
-    const notes = [...conditions].flatMap(([condition, names]) => TextLayout.wrap(TextLayout.clean(`Required if ${condition}: ${names.join(', ')}.`), this.width));
-    return [this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, rows), ...notes];
+    ];
+  }
+
+  #branch(branch: SchemaTreeBranch): string[] {
+    const notes = [branch.label === undefined ? '' : ` ("${branch.label}")`, branch.noValidate ? `, ${EndpointDetailPresenter.NO_VALIDATION}` : ''].join('');
+    const title = TextLayout.wrap(TextLayout.clean(`When ${branch.condition}${notes}:`), this.width).map((line) => this.ansi.bold(line));
+    const facts: Definition[] = [];
+    if (branch.requires.length > 0) facts.push(['Requires', TextLayout.clean(branch.requires.join(', '))]);
+    if (branch.excluded.length > 0) facts.push(['Not sent', TextLayout.clean(branch.excluded.join(', '))]);
+    const lines = ['', ...title, ...this.definitions(facts, EndpointDetailPresenter.BRANCH_INDENT)];
+    if (branch.rows.length > 0) lines.push(this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, branch.rows.map((row) => this.#schemaRow(row))));
+    if (facts.length === 0 && branch.rows.length === 0) lines.push(' '.repeat(EndpointDetailPresenter.BRANCH_INDENT) + EndpointDetailPresenter.NO_OTHER_RULES);
+    return lines;
   }
 
   #samples(endpoint: Endpoint): PresenterBlock {

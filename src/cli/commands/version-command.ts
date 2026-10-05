@@ -4,16 +4,20 @@ import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
 import { DisplayOptionGroup } from '../display-option-group.js';
 import { ExitCode } from '../exit-code.js';
+import type { HelpRow } from '../help-formatter.js';
 import type { OptionValues } from '../option-reader.js';
 
 export class VersionCommand extends Command {
+  static readonly FLAGS: readonly string[] = ['-V', '--version'];
+  static readonly SUMMARY = 'Print the version';
+
   readonly spec: CommandSpec;
 
   constructor(deps: CommandDeps = {}) {
     super(deps);
     this.spec = {
       name: 'version',
-      summary: 'Print the version',
+      summary: VersionCommand.SUMMARY,
       usage: `${Meta.APP_NAME} version`,
       options: {},
       allowPositionals: false,
@@ -23,6 +27,10 @@ export class VersionCommand extends Command {
 
   static create(): VersionCommand {
     return new VersionCommand({ display: new DisplayOptionGroup() });
+  }
+
+  static globalRow(): HelpRow {
+    return [VersionCommand.FLAGS.join(', '), VersionCommand.SUMMARY];
   }
 
   static line(): string {

@@ -14,9 +14,6 @@ export interface DefinitionOptions {
 export type Definition = readonly [label: string, value: string];
 
 export class TextLayout {
-  static readonly LINE_BREAKS: RegExp = /\r\n|[\r\n\t]/g;
-  static readonly CONTROL: RegExp = /[\x00-\x1f\x7f]/g;
-  static readonly BLOCK_CONTROL: RegExp = /[\x00-\x09\x0b-\x1f\x7f]/g;
   static readonly MIN_VALUE_WIDTH = 12;
 
   static checkWidth(value: number, label = 'width'): number {
@@ -27,11 +24,11 @@ export class TextLayout {
   }
 
   static clean(text: string): string {
-    return TextLayout.#escapeControls(Text.toAscii(text.replace(TextLayout.LINE_BREAKS, ' '), 'escape'), TextLayout.CONTROL);
+    return Text.printable(text, { lineBreaks: 'space' });
   }
 
   static cleanBlock(text: string): string {
-    return TextLayout.#escapeControls(Text.toAscii(text.replace(/\r\n?/g, '\n'), 'escape'), TextLayout.BLOCK_CONTROL);
+    return Text.printable(text, { lineBreaks: 'normalize' });
   }
 
   static fit(line: string, width: number): string {
@@ -106,9 +103,5 @@ export class TextLayout {
       for (const piece of TextLayout.wrap(value, width - inner)) lines.push(' '.repeat(inner) + piece);
     }
     return lines.map((line) => TextLayout.fit(line, width));
-  }
-
-  static #escapeControls(text: string, pattern: RegExp): string {
-    return text.replace(pattern, (ch) => '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0'));
   }
 }

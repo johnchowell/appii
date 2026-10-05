@@ -1,10 +1,10 @@
-import { dirname } from 'node:path';
 import { CaptureStore } from '../../capture/index.js';
 import { BasePresenter, PresenterFactory } from '../../present/index.js';
-import { Fs, Meta } from '../../shared/index.js';
+import { Meta } from '../../shared/index.js';
 import type { Capture } from '../../model/index.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
+import { CaptureSaver } from '../capture-saver.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -17,6 +17,7 @@ import { UsageError } from '../usage-error.js';
 export interface CaptureCommandDeps extends CommandDeps {
   runner?: CaptureRunner;
   store?: CaptureStore;
+  saver?: CaptureSaver;
   capture?: CaptureOptionGroup;
 }
 
@@ -26,12 +27,14 @@ export class CaptureCommand extends Command {
   readonly spec: CommandSpec;
   readonly #runner: CaptureRunner;
   readonly #store: CaptureStore;
+  readonly #saver: CaptureSaver;
   readonly #capture: CaptureOptionGroup;
 
   constructor(deps: CaptureCommandDeps = {}) {
     super(deps);
     this.#runner = deps.runner ?? CaptureRunner.create();
     this.#store = deps.store ?? new CaptureStore();
+    this.#saver = deps.saver ?? new CaptureSaver({ store: this.#store });
     this.#capture = deps.capture ?? new CaptureOptionGroup();
     const app = Meta.APP_NAME;
     this.spec = {
@@ -54,7 +57,8 @@ export class CaptureCommand extends Command {
   }
 
   static create(): CaptureCommand {
-    return new CaptureCommand({ runner: CaptureRunner.create(), store: CaptureStore.create(), capture: new CaptureOptionGroup() });
+    const store = CaptureStore.create();
+    return new CaptureCommand({ runner: CaptureRunner.create(), store, saver: new CaptureSaver({ store }), capture: new CaptureOptionGroup() });
   }
 
   protected async execute(values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
@@ -66,16 +70,16 @@ export class CaptureCommand extends Command {
       const recording = Object.keys(this.#capture.options).find((name) => values[name] !== undefined);
       if (recording !== undefined) throw new UsageError(`--${recording} applies to recording and cannot be combined with --from-har`);
       const input = ctx.resolve(har);
-      if (input === out) throw new UsageError('--out must not overwrite the HAR file');
       capture = await this.#store.load(input);
+      if (input === out) throw new UsageError(Helpers.overwriteMessage(OptionReader.string(values, 'out'), CaptureCommand.DEFAULT_OUT, 'HAR file'));
     } else {
       const options = this.#capture.read(values, ctx);
       const url = this.argument(positionals, 0, '<url>');
       this.expectArguments(positionals, 1);
-      await Fs.ensureDir(dirname(out));
+      await this.#saver.preflight([out]);
       capture = await this.#runner.record({ ...options, url }, ctx);
     }
-    await this.#store.save(out, capture);
+    await this.#saver.save(out, capture);
     const file = ctx.display(out);
     const next = `${Meta.APP_NAME} build ${BasePresenter.fileArgument(file)}`;
     ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file, next }));

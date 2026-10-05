@@ -116,6 +116,45 @@ describe('SchemaTree', () => {
     assert.deepEqual(tree.rows(variant).map((row) => row.path), ['a']);
   });
 
+  test('branches describe each conditional submission of the real signup form', () => {
+    const branches = tree.branches(byId(FIXTURE, 'post-signup').requestBody?.schema);
+    assert.deepEqual(
+      branches.map((branch) => [branch.condition, branch.label, branch.requires, branch.excluded, branch.noValidate]),
+      [
+        ['intent=create', 'Create', ['username', 'email', 'country', 'terms'], [], false],
+        ['intent=draft', 'Save draft', [], [], true],
+      ],
+    );
+    const create = branches[0]?.rows ?? [];
+    assert.deepEqual(create.map((row) => [row.path, row.type, row.required]), [
+      ['username', 'string', true],
+      ['email', 'string', true],
+      ['age', 'integer|empty', false],
+      ['country', 'enum(2)', true],
+    ]);
+    assert.deepEqual(branches[1]?.rows.map((row) => [row.path, row.constraints]), [['country', 'one of ""|us|ca, default ""']]);
+    assert.deepEqual(tree.branches({ type: 'object', properties: { a: { type: 'string' } } }), []);
+    assert.deepEqual(tree.branches(undefined), []);
+  });
+
+  test('exclusive submitter names are grouped as alternatives', () => {
+    const schema: JsonSchema = {
+      type: 'object',
+      properties: { title: { type: 'string' }, _save: { const: 'Save' }, _more: { const: 'More' }, _go: { const: 'Go' } },
+      required: ['title'],
+      if: { required: ['_save'], properties: { _save: { const: 'Save' } } },
+      then: { required: ['title', '_save'], properties: { _more: false, _go: false } },
+      else: {
+        if: { required: ['_more'], properties: { _more: { const: 'More' } } },
+        then: { required: ['title', '_more'], properties: { _save: false, _go: false } },
+      },
+    };
+    assert.deepEqual(SchemaTree.alternatives(schema), [['_save', '_more', '_go']]);
+    assert.deepEqual(SchemaTree.fieldNames(schema), ['title', '_save|_more|_go']);
+    assert.deepEqual(tree.branches(schema).map((branch) => branch.excluded), [['_more', '_go'], ['_save', '_go']]);
+    assert.deepEqual(SchemaTree.fieldNames(byId(FIXTURE, 'post-signup').requestBody?.schema).slice(0, 3), ['username', 'email', 'age']);
+  });
+
   test('renders the real multipart signup form schema with its HTML rules', () => {
     const rows = tree.rows(byId(FIXTURE, 'post-signup').requestBody?.schema);
     const get = (path: string) => rows.find((row) => row.path === path);
@@ -151,6 +190,19 @@ describe('EndpointFilter', () => {
     assert.deepEqual(numbers(MIXED, new EndpointFilter({ method: 'DELETE GET' })).length, 5);
   });
 
+  test('text terms match only the documented fields: method, path, name, id or GraphQL operation', () => {
+    assert.equal(EndpointFilter.textFields(), 'method, path, name, id or GraphQL operation');
+    assert.deepEqual(EndpointFilter.TEXT_FIELDS.map(([label]) => label), ['method', 'path', 'name', 'id', 'GraphQL operation']);
+    assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'document' })), []);
+    assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'https' })), []);
+    assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'shop.example.com' })), []);
+    assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'post-signup' })), [12]);
+    assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'postlogin' })), [9]);
+    const graphql = byId(FIXTURE, 'post-graphql-getitem');
+    assert.equal(new EndpointFilter({ text: 'GetItem graphql' }).matches(graphql), true);
+    assert.equal(new EndpointFilter({ text: 'GetItem' }).matches({ ...graphql, name: 'x', id: 'y' }), true);
+  });
+
   test('text terms must all match id, name, key, path or operation', () => {
     assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'items' })), [3, 4, 5]);
     assert.deepEqual(numbers(FIXTURE, new EndpointFilter({ text: 'ITEMS post' })), [4]);
@@ -171,10 +223,12 @@ describe('EndpointFilter', () => {
     assert.equal(new EndpointFilter({ origin: 'localhost' }).matches(local), true);
     assert.equal(new EndpointFilter({ origin: 'localhost:4000' }).matches(local), false);
     assert.equal(new EndpointFilter({ origin: 'http://localhost:3000/path' }).matches(local), true);
-    assert.deepEqual(EndpointFilter.originMatcher(' Example.COM/ '), { host: 'example.com' });
-    assert.deepEqual(EndpointFilter.originMatcher('B\u00fccher.example'), { host: 'xn--bcher-kva.example' });
-    assert.deepEqual(EndpointFilter.originMatcher('[::1]:8080'), { host: '[::1]:8080' });
-    assert.deepEqual(EndpointFilter.originMatcher('example.com/some/path'), { host: 'example.com/some/path' });
+    assert.deepEqual(EndpointFilter.originMatcher(' Example.COM/ '), { hostname: 'example.com' });
+    assert.deepEqual(EndpointFilter.originMatcher('B\u00fccher.example'), { hostname: 'xn--bcher-kva.example' });
+    assert.deepEqual(EndpointFilter.originMatcher('[::1]:8080'), { hostname: '[::1]', port: 8080 });
+    assert.deepEqual(EndpointFilter.originMatcher('example.com:443'), { hostname: 'example.com', port: 443 });
+    assert.deepEqual(EndpointFilter.originMatcher('example.com:80'), { hostname: 'example.com', port: 80 });
+    assert.deepEqual(EndpointFilter.originMatcher('example.com/some/path'), { hostname: 'example.com/some/path' });
     assert.deepEqual(EndpointFilter.originMatcher('HTTPS://B\u00fccher.example:443/x'), { origin: 'https://xn--bcher-kva.example' });
     assert.deepEqual(EndpointFilter.originMatcher('ftp://files.example/'), { origin: 'ftp://files.example' });
     const idn = { ...third, origin: 'https://xn--bcher-kva.example' };
@@ -183,6 +237,31 @@ describe('EndpointFilter', () => {
     assert.equal(new EndpointFilter({ origin: '[::1]:8080' }).matches(ipv6), true);
     assert.equal(new EndpointFilter({ origin: '[::1]' }).matches(ipv6), true);
     assert.equal(EndpointFilter.originMatcher(''), undefined);
+  });
+
+  test('a host with a port matches the effective port of the origin, also the default port of its scheme', () => {
+    const third = byId(MIXED, 'post-v2-collect');
+    const at = (origin: string) => ({ ...third, origin });
+    const matches = (filter: string, origin: string) => new EndpointFilter({ origin: filter }).matches(at(origin));
+    assert.equal(matches('example.com:443', 'https://example.com'), true);
+    assert.equal(matches('example.com:443', 'http://example.com'), false);
+    assert.equal(matches('example.com:443', 'http://example.com:443'), true);
+    assert.equal(matches('example.com:80', 'http://example.com'), true);
+    assert.equal(matches('example.com:80', 'https://example.com'), false);
+    assert.equal(matches('example.com', 'https://example.com'), true);
+    assert.equal(matches('example.com', 'http://example.com:8080'), true);
+    assert.equal(matches('example.com:8080', 'https://example.com'), false);
+    assert.equal(matches('EXAMPLE.com:0443/', 'https://example.com'), true);
+    assert.equal(matches('[::1]:443', 'https://[::1]'), true);
+    assert.deepEqual(new EndpointFilter({ origin: 'example.com:443' }).describe(), ['origin example.com:443']);
+  });
+
+  test('cookies() keeps the cookies that the matching endpoints set or use', () => {
+    assert.equal(new EndpointFilter().cookies(FIXTURE), FIXTURE.cookies);
+    const login = new EndpointFilter({ text: 'post-login' }).cookies(FIXTURE);
+    assert.ok(login.length > 0 && login.length < FIXTURE.cookies.length);
+    assert.ok(login.every((cookie) => cookie.setBy.includes('post-login') || cookie.usedBy.includes('post-login')));
+    assert.deepEqual(new EndpointFilter({ origin: 'nowhere.test' }).cookies(FIXTURE), []);
   });
 
   test('kind and firstPartyOnly restrict the selection', () => {

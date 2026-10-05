@@ -9,6 +9,7 @@ import { HelpFormatter } from '../help-formatter.js';
 import { Helpers } from '../helpers.js';
 import type { OptionValues } from '../option-reader.js';
 import { UsageError } from '../usage-error.js';
+import { VersionCommand } from './version-command.js';
 
 export class HelpCommand extends Command {
   readonly spec: CommandSpec;
@@ -32,9 +33,18 @@ export class HelpCommand extends Command {
     return new HelpCommand(registry, { display: new DisplayOptionGroup() });
   }
 
+  static overview(registry: CommandRegistry, display: DisplayOptionGroup, ctx: CliContext): string {
+    const topics = registry.list().map((command) => command.spec);
+    return new HelpFormatter({ ansi: ctx.ansi, width: ctx.width }).overview(topics, display, [VersionCommand.globalRow()]);
+  }
+
+  static unknownCommand(name: string, names: readonly string[]): UsageError {
+    const guess = Helpers.closest(name, names);
+    return new UsageError(`unknown command '${name}'${guess === undefined ? '' : `; did you mean '${guess}'?`}`);
+  }
+
   overview(ctx: CliContext): string {
-    const topics = this.#registry.list().map((command) => command.spec);
-    return new HelpFormatter({ ansi: ctx.ansi, width: ctx.width }).overview(topics, this.display, HelpFormatter.GLOBAL_ROWS);
+    return HelpCommand.overview(this.#registry, this.display, ctx);
   }
 
   protected async execute(_values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
@@ -45,10 +55,7 @@ export class HelpCommand extends Command {
       return ExitCode.OK;
     }
     const command = this.#registry.get(name);
-    if (!command) {
-      const guess = Helpers.closest(name, this.#registry.names());
-      throw new UsageError(`unknown command '${name}'${guess === undefined ? '' : `; did you mean '${guess}'?`}`);
-    }
+    if (!command) throw HelpCommand.unknownCommand(name, this.#registry.names());
     ctx.out(command.help(ctx));
     return ExitCode.OK;
   }

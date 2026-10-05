@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { CaptureStore, HarConverter } from '../src/capture/index.js';
+import { CaptureCommand, CaptureRunner, CaptureSaver, CommandRegistry, RunCommand } from '../src/cli/index.js';
 import { ModelStore } from '../src/build/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, CookieInfo, Endpoint } from '../src/model/index.js';
-import { Meta } from '../src/shared/index.js';
+import { AppiiError, Meta } from '../src/shared/index.js';
 import { startFixtureSite } from './fixtures/site.js';
 import type { FixtureSite } from './fixtures/site.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
@@ -61,6 +62,96 @@ describe('cli commands', () => {
       assert.ok(capture.cookies.some((cookie) => cookie.name === 'sid' && cookie.httpOnly));
       assert.ok(capture.storage.some((entry) => Object.keys(entry.localStorage).length > 0));
       assert.equal((await stat(join(dir, 'browser.json'))).mode & 0o777, CaptureStore.FILE_MODE);
+    });
+
+    test('capture --user-agent, --max-total-body and --read-timeout reach the browser and the recorder', async () => {
+      const agent = 'appii-cli-test/1.0 (X11; Linux x86_64)';
+      const before = site.requests.length;
+      const run = await cli.run(['capture', `${site.origin}/app`, '--headless', '--duration', '2', '--user-agent', agent, '--max-total-body', '0', '--read-timeout', '5', '-o', 'options.json']);
+      assert.equal(run.code, 0, run.stderr);
+      const seen = site.requests.slice(before);
+      assert.ok(seen.length > 0);
+      assert.ok(seen.every((request) => request.headers['user-agent'] === agent), JSON.stringify(seen.map((request) => request.headers['user-agent'])));
+      const capture = await CaptureStore.create().load(join(dir, 'options.json'));
+      const bodies = capture.exchanges.flatMap((exchange) => (exchange.response?.body ? [exchange.response.body] : []));
+      assert.ok(bodies.length > 0);
+      assert.ok(bodies.every((body) => body.truncated === true && body.data === ''), JSON.stringify(bodies.slice(0, 2)));
+      const bad = await cli.run(['capture', site.url, '--headless', '--read-timeout', '0']);
+      assert.equal(bad.code, 2);
+      assert.match(bad.stderr, /^error: --read-timeout must be more than 0 seconds, got '0'\n/);
+      const help = await cli.run(['help', 'capture', '--width', '200']);
+      assert.match(help.stdout, /--max-total-body <bytes> +Total size of all kept bodies; later bodies are marked as truncated \(default: 268435456\)/);
+      assert.match(help.stdout, /--read-timeout <sec> +Longest wait for one body after its request ends \(default: 10\)/);
+      assert.match(help.stdout, /--user-agent <ua> +User-Agent that the browser sends and reports/);
+      const runHelp = await cli.run(['help', 'run', '--width', '200']);
+      for (const flag of ['--max-total-body', '--read-timeout', '--user-agent']) assert.match(runHelp.stdout, new RegExp(`\\n +${flag} <`));
+    });
+
+    test('a capture that cannot be saved is kept in a fallback file whose path the error names', async () => {
+      const capture = CaptureFactory.fixture().capture;
+      const fallbackDir = join(dir, 'rescue');
+      await mkdir(fallbackDir, { recursive: true });
+      const recorded: string[] = [];
+      const runner = new CaptureRunner({
+        sessions: (options) => ({
+          run: async () => {
+            recorded.push(options.url ?? '');
+            options.onReady?.();
+            return capture;
+          },
+          stop: () => undefined,
+        }),
+      });
+      class FailingStore extends CaptureStore {
+        override async save(path: string): Promise<void> {
+          throw new AppiiError('IO', `Cannot write ${path}: ENOSPC: no space left on device`);
+        }
+      }
+      const saver = new CaptureSaver({ store: new FailingStore(), fallbackDir: () => fallbackDir });
+      const registry = new CommandRegistry().register(new CaptureCommand({ runner, saver })).register(new RunCommand({ runner, saver }));
+      const failed = await cli.run(['capture', 'https://example.com/', '--headless', '-o', 'lost.json'], { registry });
+      assert.equal(failed.code, 1);
+      const match = /; the recording was saved to (\S+)\n$/.exec(failed.stderr);
+      assert.ok(match, failed.stderr);
+      assert.match(failed.stderr, /^Recording headless until the network is idle\. Press Ctrl\+C to stop early\.\nerror: Cannot write .*lost\.json: ENOSPC: no space left on device; the recording was saved to /);
+      const rescued = match[1]!;
+      assert.ok(rescued.startsWith(fallbackDir + '/appii-capture-'), rescued);
+      assert.equal(await readFile(rescued, 'utf8'), CaptureStore.serialize(capture));
+      assert.equal((await stat(rescued)).mode & 0o777, CaptureStore.FILE_MODE);
+      assert.equal((await CaptureStore.create().load(rescued)).exchanges.length, capture.exchanges.length);
+      const run = await cli.run(['run', 'https://example.com/', '--headless', '--out-dir', 'lost-run'], { registry });
+      assert.equal(run.code, 1);
+      const runMatch = /; the recording was saved to (\S+)\n$/.exec(run.stderr);
+      assert.ok(runMatch, run.stderr);
+      assert.equal(await readFile(runMatch[1]!, 'utf8'), CaptureStore.serialize(capture));
+      assert.deepEqual(recorded, ['https://example.com/', 'https://example.com/']);
+    });
+
+    test('an output location that cannot be written fails before the recording starts', async () => {
+      let records = 0;
+      const runner = new CaptureRunner({
+        sessions: () => ({
+          run: async () => {
+            records++;
+            return CaptureFactory.fixture().capture;
+          },
+          stop: () => undefined,
+        }),
+      });
+      await writeFile(join(dir, 'plain-file'), 'x');
+      const registry = new CommandRegistry().register(new CaptureCommand({ runner, saver: new CaptureSaver() })).register(new RunCommand({ runner, saver: new CaptureSaver() }));
+      const blocked = await cli.run(['capture', 'https://example.com/', '--headless', '-o', 'plain-file/capture.json'], { registry });
+      assert.equal(blocked.code, 1);
+      assert.match(blocked.stderr, /^error: Cannot write .*plain-file\/capture\.json: .*plain-file is not a directory\n$/);
+      const denied = new CaptureSaver({ probe: async (path) => { throw new AppiiError('IO', `Cannot write ${path}: EACCES: permission denied`); } });
+      const deniedRegistry = new CommandRegistry().register(new CaptureCommand({ runner, saver: denied })).register(new RunCommand({ runner, saver: denied }));
+      const capture = await cli.run(['capture', 'https://example.com/', '--headless', '-o', 'denied.json'], { registry: deniedRegistry });
+      assert.equal(capture.code, 1);
+      assert.match(capture.stderr, /^error: Cannot write .*denied\.json: EACCES: permission denied\n$/);
+      const run = await cli.run(['run', 'https://example.com/', '--headless', '--out-dir', 'denied-run'], { registry: deniedRegistry });
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /^error: Cannot write .*denied-run\/capture\.json: EACCES/);
+      assert.equal(records, 0);
     });
 
     test('capture --from-har converts a DevTools HAR file', async () => {
@@ -120,7 +211,8 @@ describe('cli commands', () => {
       assert.match(missingHar.stderr, /^error: File not found: /);
       const state = await cli.run(['capture', site.url, '--headless', '--storage-state', 'state.json']);
       assert.equal(state.code, 1);
-      assert.match(state.stderr, /error: Storage state file not found: .*state\.json\n$/);
+      assert.match(state.stderr, /^error: Storage state file not found: .*state\.json\n$/);
+      assert.doesNotMatch(state.stderr, /Recording/);
       const refused = await cli.run(['capture', 'http://127.0.0.1:9/', '--headless', '-o', 'refused.json']);
       assert.equal(refused.code, 1);
       assert.match(refused.stderr, /error: Cannot open http:\/\/127\.0\.0\.1:9\/: /);
@@ -136,6 +228,8 @@ describe('cli commands', () => {
       assert.match(built.stdout, /\n\| +5 \| GET +\| \/api\/items\/\{itemId\} +\|/);
       assert.match(built.stdout, /\n\| +9 \| POST +\| \/login +\|/);
       assert.match(built.stdout, /\nDetails: appii list api\.json --show <#>\nExport: +appii export api\.json --format openapi\n$/);
+      assert.match(built.stdout, /\nshop\.example\.com: 12 endpoints at https:\/\/shop\.example\.com\n-+\n\n\+-/);
+      assert.doesNotMatch(built.stdout, /^https:\/\/shop\.example\.com \(/m);
       assert.equal(model.endpoints.length, ENDPOINTS);
       assert.equal(model.source.file, 'fixture.json');
       const text = await readFile(join(dir, 'api.json'), 'utf8');
@@ -172,6 +266,15 @@ describe('cli commands', () => {
       const overwrite = await cli.run(['build', 'fixture.json', '-o', './fixture.json']);
       assert.equal(overwrite.code, 2);
       assert.match(overwrite.stderr, /^error: --out must not overwrite the input file\n/);
+      const modelInput = await cli.run(['build', 'api.json']);
+      assert.equal(modelInput.code, 1);
+      assert.match(modelInput.stderr, /^error: .*api\.json is an API model \(api\.json\), not a capture or HAR file\n$/);
+      const collide = join(dir, 'collide');
+      await mkdir(collide, { recursive: true });
+      await CaptureStore.create().save(join(collide, 'api.json'), CaptureFactory.fixture().capture);
+      const named = await new CliHarness(collide).run(['build', 'api.json']);
+      assert.equal(named.code, 2);
+      assert.match(named.stderr, /^error: the default output api\.json is the input file; pass -o <file>\nusage: appii build /);
       const missing = await cli.run(['build', 'missing.json']);
       assert.equal(missing.code, 1);
       assert.match(missing.stderr, /^error: File not found: /);
@@ -187,7 +290,7 @@ describe('cli commands', () => {
     test('list prints the endpoint table with stable numbers', async () => {
       const run = await cli.run(['list', 'api.json']);
       assert.equal(run.code, 0, run.stderr);
-      assert.match(run.stdout, new RegExp(`^shop\\.example\\.com: ${ENDPOINTS} endpoints\\n`));
+      assert.match(run.stdout, new RegExp(`^shop\\.example\\.com: ${ENDPOINTS} endpoints at https://shop\\.example\\.com\\n`));
       assert.match(run.stdout, /\/api\/items\/\{itemId\}/);
       assert.ok(CliHarness.widest(run.stdout) <= 100);
       assert.ok(CliHarness.isAscii(run.stdout));
@@ -218,18 +321,45 @@ describe('cli commands', () => {
       assert.match(cookies.stdout, /^shop\.example\.com: 4 cookies\n/);
       for (const name of ['auth', 'csrf', 'sid', 'theme']) assert.match(cookies.stdout, new RegExp(`\\| ${name} +\\|`));
       const filtered = await cli.run(['list', 'api.json', '--filter', 'items']);
-      assert.match(filtered.stdout, /^shop\.example\.com: 3 of 12 endpoints\n-+\nFilter: text "items"\n/);
+      assert.match(filtered.stdout, /^shop\.example\.com: 3 of 12 endpoints at https:\/\/shop\.example\.com\n-+\nFilter: text "items"\n/);
       assert.ok(!filtered.stdout.includes('/login'));
       const posts = await cli.run(['list', 'api.json', '--method', 'post', '--kind', 'form']);
-      assert.match(posts.stdout, /: 2 of 12 endpoints\n/);
+      assert.match(posts.stdout, /: 2 of 12 endpoints at https:\/\/shop\.example\.com\n/);
       assert.match(posts.stdout, /\/login/);
       assert.match(posts.stdout, /\/signup/);
       const origin = await cli.run(['list', 'api.json', '--origin', 'elsewhere.example']);
       assert.match(origin.stdout, /No endpoints match the filter\./);
       const firstParty = await cli.run(['list', 'api.json', '--first-party', '--kind', 'graphql']);
-      assert.match(firstParty.stdout, /: 1 of 12 endpoints\n/);
+      assert.match(firstParty.stdout, /: 1 of 12 endpoints at https:\/\/shop\.example\.com\n/);
       const filteredCookies = await cli.run(['list', 'api.json', '--cookies', '--filter', 'login']);
       assert.match(filteredCookies.stdout, /cookies of endpoints matching/);
+      const documents = await cli.run(['list', 'api.json', '--filter', 'document']);
+      assert.match(documents.stdout, /No endpoints match the filter\./);
+      const help = await cli.run(['help', 'list', '--width', '200']);
+      assert.match(help.stdout, /--filter <text> +Only endpoints whose method, path, name, id or GraphQL operation contain every word/);
+    });
+
+    test('list --cookies with a filter selects the same cookies in the table and in JSON', async () => {
+      for (const args of [['--filter', 'post-login'], ['--method', 'GET', '--kind', 'json'], ['--origin', 'nowhere.example']]) {
+        const table = await cli.run(['list', 'api.json', '--cookies', '--width', '200', ...args]);
+        const listed = json<CookieInfo[]>((await cli.run(['list', 'api.json', '--cookies', '--json', ...args])).stdout);
+        const names = CliHarness.lines(table.stdout)
+          .filter((line) => line.startsWith('| ') && !line.startsWith('| NAME'))
+          .map((line) => line.split('|')[1]!.trim());
+        assert.deepEqual(names, listed.map((cookie) => cookie.name), args.join(' '));
+      }
+    });
+
+    test('list --show cannot be combined with endpoint filters', async () => {
+      const run = await cli.run(['list', 'api.json', '--show', '3', '--method', 'POST']);
+      assert.equal(run.code, 2);
+      assert.equal(run.stdout, '');
+      assert.match(run.stderr, /^error: --show selects one endpoint and cannot be combined with --method\nusage: appii list /);
+      const many = await cli.run(['list', 'api.json', '--show', '3', '--filter', 'items', '--first-party', '--json']);
+      assert.equal(many.code, 2);
+      assert.match(many.stderr, /^error: --show selects one endpoint and cannot be combined with --filter, --first-party\n/);
+      const negated = await cli.run(['list', 'api.json', '--show', '3', '--no-first-party']);
+      assert.equal(negated.code, 0, negated.stderr);
     });
 
     test('list --json prints endpoints, one endpoint or cookies', async () => {
@@ -364,14 +494,34 @@ describe('cli commands', () => {
       for (const format of Object.keys(expected)) assert.match(run.stdout, new RegExp(`\\| ${format} +\\|`));
       const narrow = await cli.run(['export', '--formats', '--width', '50']);
       assert.ok(CliHarness.widest(narrow.stdout) <= 50);
+      const aliases = new Set(Object.keys(ExporterRegistry.ALIASES));
+      for (const width of ['60', '70', '80', '100']) {
+        const formats = await cli.run(['export', '--formats', '--width', width, '--no-color']);
+        const header = CliHarness.lines(formats.stdout).find((line) => line.startsWith('| FORMAT'));
+        const column = header?.split('|').findIndex((cell) => cell.trim() === 'ALIASES') ?? -1;
+        if (column < 0) {
+          assert.match(formats.stdout, /Columns hidden to fit \d+ characters: ALIASES/, width);
+          continue;
+        }
+        const cells = CliHarness.lines(formats.stdout).filter((line) => line.startsWith('| ') && line !== header).map((line) => line.split('|')[column]!.trim());
+        const words = cells.flatMap((cell) => cell.split(/[,\s]+/)).filter((word) => word !== '');
+        assert.ok(words.length > 0, width);
+        for (const word of words) assert.ok(aliases.has(word), `${width}: ${word}`);
+      }
       const extra = await cli.run(['export', '--formats', 'api.json']);
       assert.equal(extra.code, 2);
     });
 
     test('export errors', async () => {
-      const unknown = await cli.run(['export', 'api.json', '--format', 'soap']);
-      assert.equal(unknown.code, 1);
-      assert.equal(unknown.stderr, "error: Unknown export format 'soap'. Available formats: openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json\n");
+      const unknown = await cli.run(['export', 'api.json', '--format', 'wsdl-xml']);
+      assert.equal(unknown.code, 2);
+      assert.match(unknown.stderr, /^error: --format must be one of openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json; got 'wsdl-xml'\nusage: appii export /);
+      const typo = await cli.run(['export', 'api.json', '--format', 'opnapi', '-o', '-']);
+      assert.equal(typo.code, 2);
+      assert.equal(typo.stdout, '');
+      assert.match(typo.stderr, /^error: --format must be one of .*; got 'opnapi'; did you mean 'openapi'\?\nusage: appii export /);
+      const alias = await cli.run(['export', 'api.json', '--format', 'swager', '-o', '-']);
+      assert.match(alias.stderr, /did you mean 'swagger'\?/);
       const noFormat = await cli.run(['export', 'api.json']);
       assert.equal(noFormat.code, 2);
       assert.match(noFormat.stderr, /^error: missing --format <format> \(one of openapi, /);
@@ -386,7 +536,10 @@ describe('cli commands', () => {
       assert.match(badBase.stderr, /Invalid base URL 'ftp:\/\/x'/);
       const overwrite = await cli.run(['export', 'api.json', '--format', 'json', '-o', 'api.json']);
       assert.equal(overwrite.code, 2);
-      assert.match(overwrite.stderr, /--out must not overwrite the input file/);
+      assert.match(overwrite.stderr, /^error: --out must not overwrite the input file\n/);
+      const defaultName = await cli.run(['export', 'api.json', '--format', 'json']);
+      assert.equal(defaultName.code, 2);
+      assert.match(defaultName.stderr, /^error: the default output api\.json is the input file; pass -o <file>\nusage: appii export /);
       const missing = await cli.run(['export', 'nope.json', '--format', 'openapi']);
       assert.equal(missing.code, 1);
       assert.match(missing.stderr, /^error: File not found: /);
@@ -409,6 +562,8 @@ describe('cli commands', () => {
       assert.ok(CliHarness.widest(tail) <= 100);
       assert.equal(tail.replace(/\s+/g, ' ').trim(), 'Next: appii export pipeline/api.json --format <format>, where <format> is one of openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json');
       assert.ok(!run.stdout.includes('Next: appii build'));
+      assert.equal(run.stdout.match(/appii export /g)?.length, 1, run.stdout);
+      assert.doesNotMatch(run.stdout, /\nDetails: /);
       const capture = await new CaptureStore().load(join(dir, 'pipeline', 'capture.json'));
       const api = await new ModelStore().load(join(dir, 'pipeline', 'api.json'));
       assert.ok(capture.exchanges.length > 0);

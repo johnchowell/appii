@@ -4,6 +4,7 @@ import { Meta } from '../shared/index.js';
 import { TextLayout } from '../present/index.js';
 import type { CliContext } from './cli-context.js';
 import { DisplayOptionGroup } from './display-option-group.js';
+import { ErrorReporter } from './error-reporter.js';
 import { ExitCode } from './exit-code.js';
 import { HelpFormatter } from './help-formatter.js';
 import { Helpers } from './helpers.js';
@@ -81,7 +82,7 @@ export abstract class Command {
     const lines = this.spec.usage.split('\n');
     ctx.err(
       [
-        `error: ${TextLayout.clean(message)}`,
+        ErrorReporter.PREFIX + TextLayout.clean(message),
         ...lines.map((line, i) => (i === 0 ? 'usage: ' : '       ') + line),
         `Run '${Meta.APP_NAME} help ${this.spec.name}' for all options.`,
       ].join('\n'),

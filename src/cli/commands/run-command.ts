@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { CaptureStore } from '../../capture/index.js';
 import { ExporterRegistry } from '../../export/index.js';
 import { BasePresenter, PresenterFactory, TextLayout } from '../../present/index.js';
 import { Fs, Meta } from '../../shared/index.js';
@@ -7,6 +6,7 @@ import { BuildOptionGroup } from '../build-option-group.js';
 import { BuildStep } from '../build-step.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
+import { CaptureSaver } from '../capture-saver.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -18,7 +18,7 @@ import { UsageError } from '../usage-error.js';
 
 export interface RunCommandDeps extends CommandDeps {
   runner?: CaptureRunner;
-  store?: CaptureStore;
+  saver?: CaptureSaver;
   step?: BuildStep;
   registry?: ExporterRegistry;
   capture?: CaptureOptionGroup;
@@ -32,7 +32,7 @@ export class RunCommand extends Command {
 
   readonly spec: CommandSpec;
   readonly #runner: CaptureRunner;
-  readonly #store: CaptureStore;
+  readonly #saver: CaptureSaver;
   readonly #step: BuildStep;
   readonly #registry: ExporterRegistry;
   readonly #capture: CaptureOptionGroup;
@@ -41,7 +41,7 @@ export class RunCommand extends Command {
   constructor(deps: RunCommandDeps = {}) {
     super(deps);
     this.#runner = deps.runner ?? CaptureRunner.create();
-    this.#store = deps.store ?? new CaptureStore();
+    this.#saver = deps.saver ?? new CaptureSaver();
     this.#step = deps.step ?? BuildStep.create();
     this.#registry = deps.registry ?? ExporterRegistry.default();
     this.#capture = deps.capture ?? new CaptureOptionGroup();
@@ -65,7 +65,7 @@ export class RunCommand extends Command {
   static create(): RunCommand {
     return new RunCommand({
       runner: CaptureRunner.create(),
-      store: CaptureStore.create(),
+      saver: CaptureSaver.create(),
       step: BuildStep.create(),
       registry: ExporterRegistry.default(),
       capture: new CaptureOptionGroup(),
@@ -83,11 +83,12 @@ export class RunCommand extends Command {
     await Fs.ensureDir(dir);
     const captureFile = join(dir, RunCommand.CAPTURE_FILE);
     const modelFile = join(dir, RunCommand.MODEL_FILE);
+    await this.#saver.preflight([captureFile, modelFile]);
     const capture = await this.#runner.record({ ...captureOptions, url }, ctx);
-    await this.#store.save(captureFile, capture);
+    await this.#saver.save(captureFile, capture);
     ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: ctx.display(captureFile) }));
     ctx.out('');
-    await this.#step.run(capture, { out: modelFile, source: RunCommand.CAPTURE_FILE, options: buildOptions }, ctx);
+    await this.#step.run(capture, { out: modelFile, source: RunCommand.CAPTURE_FILE, options: buildOptions, hints: false }, ctx);
     const formats = this.#registry.list().map((exporter) => exporter.format).join(', ');
     const model = BasePresenter.fileArgument(ctx.display(modelFile));
     ctx.out('');

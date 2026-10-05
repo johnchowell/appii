@@ -76,6 +76,7 @@ export class PageNetworkTap {
   static readonly DEFAULT_BUFFER_BYTES = 256 * 1024 * 1024;
   static readonly DEFAULT_RESOURCE_BUFFER_BYTES = 64 * 1024 * 1024;
   static readonly PREPARE_TIMEOUT_MS = 5000;
+  static readonly SESSION_LAG_MS = 2000;
   static readonly SERVICE_WORKER = 'service_worker';
   static readonly NETWORK_CHILDREN: ReadonlySet<string> = new Set(['iframe', 'worker']);
 
@@ -166,8 +167,12 @@ export class PageNetworkTap {
   }
 
   async responseBody(record: TapRecord): Promise<Buffer | undefined> {
-    if (record.state === 'loading' && !record.responded) return undefined;
-    await record.ended;
+    if (record.state === 'loading' && !record.responded) {
+      const caughtUp = await Helpers.settle(record.ended.then(() => true), PageNetworkTap.SESSION_LAG_MS);
+      if (caughtUp !== true) return undefined;
+    } else {
+      await record.ended;
+    }
     if (this.#closed || record.state !== 'finished') return undefined;
     const result = await record.connection.send<CdpResponseBody>('Network.getResponseBody', { requestId: record.requestId });
     return Buffer.from(result.body, result.base64Encoded ? 'base64' : 'utf8');

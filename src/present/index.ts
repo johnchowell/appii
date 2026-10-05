@@ -3,9 +3,9 @@ export type { Definition, DefinitionOptions, FlowOptions } from './text-layout.j
 export { TableRenderer } from './table-renderer.js';
 export type { TableColumn, TableLayout, TableRendererOptions } from './table-renderer.js';
 export { EndpointFilter } from './endpoint-filter.js';
-export type { ListFilter, OriginMatcher } from './endpoint-filter.js';
+export type { ListFilter, OriginMatcher, TextField } from './endpoint-filter.js';
 export { SchemaTree } from './schema-tree.js';
-export type { SchemaTreeOptions, SchemaTreeRow } from './schema-tree.js';
+export type { SchemaTreeBranch, SchemaTreeOptions, SchemaTreeRow } from './schema-tree.js';
 export { BarChart } from './bar-chart.js';
 export type { BarChartItem, BarChartOptions } from './bar-chart.js';
 export { ShellFolder } from './shell-folder.js';

@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BarChart, TableRenderer, TextLayout } from '../src/present/index.js';
+import { BarChart, CookieListPresenter, TableRenderer, TextLayout } from '../src/present/index.js';
 import type { TableColumn } from '../src/present/index.js';
 import { Ansi, isAppiiError } from '../src/shared/index.js';
 
@@ -90,6 +90,60 @@ describe('TableRenderer layout and borders', () => {
     assert.match(out, /KEEP/);
     assert.match(out, /MID/);
     assert.doesNotMatch(out, /LOW|TAIL/);
+  });
+
+  test('after the drops, a hidden optional column comes back when it fits, highest priority first', () => {
+    const columns: TableColumn[] = [
+      { header: 'A' },
+      { header: 'B', flex: true, minWidth: 4, optional: true, priority: 2 },
+      { header: 'C', flex: true, minWidth: 30, optional: true, priority: 3 },
+      { header: 'D', flex: true, minWidth: 10, optional: true, priority: 1 },
+    ];
+    const rows = [['aaaaa', 'bbbb', 'c'.repeat(30), 'd'.repeat(10)]];
+    const layout = plain(20).layout(columns, rows);
+    assert.deepEqual(layout.visible, [0, 1]);
+    assert.deepEqual(layout.hidden, [2, 3]);
+    assert.match(plain(20).render(columns, rows), /^\| A +\| B +\|$/m);
+    const tie: TableColumn[] = [
+      { header: 'A' },
+      { header: 'X', flex: true, minWidth: 6, optional: true, priority: 1 },
+      { header: 'Y', flex: true, minWidth: 6, optional: true, priority: 1 },
+    ];
+    assert.deepEqual(plain(5 + 6 + 7).layout(tie, [['aaaaa', 'x'.repeat(6), 'y'.repeat(6)]]).visible, [0, 1]);
+  });
+
+  test('the cookie table keeps PATH at width 100 once the wide DOMAIN column is hidden', () => {
+    const rows = [
+      ['auth', '127.0.0.1', '/', 'auth', 'HttpOnly SameSite=Lax', 'session', '10', '2-8,11-13', '<redacted>'],
+      ['csrf', '127.0.0.1', '/', 'csrf', 'SameSite=Strict', 'session', '7', '3-5,8,11-13', '<redacted>'],
+      ['theme', '127.0.0.1', '/', 'preference', 'SameSite=Lax', '2026-10-05T07:44:36Z', '1', '2-13', 'dark'],
+    ];
+    const layout = plain(100).layout(CookieListPresenter.COLUMNS, rows);
+    assert.deepEqual(layout.hidden.map((i) => CookieListPresenter.COLUMNS[i]?.header), ['DOMAIN', 'VALUE']);
+    const out = plain(100).render(CookieListPresenter.COLUMNS, rows, layout);
+    assert.ok(maxWidth(out) <= 100);
+    assert.match(out, /\| NAME +\| PATH \| ROLE +\|/);
+  });
+
+  test('a wrapping column that must not break words is hidden instead of splitting a word', () => {
+    const columns: TableColumn[] = [
+      { header: 'FORMAT' },
+      { header: 'ALIASES', flex: true, minWidth: 8, maxWidth: 28, wrap: true, breakWords: false, optional: true, priority: 1 },
+      { header: 'DESCRIPTION', flex: true, minWidth: 20, wrap: true },
+    ];
+    const rows = [
+      ['openapi', 'oas, openapi-json, swagger', 'OpenAPI 3.1 document (JSON)'],
+      ['postman', 'postman-collection', 'Postman Collection v2.1 with folders'],
+    ];
+    const narrow = plain(50).layout(columns, rows);
+    assert.deepEqual(narrow.hidden, [1]);
+    const roomy = plain(60).render(columns, rows);
+    const cells = lines(roomy).filter((line) => line.startsWith('| ')).map((line) => line.split('|')[2]!.trim());
+    assert.ok(cells.includes('postman-collection'), roomy);
+    const words = cells.flatMap((cell) => cell.split(/[,\s]+/)).filter((word) => word !== '');
+    assert.deepEqual(words, ['ALIASES', 'oas', 'openapi-json', 'swagger', 'postman-collection']);
+    const breaking = plain(50).layout(columns.map((column) => ({ ...column, breakWords: true })), rows);
+    assert.deepEqual(breaking.hidden, []);
   });
 
   test('maxWidth clamps a column and minWidth only acts as a shrink floor, never as padding', () => {

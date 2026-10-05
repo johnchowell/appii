@@ -49,36 +49,46 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     return new Map([...totals].sort(([a], [b]) => a - b));
   }
 
-  render(model: ApiModel): string {
-    const index = EndpointIndex.of(model);
-    const endpoints = this.filter.apply(model);
-    const total = model.endpoints.length;
-    const count = this.filter.active ? `${endpoints.length} of ${Text.plural(total, 'endpoint')}` : Text.plural(total, 'endpoint');
-    const header = [this.heading(`${model.name || 'API'}: ${count}`)];
-    if (this.filter.active) header.push(this.ansi.dim(TextLayout.clean(`Filter: ${this.filter.describe().join(', ')}`)));
-    if (endpoints.length === 0) {
-      return this.compose([header.join('\n'), total === 0 ? 'No endpoints in this model.' : 'No endpoints match the filter.']);
-    }
-    return this.compose([header.join('\n'), ...this.#tables(endpoints, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#hints()]);
-  }
-
-  #tables(endpoints: readonly Endpoint[], index: EndpointIndex): PresenterBlock[] {
-    const columns = EndpointListPresenter.COLUMNS;
+  static groups(endpoints: readonly Endpoint[]): Map<string, Endpoint[]> {
     const groups = new Map<string, Endpoint[]>();
     for (const endpoint of endpoints) {
       const group = groups.get(endpoint.origin);
       if (group) group.push(endpoint);
       else groups.set(endpoint.origin, [endpoint]);
     }
-    const rows = new Map<Endpoint, string[]>(endpoints.map((endpoint) => [endpoint, this.#row(endpoint, index)]));
+    return groups;
+  }
+
+  render(model: ApiModel): string {
+    const index = EndpointIndex.of(model);
+    const endpoints = this.filter.apply(model);
+    const groups = EndpointListPresenter.groups(endpoints);
+    const total = model.endpoints.length;
+    const count = this.filter.active ? `${endpoints.length} of ${Text.plural(total, 'endpoint')}` : Text.plural(total, 'endpoint');
+    const [only] = groups.size === 1 ? [...groups] : [];
+    const where = only === undefined ? '' : ` at ${only[0]}${EndpointListPresenter.#thirdParty(only[1]) ? ' (third-party)' : ''}`;
+    const header = [this.heading(`${model.name || 'API'}: ${count}${where}`)];
+    if (this.filter.active) header.push(this.ansi.dim(TextLayout.clean(`Filter: ${this.filter.describe().join(', ')}`)));
+    if (endpoints.length === 0) {
+      return this.compose([header.join('\n'), total === 0 ? 'No endpoints in this model.' : 'No endpoints match the filter.']);
+    }
+    return this.compose([header.join('\n'), ...this.#tables(groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#hints()]);
+  }
+
+  #tables(groups: ReadonlyMap<string, readonly Endpoint[]>, index: EndpointIndex): PresenterBlock[] {
+    const columns = EndpointListPresenter.COLUMNS;
+    const rows = new Map<Endpoint, string[]>([...groups.values()].flat().map((endpoint) => [endpoint, this.#row(endpoint, index)]));
     const table = this.table();
     const layout = table.layout(columns, [...rows.values()]);
-    const blocks: PresenterBlock[] = [...groups].map(([origin, group]) => {
-      const thirdParty = group.every((endpoint) => !endpoint.firstParty);
-      const note = `(${Text.plural(group.length, 'endpoint')}${thirdParty ? ', third-party' : ''})`;
-      const title = TextLayout.fit(`${this.ansi.bold(TextLayout.clean(origin))} ${this.ansi.dim(note)}`, this.width);
-      return [title, table.render(columns, group.map((endpoint) => rows.get(endpoint) ?? []), layout)];
-    });
+    const render = (group: readonly Endpoint[]): string => table.render(columns, group.map((endpoint) => rows.get(endpoint) ?? []), layout);
+    const blocks: PresenterBlock[] =
+      groups.size === 1
+        ? [...groups.values()].map(render)
+        : [...groups].map(([origin, group]) => {
+            const note = `(${Text.plural(group.length, 'endpoint')}${EndpointListPresenter.#thirdParty(group) ? ', third-party' : ''})`;
+            const title = TextLayout.fit(`${this.ansi.bold(TextLayout.clean(origin))} ${this.ansi.dim(note)}`, this.width);
+            return [title, render(group)];
+          });
     if (layout.hidden.length > 0) {
       const names = layout.hidden.map((i) => columns[i]?.header ?? '').join(', ');
       blocks.push(TextLayout.wrap(`Columns hidden to fit ${this.width} characters: ${names}`, this.width).map((line) => this.ansi.dim(line)));
@@ -98,6 +108,10 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
       this.#format.auth(endpoint),
       String(endpoint.count),
     ];
+  }
+
+  static #thirdParty(group: readonly Endpoint[]): boolean {
+    return group.every((endpoint) => !endpoint.firstParty);
   }
 
   #chart(endpoints: readonly Endpoint[], index: EndpointIndex): PresenterBlock {
@@ -121,6 +135,7 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   }
 
   #hints(): string[] {
+    if (!this.hints) return [];
     const file = BasePresenter.fileArgument(this.file);
     return this.definitions([
       ['Details', this.command(`list ${file} --show <#>`)],

@@ -1,5 +1,5 @@
 import type { JsonSchema } from '../model/index.js';
-import { AppiiError, Schema } from '../shared/index.js';
+import { AppiiError, Json, Schema } from '../shared/index.js';
 
 export interface SchemaTreeRow {
   path: string;
@@ -7,6 +7,15 @@ export interface SchemaTreeRow {
   required: boolean;
   requiredWhen?: string[];
   constraints: string;
+}
+
+export interface SchemaTreeBranch {
+  condition: string;
+  label?: string;
+  requires: string[];
+  excluded: string[];
+  noValidate: boolean;
+  rows: SchemaTreeRow[];
 }
 
 export interface SchemaTreeOptions {
@@ -27,6 +36,8 @@ export class SchemaTree {
   static readonly ANY_KEY = '*';
   static readonly QUOTED_KEY: RegExp = /^$|[\s."*\x00-\x1f\x7f]/;
   static readonly SHORT_VALUE = 24;
+  static readonly NOVALIDATE = 'x-html-novalidate';
+  static readonly ALTERNATIVE = '|';
 
   readonly #maxDepth: number;
 
@@ -67,6 +78,61 @@ export class SchemaTree {
       if (when && SchemaTree.key(row.path) === row.path) row.requiredWhen = [...when];
     }
     return out;
+  }
+
+  static alternatives(schema: JsonSchema | undefined): string[][] {
+    let groups: Set<string>[] = [];
+    for (const { when, then } of Schema.branches(schema)) {
+      const excluded = SchemaTree.#excluded(then);
+      if (excluded.length === 0) continue;
+      const members = new Set([...Schema.requiredSet(when), ...excluded]);
+      const overlapping = groups.filter((group) => [...group].some((name) => members.has(name)));
+      groups = [...groups.filter((group) => !overlapping.includes(group)), new Set([...overlapping.flatMap((group) => [...group]), ...members])];
+    }
+    return groups.map((group) => [...group]);
+  }
+
+  static fieldNames(schema: JsonSchema | undefined): string[] {
+    const names = Object.keys(Schema.properties(schema));
+    const groups = SchemaTree.alternatives(schema);
+    const emitted = new Set<string[]>();
+    const out: string[] = [];
+    for (const name of names) {
+      const group = groups.find((candidate) => candidate.includes(name));
+      if (!group) {
+        out.push(name);
+        continue;
+      }
+      if (emitted.has(group)) continue;
+      emitted.add(group);
+      out.push(names.filter((member) => group.includes(member)).join(SchemaTree.ALTERNATIVE));
+    }
+    return out;
+  }
+
+  branches(schema: JsonSchema | undefined): SchemaTreeBranch[] {
+    const always = Schema.requiredSet(schema);
+    return Schema.branches(schema).map(({ condition, when, then }) => {
+      const keys = Schema.requiredSet(when);
+      const properties = Schema.properties(then);
+      const shown = Object.entries(properties).filter(([name]) => !keys.has(name));
+      const required = [...Schema.requiredSet(then)];
+      const branch: SchemaTreeBranch = {
+        condition,
+        requires: required.filter((name) => !always.has(name) && !keys.has(name)),
+        excluded: SchemaTree.#excluded(then),
+        noValidate: then[SchemaTree.NOVALIDATE] === true,
+        rows: shown.length === 0 ? [] : this.rows({ type: 'object', properties: Object.fromEntries(shown), required: required.filter((name) => Object.hasOwn(properties, name)) }),
+      };
+      const label = [...keys].map((name) => properties[name]?.title).find((title): title is string => typeof title === 'string' && title !== '');
+      if (label !== undefined) branch.label = label;
+      return branch;
+    });
+  }
+
+  static #excluded(then: JsonSchema): string[] {
+    const declared = Json.isPlainObject(then.properties) ? Object.entries(then.properties) : [];
+    return declared.filter(([, value]) => value === false).map(([name]) => name);
   }
 
   #descend(schema: JsonSchema, path: string, depth: number, out: SchemaTreeRow[], seen: Set<string>, ancestors: ReadonlySet<JsonSchema>): void {

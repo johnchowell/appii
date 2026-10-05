@@ -5,10 +5,11 @@ import { TextLayout } from '../present/index.js';
 import { CliContext } from './cli-context.js';
 import type { CliContextOptions, CliIo } from './cli-context.js';
 import { CommandRegistry } from './command-registry.js';
+import { HelpCommand } from './commands/help-command.js';
+import { VersionCommand } from './commands/version-command.js';
 import { DisplayOptionGroup } from './display-option-group.js';
 import { ErrorReporter } from './error-reporter.js';
 import { ExitCode } from './exit-code.js';
-import { HelpFormatter } from './help-formatter.js';
 import { Helpers } from './helpers.js';
 import { OptionReader } from './option-reader.js';
 import { UsageError } from './usage-error.js';
@@ -27,7 +28,7 @@ export class CliApp {
   static readonly HELP_COMMAND = 'help';
   static readonly VERSION_COMMAND = 'version';
   static readonly HELP_FLAGS: ReadonlySet<string> = new Set(['-h', '--help']);
-  static readonly VERSION_FLAGS: ReadonlySet<string> = new Set(['-V', '--version']);
+  static readonly VERSION_FLAGS: ReadonlySet<string> = new Set(VersionCommand.FLAGS);
   static readonly GLOBAL_FLAGS: readonly string[] = ['--help', '--version', '--color', '--no-color', '--width'];
   static readonly WIDTH_FLAG = '--width';
   static readonly BROKEN_PIPE_CODES: ReadonlySet<string> = new Set(['EPIPE', 'ERR_STREAM_DESTROYED']);
@@ -124,13 +125,11 @@ export class CliApp {
   }
 
   #overview(ctx: CliContext): string {
-    const topics = this.#registry.list().map((command) => command.spec);
-    return new HelpFormatter({ ansi: ctx.ansi, width: ctx.width }).overview(topics, this.#display, HelpFormatter.GLOBAL_ROWS);
+    return HelpCommand.overview(this.#registry, this.#display, ctx);
   }
 
   #unknown(ctx: CliContext, name: string): number {
-    const guess = Helpers.closest(name, this.#registry.names());
-    return this.#usage(ctx, `unknown command '${name}'${guess === undefined ? '' : `; did you mean '${guess}'?`}`);
+    return this.#usage(ctx, HelpCommand.unknownCommand(name, this.#registry.names()).message);
   }
 
   #usage(ctx: CliContext, message: string): number {

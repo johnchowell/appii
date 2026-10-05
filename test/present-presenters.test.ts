@@ -16,6 +16,8 @@ import { Ansi, AppiiError, EndpointIndex, Samples, isAppiiError } from '../src/s
 import { LiteralPlaceholderSite } from './fixtures/foundation-literal-placeholders.js';
 import { ExportModel } from './helpers/export-model.js';
 import { PresentModels } from './helpers/present-models.js';
+import { CaptureFactory } from './helpers/capture-factory.js';
+import { ModelBuilder } from '../src/build/index.js';
 
 const FIXTURE: ApiModel = PresentModels.fixture();
 const MIXED: ApiModel = PresentModels.mixed();
@@ -117,6 +119,21 @@ describe('every presenter output', () => {
     const listOrders = new PresenterFactory({ width: 160 }).detail().render({ model: MIXED, ref: 'listOrders' });
     assert.match(listOrders, /\\x1b\[31mred\\x1b\[0m/);
   });
+
+  test('compose escapes control characters that a block did not clean and keeps only the Ansi styles', () => {
+    class RawPresenter extends BasePresenter<string> {
+      render(input: string): string {
+        return this.compose([this.ansi.bold('Title'), [input, `${this.ansi.red('x')}\x9b2J`]]);
+      }
+    }
+    const raw = 'a\x1b]0;pwned\x07b\x1b[2Jc\rd\x08e\x7ff';
+    const plain = new RawPresenter({ width: 200 }).render(raw);
+    assert.equal(plain, 'Title\n\na\\x1b]0;pwned\\x07b\\x1b[2Jc\\x0dd\\x08e\\x7ff\nx\\x9b2J');
+    const colored = new RawPresenter({ width: 200, color: true }).render(raw);
+    assert.equal(Ansi.strip(colored), plain);
+    assert.deepEqual(colored.match(/\x1b\[[0-9;]*m/g), ['\x1b[1m', '\x1b[22m', '\x1b[31m', '\x1b[39m']);
+    assert.doesNotMatch(Ansi.strip(colored), /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+  });
 });
 
 describe('SummaryPresenter', () => {
@@ -132,8 +149,17 @@ describe('SummaryPresenter', () => {
     assert.ok(all.includes('Endpoints:  12 (json 3, form 3, graphql 1, document 5), 12 first-party'));
     assert.ok(all.includes('Requests:   14 captured, 14 matched to endpoints'));
     assert.ok(all.includes('Cookies:    4 (session 1, auth 1, csrf 1, preference 1), 2 HttpOnly'));
-    assert.ok(all.includes('Forms:      3 (3 linked to endpoints)'));
+    assert.ok(all.includes('Forms:      3 (3 endpoints with a form)'));
     assert.ok(all.includes('WebSockets: 0'));
+  });
+
+  test('the Forms line counts the endpoints that have a form when two forms post to one endpoint', () => {
+    const flow = CaptureFactory.fixture();
+    flow.factory.snapshot('/other', 'Other', '<form id="quick" method="post" action="/login"><input name="email" type="email" required><input name="password" type="password"><button>Go</button></form>');
+    const model = ModelBuilder.create({ now: PresentModels.NOW }).build(flow.factory.capture({ startUrl: flow.factory.url('/') }));
+    assert.equal(model.forms.length, 4);
+    assert.equal(model.endpoints.filter((endpoint) => endpoint.form !== undefined).length, 3);
+    assert.ok(lines(new SummaryPresenter().render(model)).includes('Forms:      4 (3 endpoints with a form)'));
   });
 
   test('lists other origins, websockets, the source file and third-party counts', () => {
@@ -164,8 +190,9 @@ describe('EndpointListPresenter', () => {
   test('renders one origin section with every column at a wide width', () => {
     const out = new EndpointListPresenter({ width: 160 }).render(FIXTURE);
     const all = lines(out);
-    assert.equal(all[0], 'shop.example.com: 12 endpoints');
-    assert.ok(all.includes('https://shop.example.com (12 endpoints)'));
+    assert.equal(all[0], 'shop.example.com: 12 endpoints at https://shop.example.com');
+    assert.equal(all.filter((line) => line.includes('https://shop.example.com')).length, 1);
+    assert.ok(!all.some((line) => /\(12 endpoints\)/.test(line)));
     assert.deepEqual(tableRows(out)[0], ['#', 'METHOD', 'PATH', 'QUERY', 'BODY', 'STATUS', 'AUTH', 'HITS']);
     const rows = numberedRows(out);
     assert.equal(rows.size, 12);
@@ -192,7 +219,7 @@ describe('EndpointListPresenter', () => {
   test('filters keep the stable model numbers and describe themselves', () => {
     const out = new EndpointListPresenter({ width: 160, filter: { method: 'post' } }).render(FIXTURE);
     const all = lines(out);
-    assert.equal(all[0], 'shop.example.com: 4 of 12 endpoints');
+    assert.equal(all[0], 'shop.example.com: 4 of 12 endpoints at https://shop.example.com');
     assert.ok(all.includes('Filter: method POST'));
     assert.deepEqual([...numberedRows(out).keys()], [4, 7, 9, 12]);
     const items = new EndpointListPresenter({ width: 160, filter: { text: 'items', kind: ['json'] } }).render(FIXTURE);
@@ -253,7 +280,18 @@ describe('EndpointListPresenter', () => {
     assert.ok(color.includes(Ansi.color.cyan('{itemId}')));
     assert.ok(color.includes(Ansi.color.yellow('POST')));
     assert.ok(color.includes(Ansi.color.yellow('404')));
-    assert.ok(color.includes(Ansi.color.bold('shop.example.com: 12 endpoints')));
+    assert.ok(color.includes(Ansi.color.bold('shop.example.com: 12 endpoints at https://shop.example.com')));
+  });
+
+  test('hints can be turned off, and a filter that leaves one origin names it in the heading', () => {
+    const quiet = new EndpointListPresenter({ width: 160, hints: false }).render(FIXTURE);
+    assert.doesNotMatch(quiet, /Details:|Export:/);
+    assert.match(new EndpointListPresenter({ width: 160 }).render(FIXTURE), /\nExport: +appii export <file> --format openapi$/);
+    const third = new EndpointListPresenter({ width: 160, filter: { origin: 'collect.tracker.net' } }).render(MIXED);
+    assert.equal(lines(third)[0], 'app.example.org: 1 of 7 endpoints at https://collect.tracker.net (third-party)');
+    assert.ok(!lines(third).some((line) => line.startsWith('https://collect.tracker.net (')));
+    const both = lines(new EndpointListPresenter({ width: 160 }).render(MIXED));
+    assert.equal(both[0], 'app.example.org: 7 endpoints');
   });
 
   test('says when a model has no endpoints', () => {
@@ -326,15 +364,54 @@ describe('EndpointDetailPresenter', () => {
     const graphql = section(detail(7), 'Request body');
     assert.ok(graphql.includes('Query: query GetItem($id: ID!) { item(id: $id) { id name } }'));
     assert.ok(tableRows(graphql.join('\n')).some((row) => row[0] === 'variables.id'));
-    const signup = tableRows(section(detail(12, { width: 160 }), 'Request body').join('\n'));
+    const signupText = section(detail(12, { width: 160 }), 'Request body');
+    const signup = tableRows(signupText.join('\n'));
     const rule = (field: string) => signup.find((row) => row[0] === field);
     assert.deepEqual(rule('username'), ['username', 'string', 'if', 'pattern [a-z0-9_]{3,16}']);
     assert.deepEqual(rule('age'), ['age', 'number|empty', 'no', 'html number, range 13..120, step 1']);
     assert.deepEqual(rule('country'), ['country', 'enum(3)', 'if', 'one of us|ca|"", default ""']);
     assert.deepEqual(rule('interests[]'), ['interests[]', 'enum(3)', 'no', 'one of a|b|c']);
     assert.deepEqual(rule('terms'), ['terms', 'const on', 'if', 'html checkbox, always on']);
-    assert.ok(section(detail(12, { width: 160 }), 'Request body').includes('Required if intent=create: username, email, country, terms.'));
     assert.deepEqual(rule('intent'), ['intent', 'enum(2)', 'yes', 'html submit, one of create|draft']);
+    const create = signupText.indexOf('When intent=create ("Create"):');
+    const draft = signupText.indexOf('When intent=draft ("Save draft"), no form validation:');
+    assert.ok(create > 0 && draft > create, signupText.join('\n'));
+    assert.equal(signupText[create + 1], '  Requires: username, email, country, terms');
+    const createRows = tableRows(signupText.slice(create, draft).join('\n')).filter((row) => row[0] !== '');
+    assert.deepEqual(createRows.map((row) => row[0]), ['FIELD', 'username', 'email', 'age', 'country']);
+    assert.match(createRows[1]?.slice(1).join(' ') ?? '', /^string yes pattern \[a-z0-9_\]\{3,16\}, length 1\.\.$/);
+    assert.deepEqual(createRows[3], ['age', 'integer|empty', 'no', 'html number, range 13..120, step 1']);
+    assert.deepEqual(createRows[4], ['country', 'enum(2)', 'yes', 'one of us|ca']);
+    assert.deepEqual(tableRows(signupText.slice(draft).join('\n')).slice(1), [['country', 'enum(3)', 'no', 'one of ""|us|ca, default ""']]);
+    assert.ok(!signupText.some((line) => line.startsWith('Required if')));
+    assert.doesNotMatch(section(detail(4), 'Request body').join('\n'), /When /);
+  });
+
+  test('exclusive submitters show what each submission requires and what it must not send', () => {
+    const f = new CaptureFactory();
+    f.snapshot(
+      '/admin/post/add/',
+      'Add post',
+      '<form method="post" action="/admin/post/add/"><input name="title" required maxlength="50"><input type="submit" name="_save" value="Save"><input type="submit" name="_continue" value="Save and continue"></form>',
+    );
+    f.snapshot(
+      '/cart',
+      'Cart',
+      '<form method="post" action="/cart"><input type="number" name="quantity" required value="1"><button name="update" value="1">Update</button></form><form method="post" action="/cart"><input name="discount" required><button name="apply" value="1">Apply</button></form>',
+    );
+    const model = ModelBuilder.create({ now: PresentModels.NOW }).build(f.capture());
+    const admin = section(detail('post-admin-post-add', { width: 100 }, model), 'Request body');
+    assert.ok(admin.includes('When _save=Save:'), admin.join('\n'));
+    assert.equal(admin[admin.indexOf('When _save=Save:') + 1], '  Not sent: _continue');
+    assert.equal(admin[admin.indexOf('When _continue=Save and continue:') + 1], '  Not sent: _save');
+    const cart = section(detail('post-cart', { width: 100 }, model), 'Request body');
+    assert.deepEqual(cart.slice(cart.indexOf('When update=1:'), cart.indexOf('When update=1:') + 3), ['When update=1:', '  Requires: quantity', '  Not sent: apply']);
+    assert.deepEqual(cart.slice(cart.indexOf('When apply=1:'), cart.indexOf('When apply=1:') + 3), ['When apply=1:', '  Requires: discount', '  Not sent: update']);
+    const list = numberedRows(new EndpointListPresenter({ width: 160 }).render(model));
+    const bodies = [...list.values()].map((row) => row[4]);
+    assert.ok(bodies.includes('form: title, _save|_continue'), bodies.join(' / '));
+    assert.ok(bodies.includes('form: quantity, update|apply, discount'), bodies.join(' / '));
+    assert.equal(numberedRows(new EndpointListPresenter({ width: 160 }).render(FIXTURE)).get(12)?.[4], 'multipart: username, email, age +10');
   });
 
   test('narrow widths wrap constraints instead of cutting them', () => {
@@ -344,7 +421,8 @@ describe('EndpointDetailPresenter', () => {
     assert.match(text, /range13\.\.120,step1/);
     assert.match(text, /pattern\[a-z0-9_\]\{3,16\}/);
     assert.doesNotMatch(text, /\.\.\.(?!\d)/);
-    assert.ok(section(out, 'Request body').includes('Required if intent=create: username, email, country, terms.'));
+    assert.ok(section(out, 'Request body').includes('  Requires: username, email, country, terms'));
+    assert.ok(section(out, 'Request body').includes('When intent=draft ("Save draft"), no form validation:'));
     assertFits(out, 60, 'signup @60');
   });
 
@@ -496,8 +574,9 @@ describe('CookieListPresenter', () => {
 
   test('narrow widths hide optional columns and say so', () => {
     const out = new CookieListPresenter({ width: 100 }).render(FIXTURE);
-    assert.deepEqual(tableRows(out)[0], ['NAME', 'ROLE', 'FLAGS', 'EXPIRES', 'SET BY', 'USED BY']);
-    assert.match(out, /Columns hidden to fit 100 characters: DOMAIN, PATH, VALUE/);
+    assert.deepEqual(tableRows(out)[0], ['NAME', 'PATH', 'ROLE', 'FLAGS', 'EXPIRES', 'SET BY', 'USED BY']);
+    assert.match(out, /Columns hidden to fit 100 characters: DOMAIN, VALUE/);
+    assertFits(out, 100, 'cookies @100');
   });
 
   test('a filter keeps the cookies of matching endpoints', () => {

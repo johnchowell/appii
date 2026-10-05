@@ -34,6 +34,13 @@ WebSocket frames and page snapshots. Add `--headless --duration 30` to record
 without a window, or convert a HAR file exported from DevTools with
 `appii capture --from-har session.har`.
 
+`--max-body` and `--max-total-body` limit the size of one body and of all
+bodies, `--read-timeout` sets how long appii waits for a body after its request
+ends, and `--user-agent` replaces the User-Agent of the browser. appii checks
+that it can write the output file before the recording starts. If the file
+cannot be saved after the recording, appii writes the recording to a file in
+the temporary directory and the error message gives its path.
+
 ### build: infer the API
 
 ```sh
@@ -54,7 +61,17 @@ appii list api.json --show 3
 Without options it prints the endpoint table. `--show <#|id|name>` prints one
 endpoint in detail with an example curl command, `--cookies` prints the cookie
 table, and `--filter`, `--method`, `--kind`, `--origin` and `--json` narrow or
-change the output. `list` also accepts `capture.json` and HAR files directly.
+change the output. `--filter` finds words in the method, path, name, id or
+GraphQL operation of an endpoint. `--origin` accepts an origin or a host with an
+optional port (`example.com:443` matches `https://example.com`). The filters do
+not apply to `--show`, so appii rejects them together. `list` also accepts
+`capture.json` and HAR files directly.
+
+When the submit buttons of a form send different fields, or several forms post
+to one endpoint, the request body table marks a field that only some
+submissions require with `if`. Below the table, one `When <field>=<value>:`
+block per submission gives the fields that it requires, the fields that it does
+not send, and its stricter rules.
 
 The example curl command uses a shell variable only for a value that appii does
 not know: a redacted secret, a CSRF token, a bearer token (`${ACCESS_TOKEN}`) or
@@ -92,4 +109,5 @@ appii run https://example.com
 ```
 
 Captures, builds and lists in one step and writes `capture.json` and
-`api.json` into `./appii-out`. Run `appii help <command>` for every option.
+`api.json` into `./appii-out`. Run `appii help <command>` for every option and
+`appii --version` (or `appii -V`) for the version.

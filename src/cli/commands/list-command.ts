@@ -18,6 +18,7 @@ export interface ListCommandDeps extends CommandDeps {
 
 export class ListCommand extends Command {
   static readonly KINDS: readonly EndpointKind[] = ENDPOINT_KINDS;
+  static readonly FILTER_OPTIONS: readonly string[] = ['filter', 'method', 'origin', 'kind', 'first-party'];
 
   readonly spec: CommandSpec;
   readonly #loader: InputLoader;
@@ -44,7 +45,7 @@ export class ListCommand extends Command {
       docs: {
         show: { value: 'ref', description: 'Show one endpoint in detail: its list number, id or name' },
         cookies: { description: 'Show the cookie table instead of the endpoints' },
-        filter: { value: 'text', description: 'Only endpoints whose method, path, name or id contain every word' },
+        filter: { value: 'text', description: `Only endpoints whose ${EndpointFilter.textFields()} contain every word` },
         method: { value: 'methods', description: 'Only these HTTP methods, comma separated (GET,POST)' },
         origin: { value: 'url', description: 'Only endpoints of this origin or host' },
         kind: { value: 'kinds', description: `Only these kinds, comma separated: ${ListCommand.KINDS.join(', ')}` },
@@ -79,10 +80,11 @@ export class ListCommand extends Command {
   static selection(model: ApiModel, filter: ListFilter, view: { show?: string; cookies: boolean }): unknown {
     if (view.show !== undefined) return EndpointIndex.of(model).require(view.show);
     const endpoints = new EndpointFilter(filter);
-    if (!view.cookies) return endpoints.apply(model);
-    if (!endpoints.active) return model.cookies;
-    const ids = new Set(endpoints.apply(model).map((endpoint) => endpoint.id));
-    return model.cookies.filter((cookie) => cookie.setBy.some((id) => ids.has(id)) || cookie.usedBy.some((id) => ids.has(id)));
+    return view.cookies ? endpoints.cookies(model) : endpoints.apply(model);
+  }
+
+  static filterFlags(values: OptionValues): string[] {
+    return ListCommand.FILTER_OPTIONS.filter((name) => values[name] !== undefined && values[name] !== false).map((name) => OptionReader.flag(name));
   }
 
   protected async execute(values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
@@ -92,6 +94,9 @@ export class ListCommand extends Command {
     const cookies = OptionReader.boolean(values, 'cookies') === true;
     if (show !== undefined && cookies) throw new UsageError('--show and --cookies cannot be combined');
     const filter = ListCommand.filter(values);
+    if (show !== undefined && new EndpointFilter(filter).active) {
+      throw new UsageError(`--show selects one endpoint and cannot be combined with ${ListCommand.filterFlags(values).join(', ')}`);
+    }
     const { model } = await this.#loader.load(ctx.resolve(file));
     if (OptionReader.boolean(values, 'json') === true) {
       ctx.out(Json.asciiJson(ListCommand.selection(model, filter, { ...(show === undefined ? {} : { show }), cookies })));

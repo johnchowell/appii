@@ -1,4 +1,4 @@
-import { CaptureSession, CookieParser, TrafficRecorder } from '../capture/index.js';
+import { BrowserLauncher, CaptureSession, CookieParser, TrafficRecorder } from '../capture/index.js';
 import type { CaptureSessionOptions } from '../capture/index.js';
 import { AppiiError, Text, isAppiiError } from '../shared/index.js';
 import type { Capture, Exchange } from '../model/index.js';
@@ -23,7 +23,7 @@ export class CaptureRunner {
   static readonly SIGNALS: readonly CliSignal[] = ['SIGINT', 'SIGTERM'];
   static readonly HEADED = 'Recording. Browse the site, then close the window or press Ctrl+C.';
   static readonly STOPPING = 'Stopping and saving what was recorded. Press Ctrl+C again to quit without saving.';
-  static readonly HEADED_HINT = 'If this machine has no display, run the capture with --headless.';
+  static readonly HEADED_HINT = 'To record without a browser window, add --headless.';
 
   readonly #sessions: RecordingSessionFactory;
 
@@ -57,15 +57,19 @@ export class CaptureRunner {
   async record(options: CaptureSessionOptions, ctx: CliContext): Promise<Capture> {
     const progress = new CaptureProgress(ctx);
     const onExchange = options.onExchange;
+    const onReady = options.onReady;
+    let interrupted = false;
     const session = this.#sessions({
       ...options,
       onExchange: (exchange: Exchange) => {
         progress.record(exchange);
         onExchange?.(exchange);
       },
+      onReady: () => {
+        if (!interrupted) ctx.err(CaptureRunner.instructions(options));
+        onReady?.();
+      },
     });
-    ctx.err(CaptureRunner.instructions(options));
-    let interrupted = false;
     const traps = CaptureRunner.SIGNALS.map((signal) => {
       const listener = (): void => {
         if (interrupted) {
@@ -91,7 +95,7 @@ export class CaptureRunner {
   }
 
   static #explain(err: unknown, options: CaptureSessionOptions): unknown {
-    if (!isAppiiError(err) || err.code !== 'BROWSER' || CaptureRunner.headless(options)) return err;
-    return new AppiiError('BROWSER', `${err.message} ${CaptureRunner.HEADED_HINT}`, { cause: err, ...(err.details === undefined ? {} : { details: err.details }) });
+    if (!isAppiiError(err) || err.message !== BrowserLauncher.NO_DISPLAY_MESSAGE || CaptureRunner.headless(options)) return err;
+    return new AppiiError('BROWSER', `${err.message}. ${CaptureRunner.HEADED_HINT}`, { cause: err, ...(err.details === undefined ? {} : { details: err.details }) });
   }
 }

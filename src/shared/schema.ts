@@ -72,27 +72,40 @@ export function displayValue(value: unknown, max?: number): string {
   return value === '' ? EMPTY_STRING : short(value, max);
 }
 
-export function requiredWhen(schema: JsonSchema | undefined): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  const always = requiredSet(schema);
+export interface SchemaBranch {
+  condition: string;
+  when: JsonSchema;
+  then: JsonSchema;
+}
+
+export function branches(schema: JsonSchema | undefined): SchemaBranch[] {
+  const out: SchemaBranch[] = [];
   let node = schema;
   while (node && isPlainObject(node.if)) {
-    const condition = conditionText(asSchema(node.if));
+    const when = asSchema(node.if);
+    const condition = conditionText(when);
     const then = asSchema(node.then);
-    if (condition && then) {
-      for (const name of requiredSet(then)) {
-        if (always.has(name)) continue;
-        const list = out.get(name) ?? [];
-        if (!list.includes(condition)) list.push(condition);
-        out.set(name, list);
-      }
-    }
+    if (when && condition && then) out.push({ condition, when, then });
     node = asSchema(node.else);
   }
   return out;
 }
 
-function conditionText(condition: JsonSchema | undefined): string | undefined {
+export function requiredWhen(schema: JsonSchema | undefined): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const always = requiredSet(schema);
+  for (const { condition, then } of branches(schema)) {
+    for (const name of requiredSet(then)) {
+      if (always.has(name)) continue;
+      const list = out.get(name) ?? [];
+      if (!list.includes(condition)) list.push(condition);
+      out.set(name, list);
+    }
+  }
+  return out;
+}
+
+export function conditionText(condition: JsonSchema | undefined): string | undefined {
   const [name] = [...requiredSet(condition)];
   if (name === undefined) return undefined;
   const value = properties(condition)[name];

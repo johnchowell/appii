@@ -8,6 +8,7 @@ export interface TableColumn {
   maxWidth?: number;
   flex?: boolean;
   wrap?: boolean;
+  breakWords?: boolean;
   optional?: boolean;
   priority?: number;
 }
@@ -57,13 +58,19 @@ export class TableRenderer {
     });
     const floors = columns.map((column, i) => {
       const own = natural[i] ?? 1;
-      return column.flex ? Math.min(own, Math.max(1, column.minWidth ?? TableRenderer.DEFAULT_FLEX_FLOOR)) : own;
+      if (!column.flex) return own;
+      const words = column.wrap === true && column.breakWords === false ? TableRenderer.#longestWord(rows, i) : 0;
+      return Math.min(own, Math.max(1, column.minWidth ?? TableRenderer.DEFAULT_FLEX_FLOOR, words));
     });
     let visible = columns.map((_, i) => i);
     while (TableRenderer.#total(visible, floors) > this.#width) {
       const drop = TableRenderer.#nextDrop(columns, visible);
       if (drop === undefined) break;
       visible = visible.filter((i) => i !== drop);
+    }
+    for (const i of TableRenderer.#readdOrder(columns, visible)) {
+      const candidate = [...visible, i].sort((a, b) => a - b);
+      if (TableRenderer.#total(candidate, floors) <= this.#width) visible = candidate;
     }
     const widths = [...natural];
     const flexible = visible.filter((i) => columns[i]?.flex === true);
@@ -151,6 +158,19 @@ export class TableRenderer {
       if (best === undefined || (column.priority ?? 0) <= (columns[best]?.priority ?? 0)) best = i;
     }
     return best;
+  }
+
+  static #readdOrder(columns: readonly TableColumn[], visible: readonly number[]): number[] {
+    return columns
+      .map((_, i) => i)
+      .filter((i) => !visible.includes(i))
+      .sort((a, b) => (columns[b]?.priority ?? 0) - (columns[a]?.priority ?? 0) || a - b);
+  }
+
+  static #longestWord(rows: readonly (readonly string[])[], column: number): number {
+    let longest = 0;
+    for (const row of rows) for (const word of TableRenderer.#cell(row[column]).split(' ')) longest = Math.max(longest, Ansi.width(word));
+    return longest;
   }
 
   static #shrink(widths: number[], candidates: readonly number[], floors: readonly number[], excess: number): number {

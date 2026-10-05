@@ -56,9 +56,10 @@ export class BuildCommand extends Command {
     const file = this.argument(positionals, 0, '<capture.json|file.har>');
     this.expectArguments(positionals, 1);
     const input = ctx.resolve(file);
-    const out = await Helpers.outputFile(ctx, OptionReader.string(values, 'out'), BuildCommand.DEFAULT_OUT);
-    if (out === input) throw new UsageError('--out must not overwrite the input file');
+    const explicit = OptionReader.string(values, 'out');
+    const out = await Helpers.outputFile(ctx, explicit, BuildCommand.DEFAULT_OUT);
     const capture = await this.#store.load(input);
+    if (out === input) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
     await this.#step.run(capture, { out, source: BuildCommand.source(out, input), options }, ctx);
     return ExitCode.OK;
   }

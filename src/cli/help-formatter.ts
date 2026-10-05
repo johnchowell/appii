@@ -34,7 +34,7 @@ export class HelpFormatter {
   static readonly SHORT_PAD = '    ';
   static readonly SHORT_FLAG: RegExp = /^-[A-Za-z0-9], /;
   static readonly TAGLINE = 'turn a website into a usable API description';
-  static readonly GLOBAL_ROWS: readonly HelpRow[] = [['--version', 'Print the version']];
+  static readonly GLOBAL_TITLE = 'Global options (before the command)';
   static readonly WORKFLOW: readonly HelpRow[] = [
     [`${Meta.APP_NAME} capture https://example.com`, 'Record the traffic while you browse the site'],
     [`${Meta.APP_NAME} build capture.json`, 'Infer endpoints, auth, cookies and form rules into api.json'],
@@ -81,15 +81,17 @@ export class HelpFormatter {
     return sections.join('\n\n');
   }
 
-  overview(topics: readonly HelpTopic[], common: HelpOptionSet, extra: readonly HelpRow[] = []): string {
-    return [
+  overview(topics: readonly HelpTopic[], common: HelpOptionSet, globals: readonly HelpRow[] = []): string {
+    const sections = [
       this.#title(`${Meta.APP_NAME} ${Meta.appVersion()}`, HelpFormatter.TAGLINE),
       this.section('Usage', this.#commands([`${Meta.APP_NAME} <command> [options]`])),
       this.section('Commands', this.rows(topics.map((topic) => [topic.name, topic.summary]))),
       this.section('Workflow', this.rows(HelpFormatter.WORKFLOW, HelpFormatter.MAX_COMMAND_WIDTH)),
-      this.section('Common options', this.rows(HelpFormatter.align([...HelpFormatter.optionRows(common), ...extra]))),
-      this.#wrap(`Run '${Meta.APP_NAME} help <command>' for the options of a command.`).join('\n'),
-    ].join('\n\n');
+      this.section('Common options', this.rows(HelpFormatter.align(HelpFormatter.optionRows(common)))),
+    ];
+    if (globals.length > 0) sections.push(this.section(HelpFormatter.GLOBAL_TITLE, this.rows(globals)));
+    sections.push(this.#wrap(`Run '${Meta.APP_NAME} help <command>' for the options of a command.`).join('\n'));
+    return sections.join('\n\n');
   }
 
   section(title: string, lines: readonly string[]): string {

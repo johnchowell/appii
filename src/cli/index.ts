@@ -26,6 +26,8 @@ export { CliBrowserLauncher } from './cli-browser-launcher.js';
 export { CaptureProgress } from './capture-progress.js';
 export type { CaptureProgressOptions } from './capture-progress.js';
 export { CaptureRunner } from './capture-runner.js';
+export { CaptureSaver } from './capture-saver.js';
+export type { CaptureSaverDeps } from './capture-saver.js';
 export type { CaptureRunnerDeps, RecordingSession, RecordingSessionFactory } from './capture-runner.js';
 export { BuildStep } from './build-step.js';
 export type { BuildRequest, BuildStepDeps } from './build-step.js';

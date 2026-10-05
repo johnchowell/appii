@@ -4,7 +4,7 @@ export { CdpCookieJar } from './cdp-cookie-jar.js';
 export type { CdpCookieJarFactory } from './cdp-cookie-jar.js';
 export { TrafficRecorder } from './traffic-recorder.js';
 export { PageNetworkTap } from './page-network-tap.js';
-export type { PageNetworkTapOptions, TapRecord } from './page-network-tap.js';
+export type { PageNetworkTapOptions, TapRecord, TapTarget } from './page-network-tap.js';
 export { BodyBudget } from './body-budget.js';
 export type { BodyBudgetOptions } from './body-budget.js';
 export { SessionConnection } from './session-connection.js';

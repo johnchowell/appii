@@ -149,6 +149,28 @@ export function toAscii(input: string, mode: 'escape' | 'html' | 'replace' = 'es
   return out;
 }
 
+export type LineBreaks = 'space' | 'normalize' | 'lf';
+
+export interface PrintableOptions {
+  lineBreaks?: LineBreaks;
+}
+
+export const LINE_BREAK_SOURCE = '\\r\\n|[\\r\\n\\t]';
+export const NEWLINE_SOURCE = '\\r\\n?';
+export const CONTROL_SOURCE = '[\\x00-\\x1f\\x7f-\\x9f]';
+export const BLOCK_CONTROL_SOURCE = '[\\x00-\\x09\\x0b-\\x1f\\x7f-\\x9f]';
+
+export function controlEscape(ch: string): string {
+  return '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0');
+}
+
+export function printable(input: string, options: PrintableOptions = {}): string {
+  const mode = options.lineBreaks ?? 'space';
+  const text =
+    mode === 'space' ? input.replace(new RegExp(LINE_BREAK_SOURCE, 'g'), ' ') : mode === 'normalize' ? input.replace(new RegExp(NEWLINE_SOURCE, 'g'), '\n') : input;
+  return toAscii(text.replace(new RegExp(mode === 'space' ? CONTROL_SOURCE : BLOCK_CONTROL_SOURCE, 'g'), controlEscape), 'escape');
+}
+
 export function jsString(input: string): string {
   return toAscii(JSON.stringify(input), 'escape');
 }

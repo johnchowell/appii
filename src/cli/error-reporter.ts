@@ -13,6 +13,8 @@ export class ErrorReporter {
   static readonly PREFIX = 'error: ';
   static readonly DEBUG_VARIABLE = 'APPII_DEBUG';
   static readonly MAX_DETAIL_LINES = 10;
+  static readonly MAX_CAUSES = 5;
+  static readonly CAUSE_PREFIX = 'Caused by: ';
   static readonly DETAIL_LISTS: readonly DetailList[] = [
     { key: 'suggestions', title: 'Did you mean:' },
     { key: 'problems', title: 'Problems:' },
@@ -21,9 +23,22 @@ export class ErrorReporter {
   report(err: unknown, ctx: CliContext): number {
     const lines = [ErrorReporter.PREFIX + TextLayout.clean(Text.errorMessage(err))];
     if (isAppiiError(err)) lines.push(...ErrorReporter.details(err.details));
-    if (ErrorReporter.debug(ctx) && err instanceof Error && err.stack) lines.push(TextLayout.cleanBlock(err.stack));
+    if (ErrorReporter.debug(ctx)) lines.push(...ErrorReporter.trace(err));
     ctx.err(lines.join('\n'));
     return err instanceof UsageError ? ExitCode.USAGE : ExitCode.ERROR;
+  }
+
+  static trace(err: unknown): string[] {
+    const lines: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = err instanceof Error ? err : undefined;
+    for (let depth = 0; depth <= ErrorReporter.MAX_CAUSES && current !== undefined && current !== null && !seen.has(current); depth++) {
+      seen.add(current);
+      const text = current instanceof Error ? (current.stack ?? `${current.name}: ${current.message}`) : String(current);
+      lines.push(TextLayout.cleanBlock(depth === 0 ? text : `${ErrorReporter.CAUSE_PREFIX}${text}`));
+      current = current instanceof Error ? current.cause : undefined;
+    }
+    return lines;
   }
 
   static details(details: unknown): string[] {

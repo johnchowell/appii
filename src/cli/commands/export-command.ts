@@ -49,7 +49,7 @@ export class ExportCommand extends Command {
       },
       allowPositionals: true,
       docs: {
-        format: { value: 'format', description: `One of ${this.#registry.list().map((exporter) => exporter.format).join(', ')}` },
+        format: { value: 'format', description: `One of ${this.#formats().join(', ')}` },
         out: { value: 'file', description: 'Output file, an existing directory, or - for stdout (default: the format file name, e.g. openapi.json)' },
         endpoints: { value: 'refs', description: 'Only these endpoints: list numbers, ids or names, comma separated' },
         capture: { value: 'file', description: 'The capture.json or HAR file with the recorded traffic, for --format har from an api.json' },
@@ -86,7 +86,8 @@ export class ExportCommand extends Command {
     const file = this.argument(positionals, 0, '<api.json|capture.json|file.har>');
     this.expectArguments(positionals, 1);
     const format = OptionReader.string(values, 'format');
-    if (format === undefined) throw new UsageError(`missing --format <format> (one of ${this.#registry.list().map((exporter) => exporter.format).join(', ')})`);
+    if (format === undefined) throw new UsageError(`missing --format <format> (one of ${this.#formats().join(', ')})`);
+    if (!this.#registry.has(format)) throw this.#unknownFormat(format);
     const exporter = this.#registry.get(format);
     const redact = OptionReader.boolean(values, 'redact') ?? true;
     const out = OptionReader.string(values, 'out');
@@ -108,10 +109,22 @@ export class ExportCommand extends Command {
       return ExitCode.OK;
     }
     const target = await Helpers.outputFile(ctx, out, result.filename);
-    if (target === input) throw new UsageError('--out must not overwrite the input file');
+    if (target === input) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
     await Fs.writeFileAtomic(target, result.content, redact ? {} : { mode: ModelStore.PRIVATE_MODE });
     ctx.out(TextLayout.clean(`Wrote ${ctx.display(target)} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
     return ExitCode.OK;
+  }
+
+  #formats(): string[] {
+    return this.#registry.list().map((exporter) => exporter.format);
+  }
+
+  #unknownFormat(format: string): UsageError {
+    const formats = this.#formats();
+    const names = [...formats, ...Object.keys(ExporterRegistry.ALIASES).filter((alias) => this.#registry.has(alias))];
+    const guess = Helpers.closest(format.trim(), names);
+    const hint = guess === undefined ? '' : `; did you mean '${guess}'?`;
+    return new UsageError(`--format must be one of ${formats.join(', ')}; got '${format}'${hint}`, { details: { format, formats } });
   }
 
   static #options(values: OptionValues, redact: boolean): ExportOptions {

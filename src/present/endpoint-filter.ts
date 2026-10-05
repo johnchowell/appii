@@ -1,4 +1,4 @@
-import type { ApiModel, Endpoint, EndpointKind } from '../model/index.js';
+import type { ApiModel, CookieInfo, Endpoint, EndpointKind } from '../model/index.js';
 import { Http } from '../shared/index.js';
 
 export interface ListFilter {
@@ -11,12 +11,24 @@ export interface ListFilter {
 
 export interface OriginMatcher {
   origin?: string;
-  host?: string;
+  hostname?: string;
+  port?: number;
 }
+
+export type TextField = readonly [label: string, read: (endpoint: Endpoint) => string | undefined];
 
 export class EndpointFilter {
   static readonly LIST_SEPARATOR: RegExp = /[\s,]+/;
   static readonly HTTP_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
+  static readonly DEFAULT_PORTS: Readonly<Record<string, number>> = { 'http:': 80, 'ws:': 80, 'https:': 443, 'wss:': 443 };
+  static readonly EXPLICIT_PORT: RegExp = /^(?:\[[^\]]*\]|[^:]*):([0-9]+)$/;
+  static readonly TEXT_FIELDS: readonly TextField[] = [
+    ['method', (endpoint) => endpoint.method],
+    ['path', (endpoint) => endpoint.path],
+    ['name', (endpoint) => endpoint.name],
+    ['id', (endpoint) => endpoint.id],
+    ['GraphQL operation', (endpoint) => endpoint.operationName],
+  ];
 
   readonly #terms: readonly string[];
   readonly #methods: ReadonlySet<string>;
@@ -45,8 +57,14 @@ export class EndpointFilter {
       return url && EndpointFilter.HTTP_SCHEMES.has(url.protocol) ? { origin: url.origin } : { origin: raw };
     }
     const url = Http.parseUrl(`http://${text}`);
-    if (!url || url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.username !== '') return { host: raw };
-    return { host: url.port === '' ? url.hostname : `${url.hostname}:${url.port}` };
+    if (!url || url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.username !== '') return { hostname: raw };
+    const port = EndpointFilter.EXPLICIT_PORT.exec(raw)?.[1];
+    return port === undefined ? { hostname: url.hostname } : { hostname: url.hostname, port: Number(port) };
+  }
+
+  static textFields(): string {
+    const labels = EndpointFilter.TEXT_FIELDS.map(([label]) => label);
+    return labels.length > 1 ? `${labels.slice(0, -1).join(', ')} or ${labels[labels.length - 1]}` : labels.join('');
   }
 
   matches(endpoint: Endpoint): boolean {
@@ -65,11 +83,17 @@ export class EndpointFilter {
     return model.endpoints.filter((endpoint) => this.matches(endpoint));
   }
 
+  cookies(model: ApiModel): CookieInfo[] {
+    if (!this.active) return model.cookies;
+    const ids = new Set(this.apply(model).map((endpoint) => endpoint.id));
+    return model.cookies.filter((cookie) => cookie.setBy.some((id) => ids.has(id)) || cookie.usedBy.some((id) => ids.has(id)));
+  }
+
   describe(): string[] {
     const parts: string[] = [];
     if (this.#methods.size > 0) parts.push(`method ${[...this.#methods].join('|')}`);
     if (this.#kinds.size > 0) parts.push(`kind ${[...this.#kinds].join('|')}`);
-    if (this.#origin) parts.push(`origin ${this.#origin.origin ?? this.#origin.host ?? ''}`);
+    if (this.#origin) parts.push(`origin ${EndpointFilter.#originText(this.#origin)}`);
     if (this.#terms.length > 0) parts.push(`text "${this.#terms.join(' ')}"`);
     if (this.#firstPartyOnly) parts.push('first-party only');
     return parts;
@@ -79,15 +103,25 @@ export class EndpointFilter {
     return (value ?? '').split(EndpointFilter.LIST_SEPARATOR).filter((part) => part !== '');
   }
 
+  static #originText(matcher: OriginMatcher): string {
+    if (matcher.origin !== undefined) return matcher.origin;
+    return matcher.port === undefined ? (matcher.hostname ?? '') : `${matcher.hostname ?? ''}:${matcher.port}`;
+  }
+
   static #originMatches(matcher: OriginMatcher, origin: string): boolean {
     if (matcher.origin !== undefined) return origin.toLowerCase() === matcher.origin;
     const url = Http.parseUrl(origin);
-    if (!url) return origin.toLowerCase() === matcher.host;
-    return url.host === matcher.host || url.hostname === matcher.host;
+    if (!url) return origin.toLowerCase() === matcher.hostname;
+    if (url.hostname !== matcher.hostname) return false;
+    return matcher.port === undefined || matcher.port === EndpointFilter.#effectivePort(url);
+  }
+
+  static #effectivePort(url: URL): number | undefined {
+    return url.port === '' ? EndpointFilter.DEFAULT_PORTS[url.protocol] : Number(url.port);
   }
 
   static #haystack(endpoint: Endpoint): string {
-    return [endpoint.id, endpoint.name, endpoint.key, endpoint.method, endpoint.kind, endpoint.origin + endpoint.path, endpoint.operationName ?? '']
+    return EndpointFilter.TEXT_FIELDS.map(([, read]) => read(endpoint) ?? '')
       .join('\n')
       .toLowerCase();
   }

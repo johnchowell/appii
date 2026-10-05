@@ -70,12 +70,12 @@ export class CliContext {
 
   out(text: string): void {
     this.#status.clear();
-    this.io.stdout.write(text + '\n');
+    this.io.stdout.write(this.ansi.printable(text) + '\n');
   }
 
   err(text: string): void {
     this.#status.clear();
-    this.io.stderr.write(text + '\n');
+    this.io.stderr.write(this.ansi.printable(text) + '\n');
   }
 
   write(content: string): void {

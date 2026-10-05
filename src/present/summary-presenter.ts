@@ -49,13 +49,13 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
     const kinds = SummaryPresenter.tally(endpoints.map((endpoint) => endpoint.kind), SummaryPresenter.KIND_ORDER);
     const roles = SummaryPresenter.tally(model.cookies.map((cookie) => cookie.role), SummaryPresenter.ROLE_ORDER);
     const httpOnly = model.cookies.filter((cookie) => cookie.httpOnly).length;
-    const linked = endpoints.filter((endpoint) => endpoint.form !== undefined).length;
+    const withForm = endpoints.filter((endpoint) => endpoint.form !== undefined).length;
     const messages = model.websockets.reduce((sum, socket) => sum + socket.messages, 0);
     return [
       ['Endpoints', endpoints.length === 0 ? '0' : `${endpoints.length} (${kinds}), ${firstParty} first-party`],
       ['Requests', `${model.source.exchanges} captured, ${hits} matched to endpoints`],
       ['Cookies', model.cookies.length === 0 ? '0' : `${model.cookies.length} (${roles}), ${httpOnly} HttpOnly`],
-      ['Forms', model.forms.length === 0 ? '0' : `${model.forms.length} (${linked} linked to endpoints)`],
+      ['Forms', model.forms.length === 0 ? '0' : `${model.forms.length} (${Text.plural(withForm, 'endpoint')} with a form)`],
       ['WebSockets', model.websockets.length === 0 ? '0' : `${model.websockets.length} (${Text.plural(messages, 'message')})`],
     ];
   }

@@ -61,7 +61,7 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
   }
 
   render(model: ApiModel): string {
-    const cookies = this.#select(model);
+    const cookies = this.filter.cookies(model);
     const total = model.cookies.length;
     const count = this.filter.active ? `${cookies.length} of ${Text.plural(total, 'cookie')}` : Text.plural(total, 'cookie');
     const header = [this.heading(`${model.name || 'API'}: ${count}`)];
@@ -87,12 +87,6 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
     const notes = [CookieListPresenter.LEGEND];
     if (layout.hidden.length > 0) notes.push(`Columns hidden to fit ${this.width} characters: ${layout.hidden.map((i) => CookieListPresenter.COLUMNS[i]?.header ?? '').join(', ')}`);
     return this.compose([header, table.render(CookieListPresenter.COLUMNS, rows, layout), notes.flatMap((note) => TextLayout.wrap(note, this.width)).map((line) => this.ansi.dim(line))]);
-  }
-
-  #select(model: ApiModel): CookieInfo[] {
-    if (!this.filter.active) return model.cookies;
-    const ids = new Set(this.filter.apply(model).map((endpoint) => endpoint.id));
-    return model.cookies.filter((cookie) => cookie.setBy.some((id) => ids.has(id)) || cookie.usedBy.some((id) => ids.has(id)));
   }
 
   #numbers(ids: readonly string[], numbers: ReadonlyMap<string, number>): string {
