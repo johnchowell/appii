@@ -31,9 +31,7 @@
     "cheerio": "^1.2.0",
     "playwright": "1.56.1",
     "tldts": "^7.4.16",
-    "tough-cookie": "^6.0.2",
-    "yaml": "^2.9.1",
-    "zod": "^4.6.5"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

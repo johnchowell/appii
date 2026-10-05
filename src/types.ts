@@ -25,7 +25,7 @@ export type ResourceType =
   | 'eventsource'
   | 'other';
 
-export type CaptureSource = 'browser' | 'http' | 'har';
+export type CaptureSource = 'browser' | 'har';
 
 export interface CapturedRequest {
   method: string;
@@ -92,6 +92,26 @@ export interface StorageSnapshot {
   sessionStorage: Record<string, string>;
 }
 
+export interface PageSnapshot {
+  url: string;
+  title: string;
+  capturedAt: string;
+  html: string;
+}
+
+export interface Capture {
+  version: 1;
+  tool: { name: 'appii'; version: string };
+  startUrl?: string;
+  startedAt: string;
+  endedAt: string;
+  exchanges: Exchange[];
+  websockets: WebSocketCapture[];
+  cookies: Cookie[];
+  storage: StorageSnapshot[];
+  pages: PageSnapshot[];
+}
+
 export interface SelectOption {
   value: string;
   label: string;
@@ -100,6 +120,10 @@ export interface SelectOption {
 }
 
 export type FieldKind = 'input' | 'select' | 'textarea' | 'button';
+
+export type FormMethod = 'GET' | 'POST' | 'DIALOG';
+
+export type FormEnctype = 'application/x-www-form-urlencoded' | 'multipart/form-data' | 'text/plain';
 
 export interface FormField {
   name: string;
@@ -124,6 +148,7 @@ export interface FormField {
   options?: SelectOption[];
   label?: string;
   placeholder?: string;
+  title?: string;
   autocomplete?: string;
   id?: string;
   formAction?: string;
@@ -131,10 +156,6 @@ export interface FormField {
   formEnctype?: FormEnctype;
   formNoValidate?: boolean;
 }
-
-export type FormMethod = 'GET' | 'POST' | 'DIALOG';
-
-export type FormEnctype = 'application/x-www-form-urlencoded' | 'multipart/form-data' | 'text/plain';
 
 export interface FormDescriptor {
   index: number;
@@ -151,74 +172,6 @@ export interface FormDescriptor {
   fields: FormField[];
   submitters: FormField[];
   tokenFields: string[];
-}
-
-export interface PageTokens {
-  meta: Record<string, string>;
-  cookies: string[];
-}
-
-export interface FileValue {
-  filename: string;
-  contentType?: string;
-  dataBase64: string;
-}
-
-export type FormValue = string | string[] | boolean | FileValue | FileValue[];
-
-export type FormValues = Record<string, FormValue>;
-
-export interface FormDataEntry {
-  name: string;
-  value: string | FileValue;
-}
-
-export type ValidityFlag =
-  | 'valueMissing'
-  | 'typeMismatch'
-  | 'patternMismatch'
-  | 'tooLong'
-  | 'tooShort'
-  | 'rangeUnderflow'
-  | 'rangeOverflow'
-  | 'stepMismatch'
-  | 'badInput'
-  | 'customError';
-
-export interface FieldValidation {
-  name: string;
-  type: string;
-  value: string | string[];
-  valid: boolean;
-  flags: ValidityFlag[];
-  message: string;
-}
-
-export interface FormValidationResult {
-  source: 'emulated' | 'browser';
-  valid: boolean;
-  fields: FieldValidation[];
-  unknownValues: string[];
-}
-
-export interface ServerFieldError {
-  field?: string;
-  message: string;
-  source: 'json' | 'html';
-  path?: string;
-}
-
-export interface SubmissionResult {
-  form: FormDescriptor;
-  entries: FormDataEntry[];
-  clientValidation: FormValidationResult;
-  submitted: boolean;
-  chain: Exchange[];
-  finalUrl?: string;
-  status?: number;
-  serverErrors: ServerFieldError[];
-  accepted: boolean;
-  cookiesSet: Cookie[];
 }
 
 export type JsonSchema = { [key: string]: unknown };
@@ -242,43 +195,102 @@ export interface BodyShape {
   examples: unknown[];
 }
 
-export interface InferredResponse {
+export interface EndpointResponse {
   status: number;
   count: number;
   body?: BodyShape;
   headers: string[];
 }
 
-export interface AuthHints {
-  cookies: string[];
-  headers: string[];
-  csrfHeaders: string[];
-  bearer: boolean;
+export type TokenSource = 'cookie' | 'meta' | 'hidden-field' | 'response' | 'unknown';
+
+export interface CsrfToken {
+  location: 'header' | 'body' | 'query';
+  name: string;
+  source: TokenSource;
+  sourceName?: string;
+  sourceUrl?: string;
 }
 
-export interface InferredEndpoint {
+export interface EndpointAuth {
+  cookies: string[];
+  headers: string[];
+  bearer: boolean;
+  csrf: CsrfToken[];
+}
+
+export interface EndpointForm {
+  pageUrl: string;
+  selector: string;
+  enctype: FormEnctype;
+  fields: FormField[];
+  submitters: FormField[];
+  tokenFields: string[];
+}
+
+export type EndpointKind = 'json' | 'form' | 'graphql' | 'document' | 'other';
+
+export interface EndpointSample {
+  exchangeId: string;
+  url: string;
+  status?: number;
+  startedAt: string;
+}
+
+export interface Endpoint {
+  id: string;
+  name: string;
   key: string;
   method: string;
   origin: string;
-  pathTemplate: string;
+  path: string;
   operationName?: string;
+  kind: EndpointKind;
+  firstParty: boolean;
   pathParams: ParamInfo[];
   queryParams: ParamInfo[];
   headerParams: ParamInfo[];
   requestBody?: BodyShape;
-  responses: InferredResponse[];
-  auth: AuthHints;
+  responses: EndpointResponse[];
+  auth: EndpointAuth;
+  form?: EndpointForm;
   resourceTypes: ResourceType[];
-  sampleIds: string[];
+  samples: EndpointSample[];
   count: number;
 }
 
-export interface HttpResponseView {
-  url: string;
-  status: number;
-  statusText: string;
-  headers: Header[];
-  text: string;
-  bytes: Uint8Array;
-  json(): unknown;
+export type CookieRole = 'session' | 'auth' | 'csrf' | 'preference' | 'tracking' | 'unknown';
+
+export interface CookieInfo {
+  name: string;
+  domain: string;
+  path: string;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: SameSite | null;
+  session: boolean;
+  expires: string | null;
+  role: CookieRole;
+  setBy: string[];
+  usedBy: string[];
+  valueExample: string;
+}
+
+export interface ApiModel {
+  version: 1;
+  name: string;
+  generatedAt: string;
+  source: {
+    startUrl?: string;
+    file?: string;
+    exchanges: number;
+    capturedFrom?: string;
+    capturedTo?: string;
+  };
+  primaryOrigin: string;
+  origins: string[];
+  endpoints: Endpoint[];
+  cookies: CookieInfo[];
+  forms: FormDescriptor[];
+  websockets: { url: string; messages: number; examples: string[] }[];
 }
