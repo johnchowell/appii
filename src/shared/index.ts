@@ -4,6 +4,8 @@ export * as Json from './json.js';
 export * as Fs from './fs.js';
 export * as Schema from './schema.js';
 export * as Meta from './meta.js';
+export * as Samples from './samples.js';
+export * as Curl from './curl.js';
 export { Ansi, METHOD_COLORS } from './ansi.js';
 export type { AnsiStyle } from './ansi.js';
 export { EndpointIndex } from './endpoints.js';
