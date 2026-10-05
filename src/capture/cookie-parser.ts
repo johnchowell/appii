@@ -26,6 +26,12 @@ export interface PlaywrightCookie {
   httpOnly: boolean;
   secure: boolean;
   sameSite: 'Strict' | 'Lax' | 'None';
+  partitionKey?: string;
+}
+
+export interface CdpPartitionKey {
+  topLevelSite: string;
+  hasCrossSiteAncestor?: boolean;
 }
 
 export interface CdpCookie {
@@ -39,6 +45,7 @@ export interface CdpCookie {
   secure: boolean;
   session: boolean;
   sameSite?: 'Strict' | 'Lax' | 'None';
+  partitionKey?: string | CdpPartitionKey;
 }
 
 export interface CookieContext {
@@ -60,7 +67,6 @@ interface CookieAttributeList {
 
 interface ParsedCookie {
   readonly cookie: Cookie;
-  readonly partitioned: boolean;
 }
 
 export class CookieParser {
@@ -90,11 +96,13 @@ export class CookieParser {
       secure: c.secure,
       sameSite: c.sameSite ?? null,
       hostOnly,
+      ...(c.partitionKey ? { partitionKey: c.partitionKey } : {}),
     };
   }
 
   static fromCdp(c: CdpCookie): Cookie {
     const hostOnly = !c.domain.startsWith('.');
+    const partitionKey = typeof c.partitionKey === 'string' ? c.partitionKey : c.partitionKey?.topLevelSite;
     return {
       name: c.name,
       value: c.value,
@@ -105,7 +113,14 @@ export class CookieParser {
       secure: c.secure,
       sameSite: c.sameSite ?? null,
       hostOnly,
+      ...(partitionKey ? { partitionKey } : {}),
     };
+  }
+
+  static site(url: string | undefined): string | undefined {
+    const parsed = Http.parseUrl(url);
+    if (!parsed || !Helpers.NETWORK_SCHEMES.has(parsed.protocol)) return undefined;
+    return `${parsed.protocol}//${Http.registrableDomain(parsed.hostname)}`;
   }
 
   static context(exchange: Exchange): CookieContext {
@@ -120,7 +135,7 @@ export class CookieParser {
         sameSite = false;
       }
     }
-    return { sameSite, partition: CookieParser.#site(siteFor) };
+    return { sameSite, partition: CookieParser.site(siteFor) };
   }
 
   static tokenize(setCookie: string): SetCookieParts | null {
@@ -212,24 +227,28 @@ export class CookieParser {
     return cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/';
   }
 
-  static key(cookie: Pick<Cookie, 'name' | 'domain' | 'path' | 'hostOnly'>): string {
-    return `${cookie.name}\u0000${cookie.hostOnly ? '' : '.'}${cookie.domain}\u0000${cookie.path}`;
+  static key(cookie: Pick<Cookie, 'name' | 'domain' | 'path' | 'hostOnly' | 'partitionKey'>): string {
+    return `${cookie.name}\u0000${cookie.hostOnly ? '' : '.'}${cookie.domain}\u0000${cookie.path}\u0000${cookie.partitionKey ?? ''}`;
+  }
+
+  static sentIn(cookie: Pick<Cookie, 'partitionKey'>, partition: string | undefined): boolean {
+    return cookie.partitionKey === undefined || cookie.partitionKey === partition;
   }
 
   static isExpired(cookie: Cookie, atMs: number): boolean {
     return cookie.expires !== null && cookie.expires * 1000 <= atMs;
   }
 
-  parse(setCookie: string, requestUrl: string): Cookie | null {
-    return this.#parseAt(setCookie, requestUrl, this.#now().getTime())?.cookie ?? null;
+  parse(setCookie: string, requestUrl: string, partition?: string): Cookie | null {
+    return this.#parseAt(setCookie, requestUrl, this.#now().getTime(), partition)?.cookie ?? null;
   }
 
   replay(exchanges: Exchange[], jar: Cookie[] = []): Cookie[] {
     const store = new Map<string, Cookie>();
-    for (const cookie of jar) store.set(CookieParser.#storeKey(cookie, undefined), { ...cookie });
+    for (const cookie of jar) store.set(CookieParser.key(cookie), { ...cookie });
     let clock = Number.NEGATIVE_INFINITY;
     for (const exchange of exchanges) {
-      if (!exchange.response) continue;
+      if (!exchange.response || !Http.reachedServer(exchange)) continue;
       const end = Helpers.endTime(exchange);
       const at = Number.isNaN(end) ? this.#now().getTime() : end;
       clock = Math.max(clock, at);
@@ -246,7 +265,7 @@ export class CookieParser {
   }
 
   #store(store: Map<string, Cookie>, line: string, requestUrl: string, at: number, context: CookieContext): void {
-    const parsed = this.#parseAt(line, requestUrl, at);
+    const parsed = this.#parseAt(line, requestUrl, at, context.partition);
     if (!parsed) return;
     const cookie = parsed.cookie;
     if (cookie.sameSite !== 'None' && !context.sameSite) return;
@@ -255,6 +274,7 @@ export class CookieParser {
         if (
           existing.secure &&
           existing.name === cookie.name &&
+          existing.partitionKey === cookie.partitionKey &&
           (CookieParser.domainMatches(existing.domain, cookie.domain) || CookieParser.domainMatches(cookie.domain, existing.domain)) &&
           CookieParser.pathMatches(cookie.path, existing.path)
         ) {
@@ -262,12 +282,12 @@ export class CookieParser {
         }
       }
     }
-    const key = CookieParser.#storeKey(cookie, parsed.partitioned ? context.partition : undefined);
+    const key = CookieParser.key(cookie);
     store.delete(key);
     if (!CookieParser.isExpired(cookie, at)) store.set(key, cookie);
   }
 
-  #parseAt(setCookie: string, requestUrl: string, nowMs: number): ParsedCookie | null {
+  #parseAt(setCookie: string, requestUrl: string, nowMs: number, partition: string | undefined): ParsedCookie | null {
     const parts = CookieParser.tokenize(setCookie);
     if (!parts) return null;
     let url: URL;
@@ -320,8 +340,8 @@ export class CookieParser {
         secure: attrs.secure,
         sameSite: attrs.sameSite,
         hostOnly,
+        ...(attrs.partitioned && partition !== undefined ? { partitionKey: partition } : {}),
       },
-      partitioned: attrs.partitioned,
     };
   }
 
@@ -370,16 +390,6 @@ export class CookieParser {
       }
     }
     return out;
-  }
-
-  static #storeKey(cookie: Cookie, partition: string | undefined): string {
-    return `${CookieParser.key(cookie)}\u0000${partition ?? ''}`;
-  }
-
-  static #site(url: string): string | undefined {
-    const parsed = Http.parseUrl(url);
-    if (!parsed || !Helpers.NETWORK_SCHEMES.has(parsed.protocol)) return undefined;
-    return `${parsed.protocol}//${Http.registrableDomain(parsed.hostname)}`;
   }
 
   static #evict(store: Map<string, Cookie>, atMs: number): void {

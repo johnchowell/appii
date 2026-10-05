@@ -8,11 +8,15 @@ import {
   EndpointFactory,
   EndpointGrouper,
   EndpointNamer,
+  ModelBuilder,
+  ModelValidator,
   PathTemplater,
   Redactor,
   SchemaInferrer,
 } from '../src/build/index.js';
-import { CookieParser } from '../src/capture/index.js';
+import { CaptureValidator, CookieParser } from '../src/capture/index.js';
+import { HtmlExporter, MarkdownExporter } from '../src/export/index.js';
+import { CookieListPresenter } from '../src/present/index.js';
 import { FormExtractor, TokenDetector } from '../src/forms/index.js';
 import type { Capture, CookieInfo, Endpoint } from '../src/model/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
@@ -216,5 +220,61 @@ describe('CookieInventory observations', () => {
     assert.equal(CookieInventory.applies({ ...base, domain: 'example.com', path: '/api', hostOnly: false }, url), true);
     assert.equal(CookieInventory.applies({ ...base, domain: 'example.com', path: '/', hostOnly: true }, url), false);
     assert.equal(CookieInventory.applies({ ...base, domain: 'shop.example.com', path: '/ap', hostOnly: true }, url), false);
+  });
+});
+
+describe('partitioned cookies (CAP-10)', () => {
+  function partitioned(): Capture {
+    const f = new CaptureFactory('https://widget.example.net');
+    const base = { domain: 'widget.example.net', path: '/', expires: null, httpOnly: false, secure: true, sameSite: 'None' as const, hostOnly: true };
+    f.cookies.push({ ...base, name: 'wid', value: 'shop-0123456789', partitionKey: 'https://example.com' });
+    f.cookies.push({ ...base, name: 'wid', value: 'news-0123456789', partitionKey: 'https://example.org' });
+    f.exchange({ url: '/api/state', pageUrl: 'https://www.example.com/cart', requestHeaders: { cookie: 'wid=shop-0123456789' }, status: 200 });
+    f.exchange({ url: '/api/track', pageUrl: 'https://news.example.org/', requestHeaders: { cookie: 'wid=news-0123456789' }, status: 204 });
+    return f.capture();
+  }
+
+  test('keeps one cookie per partition, each with its top-level site and the endpoints that sent it', () => {
+    const capture = partitioned();
+    const endpoints = endpointsOf(capture);
+    const list = inventory().build(capture, endpoints);
+    const wid = list.filter((entry) => entry.name === 'wid');
+    assert.deepEqual(
+      wid.map((entry) => [entry.partitionKey, entry.usedBy]),
+      [
+        ['https://example.com', ['get-api-state']],
+        ['https://example.org', ['get-api-track']],
+      ],
+    );
+  });
+
+  test('the model validator accepts a partition key string and rejects other values', () => {
+    const f = new CaptureFactory();
+    f.cookies.push({ name: 'w', value: '1', domain: 'shop.example.com', path: '/', expires: null, httpOnly: false, secure: true, sameSite: 'None', hostOnly: true, partitionKey: 'https://top.example' });
+    const capture = f.capture();
+    assert.deepEqual(new CaptureValidator().validate(capture), []);
+    const model = ModelBuilder.create({ now: new Date(0) }).build(capture);
+    assert.equal(model.cookies[0]?.partitionKey, 'https://top.example');
+    const validator = new ModelValidator();
+    assert.deepEqual(validator.validate(model), []);
+    const broken = JSON.parse(JSON.stringify(model)) as { cookies: Record<string, unknown>[] };
+    broken.cookies[0]!.partitionKey = 7;
+    assert.deepEqual(validator.validate(broken), ['cookies[0].partitionKey: expected a string']);
+    const raw = JSON.parse(JSON.stringify(capture)) as { cookies: Record<string, unknown>[] };
+    raw.cookies[0]!.partitionKey = false;
+    assert.deepEqual(new CaptureValidator().validate(raw), ['cookies[0].partitionKey must be a string']);
+  });
+
+  test('the cookie list, Markdown and HTML show the partition', () => {
+    const model = ModelBuilder.create({ now: new Date(0) }).build(partitioned());
+    const shop = model.cookies.find((entry) => entry.partitionKey === 'https://example.com');
+    assert.ok(shop);
+    assert.match(CookieListPresenter.flags(shop), /Partitioned=https:\/\/example\.com/);
+    const markdown = new MarkdownExporter().export(model, {}).content;
+    assert.match(markdown, /\| SameSite \| Partition \| Expires \|/);
+    assert.match(markdown, /\| `wid` \| `widget\.example\.net` \| `\/` \| [a-z]+ \| no \| yes \| None \| https:\/\/example\.com \| session \|/);
+    const html = new HtmlExporter().export(model, {}).content;
+    assert.match(html, /<th>Partition<\/th>/);
+    assert.match(html, /<td>https:\/\/example\.org<\/td>/);
   });
 });

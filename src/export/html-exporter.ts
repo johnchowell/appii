@@ -149,12 +149,12 @@ export class HtmlExporter extends BaseExporter {
     const rows = model.cookies.map(
       (cookie) =>
         `<tr><td><code>${esc(cookie.name)}</code></td><td><code>${esc(cookie.domain)}</code></td><td><code>${esc(cookie.path)}</code></td><td>${esc(cookie.role)}</td>` +
-        `<td>${yes(cookie.httpOnly)}</td><td>${yes(cookie.secure)}</td><td>${esc(cookie.sameSite ?? '-')}</td><td>${esc(cookie.session ? 'session' : (cookie.expires ?? '-'))}</td>` +
+        `<td>${yes(cookie.httpOnly)}</td><td>${yes(cookie.secure)}</td><td>${esc(cookie.sameSite ?? '-')}</td><td>${esc(cookie.partitionKey ?? '-')}</td><td>${esc(cookie.session ? 'session' : (cookie.expires ?? '-'))}</td>` +
         `<td>${esc(cookie.setBy.join(', ') || '-')}</td><td>${esc(cookie.usedBy.join(', ') || '-')}</td><td><code>${esc(cookie.valueExample)}</code></td></tr>`,
     );
     return [
       '<section id="cookies"><h2>Cookies</h2><div class="scroll"><table>',
-      '<thead><tr><th>Name</th><th>Domain</th><th>Path</th><th>Role</th><th>HttpOnly</th><th>Secure</th><th>SameSite</th><th>Expires</th><th>Set by</th><th>Used by</th><th>Value</th></tr></thead>',
+      '<thead><tr><th>Name</th><th>Domain</th><th>Path</th><th>Role</th><th>HttpOnly</th><th>Secure</th><th>SameSite</th><th>Partition</th><th>Expires</th><th>Set by</th><th>Used by</th><th>Value</th></tr></thead>',
       `<tbody>${rows.join('')}</tbody></table></div></section>`,
     ].join('');
   }

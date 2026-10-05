@@ -65,6 +65,7 @@ export class FormExtractor {
       (role === 'submitter' ? submitters : fields).push(field);
     });
     FormExtractor.#settleRadioGroups(fields);
+    const acceptCharset = doc.attr(form, 'accept-charset');
     const descriptor: FormDescriptor = {
       index,
       selector: this.#selectors.form(doc, form),
@@ -72,6 +73,7 @@ export class FormExtractor {
       action: doc.actionUrl(doc.attr(form, 'action')),
       method: ControlRules.method(doc.attr(form, 'method')),
       enctype: ControlRules.enctype(doc.attr(form, 'enctype')),
+      charset: ControlRules.submissionEncoding(acceptCharset, doc.encoding),
       noValidate: doc.has(form, 'novalidate'),
       fields,
       submitters,
@@ -79,7 +81,6 @@ export class FormExtractor {
     };
     const id = doc.attr(form, 'id');
     const name = doc.attr(form, 'name');
-    const acceptCharset = doc.attr(form, 'accept-charset');
     const target = doc.attr(form, 'target');
     if (id) descriptor.id = id;
     if (name) descriptor.name = name;

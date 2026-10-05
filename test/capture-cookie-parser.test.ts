@@ -339,6 +339,31 @@ describe('CookieParser.replay same-site and partition rules (RFC 6265bis 5.7, CH
     ]);
     assert.deepEqual(jar.map((c) => `${c.name}=${c.value}`).sort(), ['wid=1', 'wid=2']);
   });
+
+  test('records the top-level site of each partitioned cookie and gives each partition its own identity (CAP-10)', () => {
+    const widget = 'wid=1; Secure; SameSite=None; Partitioned; Path=/';
+    const jar = parser.replay([
+      from('https://widget.example.net/set', 'https://shop.example.com/cart', 'fetch', [widget, 'plain=1; Secure; SameSite=None']),
+      from('https://widget.example.net/set', 'http://127.0.0.1:3000/', 'fetch', [widget.replace('wid=1', 'wid=2')]),
+      from('https://widget.example.net/set', 'https://www.shop.example.com/', 'fetch', [widget.replace('wid=1', 'wid=3')]),
+    ]);
+    assert.deepEqual(
+      jar.map((c) => [c.name, c.value, c.partitionKey]).sort(),
+      [
+        ['plain', '1', undefined],
+        ['wid', '2', 'http://127.0.0.1'],
+        ['wid', '3', 'https://example.com'],
+      ],
+    );
+    assert.equal(new Set(jar.map((c) => CookieParser.key(c))).size, 3);
+    const first = parser.parse(widget, 'https://widget.example.net/set', 'https://example.com');
+    assert.equal(first?.partitionKey, 'https://example.com');
+    assert.equal(parser.parse('plain=1; Secure', 'https://widget.example.net/set', 'https://example.com')?.partitionKey, undefined);
+    assert.notEqual(CookieParser.key({ ...first!, partitionKey: 'https://a.example' }), CookieParser.key({ ...first!, partitionKey: 'https://b.example' }));
+    assert.equal(CookieParser.site('https://www.shop.example.com:8443/a'), 'https://example.com');
+    assert.equal(CookieParser.sentIn({ partitionKey: 'https://example.com' }, 'https://example.org'), false);
+    assert.equal(CookieParser.sentIn({}, 'https://example.org'), true);
+  });
 });
 
 describe('CookieParser.fromCdp', () => {
@@ -351,5 +376,25 @@ describe('CookieParser.fromCdp', () => {
       CookieParser.fromCdp({ name: 'lax', value: '2', domain: '.example.com', path: '/a', expires: 1791169944.5, size: 4, httpOnly: true, secure: true, session: false, sameSite: 'Lax' }),
       { name: 'lax', value: '2', domain: 'example.com', path: '/a', expires: 1791169944.5, httpOnly: true, secure: true, sameSite: 'Lax', hostOnly: false },
     );
+  });
+
+  test('keeps the partition key of CHIPS cookies from CDP and from Playwright (CAP-10)', () => {
+    const cdp = CookieParser.fromCdp({
+      name: 'wid',
+      value: '1',
+      domain: 'widget.example.net',
+      path: '/',
+      expires: -1,
+      httpOnly: false,
+      secure: true,
+      session: true,
+      sameSite: 'None',
+      partitionKey: { topLevelSite: 'https://shop.example.com', hasCrossSiteAncestor: false },
+    });
+    assert.equal(cdp.partitionKey, 'https://shop.example.com');
+    assert.equal(CookieParser.fromCdp({ name: 'w', value: '1', domain: 'a.example', path: '/', expires: -1, httpOnly: false, secure: true, session: true, partitionKey: 'https://b.example' }).partitionKey, 'https://b.example');
+    const playwright = CookieParser.fromPlaywright({ name: 'wid', value: '2', domain: 'widget.example.net', path: '/', expires: -1, httpOnly: false, secure: true, sameSite: 'None', partitionKey: 'http://localhost' });
+    assert.equal(playwright.partitionKey, 'http://localhost');
+    assert.equal(Object.hasOwn(CookieParser.fromPlaywright({ name: 'x', value: '1', domain: 'a.example', path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Lax' }), 'partitionKey'), false);
   });
 });

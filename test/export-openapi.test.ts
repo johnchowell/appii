@@ -191,8 +191,11 @@ describe('OpenApiExporter on a real browser capture of the fixture site', () => 
     const props = obj(schema.properties);
     assert.equal(obj(props.csrf_token)['x-appii-token'], true);
     assert.equal(obj(props.csrf_token).readOnly, undefined);
-    assert.equal(obj(props.email).format, 'email');
-    assert.equal(obj(props.password).minLength, 8);
+    assert.equal(obj(props.email).format, undefined);
+    assert.equal(obj(props.email)['x-html-type'], 'email');
+    assert.match('first..last@localhost', new RegExp(String(obj(props.email).pattern), 'u'));
+    assert.equal(obj(props.password).minLength, 4);
+    assert.equal(obj(props.password)['x-html-minlength'], 8);
     assert.deepEqual(schema.required, ['email', 'password', 'action']);
     assert.deepEqual(login['x-appii-form'], { pageUrl: `${fixture.site.origin}/login`, selector: 'form#login', enctype: 'application/x-www-form-urlencoded' });
     assert.deepEqual(login['x-appii-csrf'], [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${fixture.site.origin}/login` }]);

@@ -119,10 +119,15 @@ describe('SchemaTree', () => {
   test('renders the real multipart signup form schema with its HTML rules', () => {
     const rows = tree.rows(byId(FIXTURE, 'post-signup').requestBody?.schema);
     const get = (path: string) => rows.find((row) => row.path === path);
-    assert.equal(get('username')?.required, true);
+    assert.equal(get('username')?.required, false);
+    assert.deepEqual(get('username')?.requiredWhen, ['intent=create']);
+    assert.equal(get('intent')?.required, true);
+    assert.equal(get('intent')?.requiredWhen, undefined);
     assert.match(get('username')?.constraints ?? '', /pattern \[a-z0-9_\]\{3,16\}/);
     assert.match(get('age')?.constraints ?? '', /range 13\.\.120, step 1/);
-    assert.equal(get('country')?.type, 'enum(2)');
+    assert.equal(get('age')?.requiredWhen, undefined);
+    assert.equal(get('country')?.type, 'enum(3)');
+    assert.match(get('country')?.constraints ?? '', /one of us\|ca\|""/);
     assert.equal(get('interests[]')?.constraints, 'one of a|b|c');
     assert.match(get('bio')?.constraints ?? '', /length 0\.\.200/);
     assert.equal(get('avatar')?.type, 'string(binary)');

@@ -215,7 +215,7 @@ export class FormSchemaCombiner {
 
   static #types(values: readonly unknown[]): unknown {
     const types = Helpers.distinct(values.flatMap((value) => (Array.isArray(value) ? value : [value])).filter((value): value is string => typeof value === 'string'));
-    const numeric = types.includes('number') ? types.filter((type) => type !== 'integer') : types;
+    const numeric = (types.includes('number') ? types.filter((type) => type !== 'integer') : types).sort((a, b) => Number(a === 'string') - Number(b === 'string'));
     return numeric.length === 1 ? numeric[0] : numeric;
   }
 

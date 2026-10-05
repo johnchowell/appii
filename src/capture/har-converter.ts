@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { load } from 'cheerio';
 import { AppiiError, Http, Json, Meta, Text } from '../shared/index.js';
+import { CACHE_KINDS } from '../model/index.js';
 import type {
   BodyData,
+  CacheKind,
   Capture,
   CapturedRequest,
   CapturedResponse,
@@ -51,6 +53,9 @@ export class HarConverter {
   static readonly MAX_DATE_MS = 8.64e15;
   static readonly MS_PER_SECOND = 1000;
   static readonly RESPONSE_START_TIMINGS: readonly string[] = ['blocked', 'dns', 'connect', 'send', 'wait'];
+  static readonly MEMORY_CACHE = 'memory';
+  static readonly DISK_CACHE = 'disk';
+  static readonly CACHE_KINDS: ReadonlySet<string> = new Set(CACHE_KINDS);
 
   readonly #cookies: CookieParser;
   readonly #validator: CaptureValidator;
@@ -246,11 +251,13 @@ export class HarConverter {
       timings: HarConverter.#timings(duration),
       ...(server ? { serverIPAddress: server } : {}),
       _resourceType: e.resourceType,
+      ...(e.servedBy === 'cache' ? { _fromCache: e.cacheKind === 'memory' ? HarConverter.MEMORY_CACHE : HarConverter.DISK_CACHE } : {}),
       _appiiId: e.id,
       ...(e.redirectedFrom ? { _appiiRedirectedFrom: e.redirectedFrom } : {}),
       ...(e.pageUrl ? { _appiiPageUrl: e.pageUrl } : {}),
       ...(e.error ? { _appiiError: e.error } : {}),
       ...(e.response?.remoteAddress ? { _appiiRemoteAddress: e.response.remoteAddress } : {}),
+      ...(e.servedBy === 'cache' && e.cacheKind ? { _appiiCacheKind: e.cacheKind } : {}),
     };
   }
 
@@ -275,6 +282,7 @@ export class HarConverter {
       headersSize: -1,
       bodySize: HarConverter.#bodySize(e),
       ...(e.error ? { _error: e.error } : {}),
+      ...(e.servedBy === 'service-worker' ? { _fetchedViaServiceWorker: true } : {}),
     };
   }
 
@@ -373,6 +381,8 @@ export class HarConverter {
             status,
             mimeType: response ? response.body?.mimeType || Http.getHeader(response.headers, 'content-type') || HarConverter.#declaredMime(res.content) : '',
           });
+    const served = HarConverter.#servedBy(raw, res);
+    if (served && response) delete response.remoteAddress;
     return {
       id: typeof raw._appiiId === 'string' && raw._appiiId ? raw._appiiId : Http.newId(),
       source: 'har',
@@ -384,7 +394,16 @@ export class HarConverter {
       ...(response ? { response } : {}),
       ...(error ? { error } : {}),
       ...(typeof raw._appiiRedirectedFrom === 'string' && raw._appiiRedirectedFrom ? { redirectedFrom: raw._appiiRedirectedFrom } : {}),
+      ...(served ?? {}),
     };
+  }
+
+  static #servedBy(raw: Record<string, unknown>, res: Record<string, unknown>): Pick<Exchange, 'servedBy' | 'cacheKind'> | undefined {
+    if (res._fetchedViaServiceWorker === true) return { servedBy: 'service-worker' };
+    const fromCache = raw._fromCache;
+    if (fromCache !== HarConverter.MEMORY_CACHE && fromCache !== HarConverter.DISK_CACHE) return undefined;
+    const kind = raw._appiiCacheKind;
+    return { servedBy: 'cache', cacheKind: typeof kind === 'string' && HarConverter.CACHE_KINDS.has(kind) ? (kind as CacheKind) : fromCache };
   }
 
   static #socket(raw: Record<string, unknown>, index: number): WebSocketCapture {

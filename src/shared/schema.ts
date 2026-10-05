@@ -65,9 +65,49 @@ export function variants(schema: JsonSchema | undefined): JsonSchema[] {
   return [...asArray(schema.oneOf), ...asArray(schema.anyOf)].map(asSchema).filter((s): s is JsonSchema => !!s);
 }
 
+export const ENUM_VALUE = 16;
+export const EMPTY_STRING = '""';
+
+export function displayValue(value: unknown, max?: number): string {
+  return value === '' ? EMPTY_STRING : short(value, max);
+}
+
+export function requiredWhen(schema: JsonSchema | undefined): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const always = requiredSet(schema);
+  let node = schema;
+  while (node && isPlainObject(node.if)) {
+    const condition = conditionText(asSchema(node.if));
+    const then = asSchema(node.then);
+    if (condition && then) {
+      for (const name of requiredSet(then)) {
+        if (always.has(name)) continue;
+        const list = out.get(name) ?? [];
+        if (!list.includes(condition)) list.push(condition);
+        out.set(name, list);
+      }
+    }
+    node = asSchema(node.else);
+  }
+  return out;
+}
+
+function conditionText(condition: JsonSchema | undefined): string | undefined {
+  const [name] = [...requiredSet(condition)];
+  if (name === undefined) return undefined;
+  const value = properties(condition)[name];
+  if (value && 'const' in value) return `${name}=${String(value.const)}`;
+  if (value && Array.isArray(value.enum) && value.enum.length > 0) return `${name}=${value.enum.map(String).join('|')}`;
+  return `${name} is sent`;
+}
+
+export function emptyStringOnly(schema: JsonSchema | undefined): boolean {
+  return schema !== undefined && schema.maxLength === 0 && schemaTypes(schema).includes('string');
+}
+
 export function typeLabel(schema: JsonSchema | undefined): string {
   if (!schema) return 'any';
-  if ('const' in schema) return `const ${short(schema.const)}`;
+  if ('const' in schema) return `const ${displayValue(schema.const)}`;
   if (Array.isArray(schema.enum)) return `enum(${schema.enum.length})`;
   const types = schemaTypes(schema);
   if (types.length === 0) return 'any';
@@ -78,6 +118,7 @@ export function typeLabel(schema: JsonSchema | undefined): string {
         return inner ? `array<${typeLabel(inner)}>` : 'array';
       }
       if (t === 'string' && typeof schema.format === 'string') return `string(${schema.format})`;
+      if (t === 'string' && emptyStringOnly(schema)) return 'empty';
       return t;
     })
     .join('|');
@@ -98,15 +139,15 @@ export function constraintSummary(schema: JsonSchema | undefined): string[] {
   const pattern = str(schema['x-html-pattern']) ?? str(schema.pattern);
   if (pattern) out.push(`pattern ${pattern}`);
   const minLen = str(schema['x-html-minlength']) ?? str(schema.minLength);
-  const maxLen = str(schema['x-html-maxlength']) ?? str(schema.maxLength);
+  const maxLen = str(schema['x-html-maxlength']) ?? (emptyStringOnly(schema) ? undefined : str(schema.maxLength));
   if (minLen !== undefined || maxLen !== undefined) out.push(`length ${minLen ?? '0'}..${maxLen ?? ''}`);
   const min = str(schema['x-html-min']) ?? str(schema.minimum);
   const max = str(schema['x-html-max']) ?? str(schema.maximum);
   if (min !== undefined || max !== undefined) out.push(`range ${min ?? ''}..${max ?? ''}`);
   const step = str(schema['x-html-step']) ?? str(schema.multipleOf);
   if (step !== undefined) out.push(`step ${step}`);
-  if (Array.isArray(schema.enum)) out.push(`one of ${schema.enum.map((v) => short(v, 16)).join('|')}`);
-  if ('const' in schema) out.push(`always ${short(schema.const)}`);
+  if (Array.isArray(schema.enum)) out.push(`one of ${schema.enum.map((v) => displayValue(v, ENUM_VALUE)).join('|')}`);
+  if ('const' in schema) out.push(`always ${displayValue(schema.const)}`);
   if (schema.minItems !== undefined || schema.maxItems !== undefined) out.push(`items ${str(schema.minItems) ?? '0'}..${str(schema.maxItems) ?? ''}`);
   if (schema['x-appii-token'] === true) out.push('token');
   if (schema.readOnly === true && schema['x-appii-token'] !== true) out.push('read-only');

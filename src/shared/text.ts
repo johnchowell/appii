@@ -29,6 +29,12 @@ export function words(input: string): string[] {
     .map((w) => w.toLowerCase());
 }
 
+export function letterWords(input: string): string[] {
+  return words(input)
+    .flatMap((word) => word.split(/[0-9]+/))
+    .filter(Boolean);
+}
+
 export function camelCase(input: string): string {
   const parts = words(input);
   const joined = parts.map((w, i) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1))).join('');

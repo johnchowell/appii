@@ -1,5 +1,6 @@
 import type {
   BODY_KINDS,
+  CACHE_KINDS,
   CAPTURE_SOURCES,
   COOKIE_ROLES,
   CSRF_LOCATIONS,
@@ -10,6 +11,7 @@ import type {
   PARAM_LOCATIONS,
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
+  SERVED_BY_VALUES,
   TOKEN_SOURCES,
 } from './constants.js';
 
@@ -29,6 +31,10 @@ export interface BodyData {
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
 export type CaptureSource = (typeof CAPTURE_SOURCES)[number];
+
+export type ServedBy = (typeof SERVED_BY_VALUES)[number];
+
+export type CacheKind = (typeof CACHE_KINDS)[number];
 
 export interface CapturedRequest {
   method: string;
@@ -56,6 +62,8 @@ export interface Exchange {
   response?: CapturedResponse;
   error?: string;
   redirectedFrom?: string;
+  servedBy?: ServedBy;
+  cacheKind?: CacheKind;
 }
 
 export interface WebSocketMessage {
@@ -87,6 +95,7 @@ export interface Cookie {
   secure: boolean;
   sameSite: SameSite | null;
   hostOnly: boolean;
+  partitionKey?: string;
 }
 
 export interface StorageSnapshot {
@@ -170,6 +179,7 @@ export interface FormDescriptor {
   method: FormMethod;
   enctype: FormEnctype;
   acceptCharset?: string;
+  charset: string;
   noValidate: boolean;
   target?: string;
   fields: FormField[];
@@ -231,6 +241,7 @@ export interface EndpointForm {
   action: string;
   method: FormMethod;
   enctype: FormEnctype;
+  charset: string;
   fields: FormField[];
   submitters: FormField[];
   tokenFields: string[];
@@ -276,6 +287,7 @@ export interface CookieInfo {
   httpOnly: boolean;
   secure: boolean;
   sameSite: SameSite | null;
+  partitionKey?: string;
   session: boolean;
   expires: string | null;
   role: CookieRole;

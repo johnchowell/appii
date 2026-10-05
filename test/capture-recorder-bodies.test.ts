@@ -15,6 +15,7 @@ import type { PageServer } from './fixtures/capture-pages.js';
 
 const ALL_BYTES = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
 const CSV = 'id,name\n1,Widget\n2,Gadget\n';
+const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 
 let browser: Browser;
 let server: PageServer;
@@ -79,6 +80,38 @@ before(async () => {
     '/one': (_req, res) => PageServers.send(res, 200, 'text/html', PageServers.html('One', '<script>fetch("/cached")</script>')),
     '/two': (_req, res) => PageServers.send(res, 200, 'text/html', PageServers.html('Two', '<script>fetch("/cached").then(() => { document.title = "done"; })</script>')),
     '/big': (_req, res) => PageServers.send(res, 200, 'application/octet-stream', Buffer.alloc(3000, 7)),
+    '/framed': (_req, res) =>
+      PageServers.send(
+        res,
+        200,
+        'text/html',
+        PageServers.html('Framed', `<iframe src="http://localhost:${server.port}/frame-doc"></iframe><script>addEventListener('message', () => { document.title = 'done'; });</script>`),
+      ),
+    '/frame-doc': (_req, res) => PageServers.send(res, 200, 'text/html', PageServers.html('Frame', '<p>inside</p><script>fetch("/frame-api").then((r) => r.json()).then(() => parent.postMessage("done", "*"));</script>')),
+    '/frame-api': (_req, res) => PageServers.send(res, 200, 'application/json', '{"framed":true}'),
+    '/worker-page': (_req, res) =>
+      PageServers.send(
+        res,
+        200,
+        'text/html',
+        PageServers.html('Worker', `<script>window.worker = new Worker('/worker.js'); worker.onmessage = (event) => { document.title = event.data; };</script>`),
+      ),
+    '/worker.js': (_req, res) =>
+      PageServers.send(res, 200, 'application/javascript', `onmessage = () => { fetch('/worker-api').then((r) => r.text()).then(() => postMessage('done')); }; postMessage('started');`),
+    '/worker-api': (_req, res) => PageServers.send(res, 200, 'application/json', '{"fromWorker":true}'),
+    '/worker-early-page': (_req, res) =>
+      PageServers.send(res, 200, 'text/html', PageServers.html('Worker', `<script>const worker = new Worker('/worker-early.js'); worker.onmessage = () => { document.title = 'done'; };</script>`)),
+    '/worker-early.js': (_req, res) => PageServers.send(res, 200, 'application/javascript', `fetch('/worker-early-api').then((r) => r.text()).then((text) => postMessage(text));`),
+    '/worker-early-api': (_req, res) => PageServers.send(res, 200, 'application/json', '{"fromWorker":true}', { 'content-length': '19' }),
+    '/short-page': (_req, res) => PageServers.send(res, 200, 'text/html', PageServers.html('Short', '<img src="/short.gif"><script>fetch("/head-only", { method: "HEAD" })</script>')),
+    '/short.gif': (_req, res) => {
+      res.writeHead(200, { 'content-type': 'image/gif', 'content-length': String(GIF.length + 1) });
+      res.end(GIF);
+    },
+    '/head-only': (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '13' });
+      res.end();
+    },
   });
 });
 
@@ -234,6 +267,112 @@ describe('TrafficRecorder response bodies and special responses', () => {
     assert.match(cached[0]!.response?.remoteAddress ?? '', /^127\.0\.0\.1:\d+$/);
     assert.equal(cached[1]!.response?.remoteAddress, undefined);
     assert.deepEqual(Http.bodyJson(cached[1]!.response?.body), { cached: true });
+    assert.equal(cached[0]!.servedBy, undefined);
+    assert.equal(cached[1]!.servedBy, 'cache');
+    assert.ok(cached[1]!.cacheKind === 'memory' || cached[1]!.cacheKind === 'disk', String(cached[1]!.cacheKind));
+  });
+
+  test('reads response bodies without sending a request that the page did not make (PW-REFETCH)', async () => {
+    const exchanges = await record({}, async (context, recorder) => {
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/short-page'));
+      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(500);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(server.requests.filter((r) => r.path === '/short.gif').length, 1, 'the browser loaded the image once');
+    assert.deepEqual(
+      server.requests.filter((r) => r.path === '/head-only').map((r) => r.method),
+      ['HEAD'],
+    );
+    const image = only(exchanges, 'GET', '/short.gif');
+    assert.equal(image.response?.status, 200);
+    assert.equal(image.error, 'net::ERR_CONTENT_LENGTH_MISMATCH');
+    assert.equal(only(exchanges, 'HEAD', '/head-only').response?.body, undefined);
+  });
+
+  test('reads the bodies of out-of-process iframes through their own sessions', async () => {
+    const isolated = await chromium.launch({ headless: true, args: ['--site-per-process'] });
+    const context = await isolated.newContext();
+    try {
+      const recorder = new TrafficRecorder();
+      recorder.attach(context);
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/framed'));
+      await page.waitForFunction(() => document.title === 'done');
+      await recorder.settled();
+      recorder.detach();
+      await recorder.settled();
+      const exchanges = recorder.exchanges;
+      assert.match(Http.bodyText(only(exchanges, 'GET', '/frame-doc').response?.body), /<p>inside<\/p>/);
+      assert.deepEqual(Http.bodyJson(only(exchanges, 'GET', '/frame-api').response?.body), { framed: true });
+      assert.equal(server.requests.filter((r) => r.path === '/frame-doc').length, 1);
+      assert.equal(server.requests.filter((r) => r.path === '/frame-api').length, 1);
+    } finally {
+      await context.close();
+      await isolated.close();
+    }
+  });
+
+  test('reads the bodies of requests that a dedicated worker makes through the worker session', async () => {
+    const exchanges = await record({}, async (context, recorder) => {
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/worker-page'));
+      await page.waitForFunction(() => document.title === 'started');
+      let targets = await recorder.ready();
+      for (let attempt = 0; attempt < 200 && !targets.some((target) => target.type === 'worker'); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        targets = await recorder.ready();
+      }
+      assert.ok(targets.some((target) => target.type === 'worker' && target.url.endsWith('/worker.js')));
+      await page.evaluate(() => (window as unknown as { worker: Worker }).worker.postMessage('go'));
+      await page.waitForFunction(() => document.title === 'done');
+    });
+    assert.deepEqual(Http.bodyJson(only(exchanges, 'GET', '/worker-api').response?.body), { fromWorker: true });
+    assert.equal(server.requests.filter((r) => r.path === '/worker-api').length, 1);
+  });
+
+  test('records a request from the first moments of a dedicated worker once, with its body or an incomplete marker', async () => {
+    const exchanges = await record({}, async (context, recorder) => {
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/worker-early-page'));
+      await page.waitForFunction(() => document.title === 'done');
+      const started = Date.now();
+      await recorder.settled();
+      assert.ok(Date.now() - started < TrafficRecorder.READ_TIMEOUT_MS / 2, 'a body that never reaches the session does not hold the recorder');
+    });
+    const body = only(exchanges, 'GET', '/worker-early-api').response?.body;
+    assert.equal(server.requests.filter((r) => r.path === '/worker-early-api').length, 1);
+    assert.ok(body, 'the response keeps its body or an incomplete marker');
+    if (body.truncated) assert.equal(body.size, '{"fromWorker":true}'.length);
+    else assert.deepEqual(Http.bodyJson(body), { fromWorker: true });
+  });
+
+  test('keeps response bodies readable after the page navigates to other documents', async () => {
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      const tap = await PageNetworkTap.open(context, page);
+      assert.ok(tap);
+      await page.goto(server.url('/blob-page'));
+      const url = server.url('/big?kept');
+      await page.evaluate((target) => fetch(target).then((r) => r.arrayBuffer()), url);
+      await page.goto(server.url('/blob-page?second'));
+      await page.goto(server.url('/one'));
+      const record = tap.claim('GET', url, 0);
+      assert.ok(record);
+      assert.equal(record.state, 'finished');
+      assert.equal(record.dataLength, 3000);
+      const body = await tap.responseBody(record);
+      assert.equal(body?.length, 3000);
+      await tap.close();
+    } finally {
+      await context.close();
+    }
   });
 
   test('keeps bodies within a total budget and marks the rest as incomplete with their real size', async () => {

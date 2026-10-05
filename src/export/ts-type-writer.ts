@@ -74,7 +74,8 @@ export class TsTypeWriter {
   #named(type: string, schema: JsonSchema, depth: number): string {
     switch (type) {
       case 'string':
-        return schema.format === 'binary' ? 'Blob' : 'string';
+        if (schema.format === 'binary') return 'Blob';
+        return Schema.emptyStringOnly(schema) ? '""' : 'string';
       case 'integer':
       case 'number':
         return 'number';

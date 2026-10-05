@@ -169,7 +169,7 @@ export class EndpointGrouper {
   }
 
   #include(e: Exchange): boolean {
-    if (!Helpers.httpUrl(e.request.url)) return false;
+    if (!Helpers.httpUrl(e.request.url) || Http.isWorkerResponse(e)) return false;
     if (EndpointGrouper.SKIPPED_TYPES.has(e.resourceType) || this.isPreflight(e)) return false;
     if (!this.#options.includeStatic && this.isStaticAsset(e)) return false;
     return this.#options.includeDocuments || !this.isDocument(e);
@@ -216,15 +216,16 @@ export class EndpointGrouper {
       ...(signature.operationName ? { operationName: signature.operationName } : {}),
       kind,
     });
+    const served = members.filter((member) => Http.reachedServer(member.exchange));
     endpoint.pathParams = this.#params.path(template, members.map((member) => member.signature.path));
     endpoint.queryParams = this.#params.query(members.map((member) => member.signature.url));
-    endpoint.headerParams = this.#params.headers(members.map((member) => member.exchange.request.headers));
+    endpoint.headerParams = this.#params.headers(served.map((member) => member.exchange.request.headers));
     const requestBody = this.#shaper.shape(members.map((member) => member.signature.request));
     if (requestBody) endpoint.requestBody = requestBody;
     endpoint.responses = this.#responses(members, responses);
     endpoint.resourceTypes = Helpers.distinct(members.map((member) => member.exchange.resourceType));
-    endpoint.samples = this.#samples(members);
-    endpoint.count = members.length;
+    endpoint.samples = this.#samples(served.length > 0 ? served : members);
+    endpoint.count = served.length;
     return endpoint;
   }
 
@@ -266,7 +267,7 @@ export class EndpointGrouper {
         entry = { count: 0, bodies: [], headers: new Set() };
         byStatus.set(response.status, entry);
       }
-      entry.count++;
+      if (Http.reachedServer(exchange)) entry.count++;
       entry.bodies.push(body);
       for (const name of this.#notableHeaders(response.headers)) entry.headers.add(name);
     });

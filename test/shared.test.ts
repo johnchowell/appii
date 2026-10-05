@@ -27,6 +27,17 @@ test('Text casing, singularize, escaping', () => {
   assert.equal(Text.formatDuration(65_000), '1 min 5 s');
 });
 
+test('Text.letterWords splits names into lower-case words at case changes, separators and digit runs', () => {
+  assert.deepEqual(Text.letterWords('password1'), ['password']);
+  assert.deepEqual(Text.letterWords('new_password2'), ['new', 'password']);
+  assert.deepEqual(Text.letterWords('otp2fa-Code'), ['otp', 'fa', 'code']);
+  assert.deepEqual(Text.letterWords('loginToken'), ['login', 'token']);
+  assert.deepEqual(Text.letterWords('API2Key'), ['api', 'key']);
+  assert.deepEqual(Text.letterWords('12345'), []);
+  assert.deepEqual(Text.letterWords(''), []);
+  assert.deepEqual(Text.words('password1'), ['password1']);
+});
+
 test('Json helpers', () => {
   assert.equal(Json.stableStringify({ b: 1, a: { d: 1, c: 2 } }, 0), '{"a":{"c":2,"d":1},"b":1}');
   assert.equal(Json.getPath({ a: [{ b: 2 }] }, ['a', 0, 'b']), 2);
@@ -64,6 +75,26 @@ test('Schema helpers', () => {
   assert.deepEqual([...Schema.requiredSet(s)], ['email']);
   assert.deepEqual(Schema.constraintSummary(s.properties.note), ['pattern [a-z]+', 'length 0..10']);
   assert.deepEqual(Schema.constraintSummary(s.properties.age), ['range 13..120']);
+  const optionalNumber = { type: ['integer', 'string'], maxLength: 0, minimum: 1, 'x-html-type': 'number' };
+  assert.equal(Schema.emptyStringOnly(optionalNumber), true);
+  assert.equal(Schema.emptyStringOnly({ type: 'string', maxLength: 3 }), false);
+  assert.equal(Schema.typeLabel(optionalNumber), 'integer|empty');
+  assert.deepEqual(Schema.constraintSummary(optionalNumber), ['html number', 'range 1..']);
+  assert.equal(Schema.displayValue(''), '""');
+  assert.deepEqual(Schema.constraintSummary({ enum: ['', 'a'] }), ['one of ""|a']);
+  const conditional = {
+    type: 'object',
+    required: ['go'],
+    properties: { a: { type: 'string' }, b: { type: 'string' }, go: { enum: ['x', 'y'] } },
+    if: { required: ['go'], properties: { go: { const: 'x' } } },
+    then: { required: ['a', 'go'] },
+    else: { if: { required: ['go'], properties: { go: { enum: ['y', 'z'] } } }, then: { required: ['a', 'b'] }, else: { if: { required: ['b'] }, then: { required: ['a'] } } },
+  };
+  assert.deepEqual([...Schema.requiredWhen(conditional)], [
+    ['a', ['go=x', 'go=y|z', 'b is sent']],
+    ['b', ['go=y|z']],
+  ]);
+  assert.deepEqual([...Schema.requiredWhen({ type: 'object', required: ['a'] })], []);
   assert.deepEqual(Schema.sampleValue(s), { email: 'user@example.com', age: 13, tags: ['a'], plan: 'free', note: 'note' });
   const paths: string[] = [];
   Schema.walkSchema(s, (_n, p) => paths.push(p.join('.')));

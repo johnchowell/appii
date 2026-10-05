@@ -5,6 +5,7 @@ export interface SchemaField {
   path: string;
   type: string;
   required: boolean;
+  requiredWhen?: string[];
   constraints: string[];
   description?: string;
 }
@@ -37,7 +38,17 @@ export class SchemaFieldList {
       return out;
     }
     this.#walk(schema, '', 0, out);
+    const conditional = Schema.requiredWhen(schema);
+    for (const field of out) {
+      const when = field.required ? undefined : conditional.get(field.path);
+      if (when) field.requiredWhen = [...when];
+    }
     return out;
+  }
+
+  static requiredText(field: Pick<SchemaField, 'required' | 'requiredWhen'>): string {
+    if (field.required) return 'yes';
+    return field.requiredWhen ? `if ${field.requiredWhen.join(' or ')}` : 'no';
   }
 
   #walk(schema: JsonSchema, prefix: string, depth: number, out: SchemaField[]): void {

@@ -24,7 +24,8 @@ export class ExportModel {
   static async fixture(): Promise<ExportFixture> {
     const site = await startFixtureSite();
     try {
-      const capture = await CaptureSession.create({ url: site.url, headless: true, idleMs: 400, script: ExportModel.script(site) }).run();
+      const session: CaptureSession = CaptureSession.create({ url: site.url, headless: true, idleMs: 400, script: ExportModel.script(site, () => session.recorder.settled()) });
+      const capture = await session.run();
       const model = ModelBuilder.create({ now: ExportModel.NOW }).build(capture);
       return { site, capture, model };
     } catch (err) {
@@ -33,7 +34,7 @@ export class ExportModel {
     }
   }
 
-  static script(site: FixtureSite): (page: Page) => Promise<void> {
+  static script(site: FixtureSite, settled: () => Promise<void>): (page: Page) => Promise<void> {
     return async (page) => {
       await page.goto(site.origin + '/login');
       await page.evaluate("fetch('/api/me').then((r) => r.text())");
@@ -42,8 +43,10 @@ export class ExportModel {
       await Promise.all([page.waitForURL('**/account'), page.click('#login button[type=submit]')]);
       await page.evaluate("fetch('/api/me').then((r) => r.json())");
       await page.goto(site.origin + '/app');
-      await page.waitForFunction("document.getElementById('out') && document.getElementById('out').textContent === 'done 2'");
+      await page.waitForFunction("document.getElementById('out') && /^done /.test(document.getElementById('out').textContent)");
+      await settled();
       await page.evaluate("fetch('/api/items/3').then((r) => r.json())");
+      await settled();
       await page.goto(site.origin + '/signup');
       await page.goto(site.origin + '/products');
     };

@@ -50,6 +50,7 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
     if (cookie.httpOnly) flags.push('HttpOnly');
     if (cookie.secure) flags.push('Secure');
     if (cookie.sameSite !== null) flags.push(`SameSite=${TextLayout.clean(cookie.sameSite)}`);
+    if (cookie.partitionKey !== undefined) flags.push(`Partitioned=${TextLayout.clean(cookie.partitionKey)}`);
     return flags.join(' ');
   }
 

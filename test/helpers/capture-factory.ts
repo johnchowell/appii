@@ -1,4 +1,4 @@
-import type { BodyData, Capture, Cookie, Exchange, Header, PageSnapshot, ResourceType, WebSocketCapture } from '../../src/model/index.js';
+import type { BodyData, CacheKind, Capture, Cookie, Exchange, Header, PageSnapshot, ResourceType, ServedBy, WebSocketCapture } from '../../src/model/index.js';
 import { Http } from '../../src/shared/index.js';
 
 export type HeaderInput = Record<string, string | string[]> | Header[];
@@ -21,6 +21,8 @@ export interface ExchangeSpec {
   responseType?: string;
   error?: string;
   redirectedFrom?: string;
+  servedBy?: ServedBy;
+  cacheKind?: CacheKind;
 }
 
 export interface FixtureFlow {
@@ -216,6 +218,8 @@ world</textarea>
     }
     if (spec.error !== undefined) exchange.error = spec.error;
     if (spec.redirectedFrom !== undefined) exchange.redirectedFrom = spec.redirectedFrom;
+    if (spec.servedBy !== undefined) exchange.servedBy = spec.servedBy;
+    if (spec.cacheKind !== undefined) exchange.cacheKind = spec.cacheKind;
     this.exchanges.push(exchange);
     return exchange;
   }

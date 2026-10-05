@@ -16,7 +16,7 @@ export class LabelResolver {
   labeledControl(doc: HtmlDocument, label: HtmlElement): HtmlElement | undefined {
     const target = doc.attr(label, 'for');
     if (target !== undefined) {
-      const element = target === '' ? undefined : doc.byId(target);
+      const element = target === '' ? undefined : doc.byId(target, label);
       return element && this.isLabelable(doc, element) ? element : undefined;
     }
     return doc.descendants(label).find((element) => this.isLabelable(doc, element));
@@ -44,7 +44,7 @@ export class LabelResolver {
     const ariaLabel = HtmlMicrosyntax.collapse(doc.attr(control, 'aria-label') ?? '');
     if (ariaLabel) return ariaLabel;
     const labelledBy = HtmlMicrosyntax.splitWhitespace(doc.attr(control, 'aria-labelledby') ?? '')
-      .map((id) => doc.byId(id))
+      .map((id) => doc.byId(id, control))
       .filter((element): element is HtmlElement => element !== undefined)
       .map((element) => this.visibleText(doc, element))
       .filter((text) => text !== '')

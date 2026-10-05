@@ -75,7 +75,7 @@ export class AuthDetector {
     let resolver: CsrfSourceResolver | undefined;
     const resolve = (): CsrfSourceResolver => (resolver ??= this.#sources(capture));
     for (const endpoint of endpoints) {
-      const exchanges = groups.get(endpoint) ?? [];
+      const exchanges = (groups.get(endpoint) ?? []).filter((exchange) => Http.reachedServer(exchange));
       const state: EndpointAuthState = { cookies: new Set(), headers: new Set(), bearer: false, csrf: new Map() };
       for (const exchange of exchanges) this.#observe(state, exchange, resolve);
       this.#formTokens(state, endpoint);
@@ -96,11 +96,13 @@ export class AuthDetector {
     const end = Date.parse(capture.endedAt);
     const page = Helpers.httpUrl(endpoint.form?.pageUrl);
     const crossSite = page !== undefined && !Http.isSameSite(page.href, url.href);
+    const partition = CookieParser.site((page ?? url).href);
     const names = capture.cookies
       .filter((cookie) => !(Number.isFinite(end) && CookieParser.isExpired(cookie, end)))
       .filter((cookie) => (cookie.hostOnly ? host === cookie.domain : CookieParser.domainMatches(host, cookie.domain)))
       .filter((cookie) => CookieParser.pathMatches(url.pathname, cookie.path))
       .filter((cookie) => !cookie.secure || Http.isPotentiallyTrustworthy(url))
+      .filter((cookie) => CookieParser.sentIn(cookie, partition))
       .filter((cookie) => !crossSite || cookie.sameSite === 'None' || (cookie.sameSite !== 'Strict' && Http.isSafeMethod(endpoint.method)))
       .map((cookie) => cookie.name);
     return Helpers.distinct(names);

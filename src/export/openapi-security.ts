@@ -53,7 +53,9 @@ export class OpenApiSecurity {
 
   #cookie(name: string): string {
     const info = this.#model.cookies.find((cookie) => cookie.name === name && Helpers.AUTH_ROLES.has(cookie.role));
-    const flags = info ? [info.httpOnly ? 'HttpOnly' : '', info.secure ? 'Secure' : '', info.sameSite ? `SameSite=${info.sameSite}` : ''].filter(Boolean) : [];
+    const flags = info
+      ? [info.httpOnly ? 'HttpOnly' : '', info.secure ? 'Secure' : '', info.sameSite ? `SameSite=${info.sameSite}` : '', info.partitionKey ? `Partitioned to ${info.partitionKey}` : ''].filter(Boolean)
+      : [];
     const role = info?.role ?? 'session';
     const description = `${role === 'auth' ? 'Authentication' : 'Session'} cookie ${name}${flags.length > 0 ? ` (${flags.join(', ')})` : ''}${info && info.setBy.length > 0 ? `, set by ${info.setBy.join(', ')}` : ''}.`;
     return this.#components.scheme(`cookie:${name}`, `${name} cookie`, { type: 'apiKey', in: 'cookie', name, description });

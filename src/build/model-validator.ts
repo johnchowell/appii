@@ -115,6 +115,7 @@ export class ModelValidator {
         this.#string(problems, form, 'action', at + 'form.');
         this.#oneOf(problems, form, 'method', ModelValidator.FORM_METHODS, at + 'form.');
         this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at + 'form.');
+        this.#string(problems, form, 'charset', at + 'form.');
         this.#fields(problems, form, at + 'form.');
       }
     }
@@ -155,6 +156,7 @@ export class ModelValidator {
     for (const key of ['name', 'domain', 'path', 'valueExample']) this.#string(problems, cookie, key, at);
     for (const key of ['httpOnly', 'secure', 'session']) this.#boolean(problems, cookie, key, at);
     this.#oneOf(problems, cookie, 'sameSite', ModelValidator.SAME_SITE, at, { nullable: true });
+    this.#string(problems, cookie, 'partitionKey', at, { optional: true });
     this.#string(problems, cookie, 'expires', at, { nullable: true });
     this.#oneOf(problems, cookie, 'role', ModelValidator.COOKIE_ROLES, at);
     this.#strings(problems, cookie, 'setBy', at);
@@ -166,7 +168,7 @@ export class ModelValidator {
     if (!form) return;
     const at = path + '.';
     this.#number(problems, form, 'index', at);
-    for (const key of ['selector', 'pageUrl', 'action']) this.#string(problems, form, key, at);
+    for (const key of ['selector', 'pageUrl', 'action', 'charset']) this.#string(problems, form, key, at);
     for (const key of ['id', 'name', 'acceptCharset', 'target']) this.#string(problems, form, key, at, { optional: true });
     this.#oneOf(problems, form, 'method', ModelValidator.FORM_METHODS, at);
     this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at);

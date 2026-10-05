@@ -18,6 +18,10 @@ export const RESOURCE_TYPES = Object.freeze([
 
 export const CAPTURE_SOURCES = Object.freeze(['browser', 'har'] as const);
 
+export const SERVED_BY_VALUES = Object.freeze(['service-worker', 'cache'] as const);
+
+export const CACHE_KINDS = Object.freeze(['memory', 'disk', 'prefetch'] as const);
+
 export const SAME_SITE_VALUES = Object.freeze(['Strict', 'Lax', 'None'] as const);
 
 export const FIELD_KINDS = Object.freeze(['input', 'select', 'textarea', 'button'] as const);

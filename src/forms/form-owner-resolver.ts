@@ -8,7 +8,7 @@ export class FormOwnerResolver {
     if (live !== undefined) return live;
     const formId = doc.attr(control, FormOwnerResolver.FORM_ATTRIBUTE);
     if (formId !== undefined) {
-      const target = formId === '' ? undefined : doc.byId(formId);
+      const target = formId === '' ? undefined : doc.byId(formId, control);
       return target && doc.isHtml(target, 'form') ? target : null;
     }
     return doc.parserOwner(control) ?? doc.closest(control, 'form') ?? null;

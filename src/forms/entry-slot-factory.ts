@@ -47,16 +47,21 @@ export class EntrySlotFactory {
     "[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*";
   static readonly TIME = '(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d{1,3})?)?';
   static readonly DATE = '\\d{4,}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])';
-  static readonly PATTERNS: Readonly<Record<string, string>> = {
-    'email-list': `^(?:${EntrySlotFactory.EMAIL_ADDRESS}(?:,${EntrySlotFactory.EMAIL_ADDRESS})*)?$`,
-    time: `^${EntrySlotFactory.TIME}$`,
-    month: '^\\d{4,}-(?:0[1-9]|1[0-2])$',
-    week: '^\\d{4,}-W(?:0[1-9]|[1-4]\\d|5[0-3])$',
-    'datetime-local': `^${EntrySlotFactory.DATE}T${EntrySlotFactory.TIME}$`,
-    date: `^${EntrySlotFactory.DATE}$`,
-    color: '^#[0-9a-f]{6}$',
+  static readonly GRAMMARS: Readonly<Record<string, string>> = {
+    email: EntrySlotFactory.EMAIL_ADDRESS,
+    'email-list': `${EntrySlotFactory.EMAIL_ADDRESS}(?:,${EntrySlotFactory.EMAIL_ADDRESS})*`,
+    time: EntrySlotFactory.TIME,
+    month: '\\d{4,}-(?:0[1-9]|1[0-2])',
+    week: '\\d{4,}-W(?:0[1-9]|[1-4]\\d|5[0-3])',
+    'datetime-local': `${EntrySlotFactory.DATE}T${EntrySlotFactory.TIME}`,
+    date: EntrySlotFactory.DATE,
+    color: '#[0-9a-f]{6}',
   };
-  static readonly FORMATS: Readonly<Record<string, string>> = { email: 'email' };
+  static readonly SANITIZED_TYPES: ReadonlySet<string> = new Set(['date', 'month', 'week', 'time', 'datetime-local', 'color']);
+  static readonly NEVER_EMPTY_TYPES: ReadonlySet<string> = new Set(['color']);
+  static readonly PATTERNS: Readonly<Record<string, string>> = Object.fromEntries(
+    Object.entries(EntrySlotFactory.GRAMMARS).map(([type, grammar]) => [type, EntrySlotFactory.anchored(type, [], grammar)]),
+  );
   static readonly UTF16_UNITS_PER_CODE_POINT = 2;
   static readonly WIRE_CHARACTERS_PER_NEWLINE = 2;
   static readonly DIRECTIONS: readonly string[] = ['ltr', 'rtl'];
@@ -72,6 +77,13 @@ export class EntrySlotFactory {
 
   static create(): EntrySlotFactory {
     return new EntrySlotFactory({ sanitizer: new ValueSanitizer() });
+  }
+
+  static anchored(type: string, conditions: readonly string[], body: string): string {
+    const optional = EntrySlotFactory.NEVER_EMPTY_TYPES.has(type) ? '' : '?';
+    if (conditions.length === 0) return `^(?:${body})${optional}$`;
+    const lookaheads = conditions.map((condition) => `(?=${condition})`).join('');
+    return `^(?:${lookaheads}(?:${body}))${optional}$`;
   }
 
   static pattern(raw: string | undefined): CompiledPattern {
@@ -203,15 +215,18 @@ export class EntrySlotFactory {
     const schema: JsonSchema = { type: 'string' };
     const type = field.type;
     const emailList = type === 'email' && field.multiple;
-    const format = EntrySlotFactory.FORMATS[type];
-    if (format && !emailList) schema.format = format;
-    const builtIn = EntrySlotFactory.PATTERNS[emailList ? 'email-list' : type];
-    if (builtIn && (checks || !emailList)) schema.pattern = builtIn;
+    const required = checks && field.required;
     const pattern = EntrySlotFactory.pattern(field.pattern);
-    if (pattern.json && checks && !emailList) schema.pattern = pattern.json;
-    let minLength = checks && field.minLength !== undefined ? Math.ceil(field.minLength / EntrySlotFactory.UTF16_UNITS_PER_CODE_POINT) : undefined;
-    if (checks && field.required) minLength = Math.max(minLength ?? 0, 1);
-    if (minLength !== undefined && minLength > 0) schema.minLength = minLength;
+    const grammar = EntrySlotFactory.GRAMMARS[emailList ? 'email-list' : type];
+    const body = grammar !== undefined && (checks || EntrySlotFactory.SANITIZED_TYPES.has(type)) ? grammar : undefined;
+    const author = pattern.json !== undefined && checks && !emailList ? pattern.html : undefined;
+    const shortest = checks && field.minLength !== undefined ? Math.ceil(field.minLength / EntrySlotFactory.UTF16_UNITS_PER_CODE_POINT) : 0;
+    const conditions: string[] = [];
+    if (author !== undefined && body !== undefined) conditions.push(`(?:${author})$`);
+    if (shortest > 1 && !required) conditions.push(`[\\s\\S]{${shortest}}`);
+    const main = body ?? (author !== undefined ? author : conditions.length > 0 ? '[\\s\\S]*' : undefined);
+    if (main !== undefined) schema.pattern = EntrySlotFactory.anchored(type, conditions, main);
+    if (required) schema.minLength = Math.max(shortest, 1);
     if (field.maxLength !== undefined && !this.barred(field)) {
       schema.maxLength = type === 'textarea' ? field.maxLength * EntrySlotFactory.WIRE_CHARACTERS_PER_NEWLINE : field.maxLength;
     }
@@ -243,7 +258,9 @@ export class EntrySlotFactory {
     });
     const enforce = isRange || checks;
     const integral = enforce && range.integral;
-    const schema: JsonSchema = { type: integral ? 'integer' : 'number' };
+    const numeric = integral ? 'integer' : 'number';
+    const empty = !isRange && !(checks && field.required);
+    const schema: JsonSchema = empty ? { type: [numeric, 'string'], maxLength: 0 } : { type: numeric };
     if (enforce && range.minimum) schema.minimum = range.minimum.toNumber();
     if (enforce && range.maximum) schema.maximum = range.maximum.toNumber();
     if (enforce && range.step && range.aligned && !(integral && range.step.compare(HtmlDecimal.ONE) === 0)) {

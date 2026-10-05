@@ -52,6 +52,7 @@ describe('TrafficRecorder against a real browser', () => {
       const recorder = new TrafficRecorder();
       recorder.attach(context);
       const page = await context.newPage();
+      assert.equal(await recorder.prepare(page), true);
       await page.goto(site.url);
       await page.goto(site.origin + '/set-cookies');
       await page.goto(site.origin + '/app');

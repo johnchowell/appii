@@ -29,6 +29,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     { header: 'CONSTRAINTS', flex: true, wrap: true, minWidth: 12, optional: true, priority: 2 },
     { header: 'EXAMPLES', flex: true, wrap: true, minWidth: 10, optional: true, priority: 1 },
   ];
+  static readonly CONDITIONAL = 'if';
   static readonly SCHEMA_COLUMNS: readonly TableColumn[] = [
     { header: 'FIELD', flex: true, minWidth: 12 },
     { header: 'TYPE', flex: true, minWidth: 8 },
@@ -207,9 +208,18 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   #schema(body: BodyShape): string[] {
     if (body.kind === 'empty') return [];
     if (!body.schema) return body.examples.length === 0 && EndpointDetailPresenter.STRUCTURED_KINDS.has(body.kind) ? [this.ansi.dim('Schema unknown (the body was not captured).')] : [];
-    const rows = this.#tree.rows(body.schema).map((row) => [TextLayout.clean(row.path), TextLayout.clean(row.type), row.required ? 'yes' : this.ansi.dim('no'), TextLayout.clean(row.constraints)]);
+    const tree = this.#tree.rows(body.schema);
+    const rows = tree.map((row) => [
+      TextLayout.clean(row.path),
+      TextLayout.clean(row.type),
+      row.required ? 'yes' : row.requiredWhen ? EndpointDetailPresenter.CONDITIONAL : this.ansi.dim('no'),
+      TextLayout.clean(row.constraints),
+    ]);
     if (rows.length === 0) return [];
-    return [this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, rows)];
+    const conditions = new Map<string, string[]>();
+    for (const row of tree) for (const condition of row.requiredWhen ?? []) conditions.set(condition, [...(conditions.get(condition) ?? []), row.path]);
+    const notes = [...conditions].flatMap(([condition, names]) => TextLayout.wrap(TextLayout.clean(`Required if ${condition}: ${names.join(', ')}.`), this.width));
+    return [this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, rows), ...notes];
   }
 
   #samples(endpoint: Endpoint): PresenterBlock {

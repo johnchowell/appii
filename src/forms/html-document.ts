@@ -32,6 +32,15 @@ export class HtmlDocument {
     ['UTF-16LE', 'UTF-8'],
     ['x-user-defined', 'windows-1252'],
   ]);
+  static readonly SHADOW_ROOT_MODE = 'shadowrootmode';
+  static readonly SHADOW_ROOT_MODES: ReadonlySet<string> = new Set(['open', 'closed']);
+  static readonly SHADOW_HOST_NAMES: ReadonlySet<string> = new Set([
+    'article', 'aside', 'blockquote', 'body', 'div', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'main', 'nav', 'p', 'section', 'span',
+  ]);
+  static readonly RESERVED_CUSTOM_NAMES: ReadonlySet<string> = new Set([
+    'annotation-xml', 'color-profile', 'font-face', 'font-face-src', 'font-face-uri', 'font-face-format', 'font-face-name', 'missing-glyph',
+  ]);
+  static readonly CUSTOM_ELEMENT_NAME: RegExp = /^[a-z][^\x00-\x20\x41-\x5a]*-[^\x00-\x20\x41-\x5a]*$/;
 
   readonly url: string;
   readonly baseUrl: string;
@@ -39,7 +48,11 @@ export class HtmlDocument {
   readonly root: HtmlNode;
   readonly elements: readonly HtmlElement[];
   readonly allElements: readonly HtmlElement[];
-  readonly #ids: ReadonlyMap<string, HtmlElement>;
+  readonly shadowRoots: readonly HtmlNode[];
+  readonly #hosts: ReadonlyMap<HtmlNode, HtmlElement>;
+  readonly #shadowTemplates: ReadonlySet<HtmlElement>;
+  readonly #scopes: ReadonlyMap<HtmlElement, HtmlNode>;
+  readonly #ids: ReadonlyMap<HtmlNode, ReadonlyMap<string, HtmlElement>>;
   readonly #parserOwners: ReadonlyMap<HtmlElement, HtmlElement>;
   #forms: readonly HtmlElement[] | undefined;
   #liveForms: ReadonlyMap<number, HtmlElement> | undefined;
@@ -48,12 +61,23 @@ export class HtmlDocument {
     this.root = root;
     this.url = url;
     this.#parserOwners = parserOwners;
-    this.elements = HtmlDocument.#collect(root, false);
-    this.allElements = HtmlDocument.#collect(root, true);
-    const ids = new Map<string, HtmlElement>();
+    const hosts = new Map<HtmlNode, HtmlElement>();
+    const shadowTemplates = new Set<HtmlElement>();
+    const scopes = new Map<HtmlElement, HtmlNode>();
+    this.elements = HtmlDocument.#collect(root, false, hosts, shadowTemplates, scopes);
+    this.allElements = HtmlDocument.#collect(root, true, new Map(), new Set(), new Map());
+    this.#hosts = hosts;
+    this.#shadowTemplates = shadowTemplates;
+    this.#scopes = scopes;
+    this.shadowRoots = [...hosts.keys()];
+    const ids = new Map<HtmlNode, Map<string, HtmlElement>>();
     for (const element of this.elements) {
       const id = element.attribs.id;
-      if (id && !ids.has(id)) ids.set(id, element);
+      if (!id) continue;
+      const scope = scopes.get(element) ?? root;
+      const scoped = ids.get(scope) ?? new Map<string, HtmlElement>();
+      ids.set(scope, scoped);
+      if (!scoped.has(id)) scoped.set(id, element);
     }
     this.#ids = ids;
     this.baseUrl = this.#frozenBaseUrl();
@@ -87,8 +111,27 @@ export class HtmlDocument {
     return Object.hasOwn(element.attribs, name);
   }
 
-  byId(id: string): HtmlElement | undefined {
-    return this.#ids.get(id);
+  byId(id: string, context?: HtmlNode): HtmlElement | undefined {
+    return this.#ids.get(context === undefined ? this.root : this.scopeOf(context))?.get(id);
+  }
+
+  scopeOf(node: HtmlNode): HtmlNode {
+    if (HtmlDocument.isElement(node)) {
+      const known = this.#scopes.get(node);
+      if (known) return known;
+    }
+    let current: HtmlNode = node;
+    while (current.parent) current = current.parent;
+    return current;
+  }
+
+  inDocumentTree(element: HtmlElement): boolean {
+    return (this.#scopes.get(element) ?? this.root) === this.root;
+  }
+
+  shadowHost(node: HtmlNode): HtmlElement | undefined {
+    const parent = node.parent;
+    return parent ? this.#hosts.get(parent) : undefined;
   }
 
   parentElement(element: HtmlNode): HtmlElement | null {
@@ -108,7 +151,7 @@ export class HtmlDocument {
 
   children(element: HtmlNode): HtmlElement[] {
     if (HtmlDocument.isElement(element) && this.#isTemplate(element)) return [];
-    return (element.children ?? []).filter((child): child is HtmlElement => HtmlDocument.isElement(child));
+    return (element.children ?? []).filter((child): child is HtmlElement => HtmlDocument.isElement(child) && !this.#shadowTemplates.has(child));
   }
 
   descendants(element: HtmlElement, skip?: (element: HtmlElement) => boolean): HtmlElement[] {
@@ -151,7 +194,10 @@ export class HtmlDocument {
   }
 
   forms(): readonly HtmlElement[] {
-    this.#forms ??= this.elements.filter((element) => this.isHtml(element, 'form'));
+    if (!this.#forms) {
+      const forms = this.elements.filter((element) => this.isHtml(element, 'form'));
+      this.#forms = [...forms.filter((form) => this.inDocumentTree(form)), ...forms.filter((form) => !this.inDocumentTree(form))];
+    }
     return this.#forms;
   }
 
@@ -200,7 +246,7 @@ export class HtmlDocument {
 
   #metaEncoding(): string | undefined {
     for (const element of this.elements) {
-      if (!this.isHtml(element, 'meta')) continue;
+      if (!this.isHtml(element, 'meta') || !this.inDocumentTree(element)) continue;
       const charset = this.attr(element, 'charset');
       const equiv = this.attr(element, 'http-equiv');
       const content = this.attr(element, 'content');
@@ -219,7 +265,7 @@ export class HtmlDocument {
   }
 
   #frozenBaseUrl(): string {
-    const base = this.elements.find((element) => this.isHtml(element, 'base') && this.has(element, 'href'));
+    const base = this.elements.find((element) => this.isHtml(element, 'base') && this.has(element, 'href') && this.inDocumentTree(element));
     if (!base) return this.url;
     const resolved = this.resolveUrl(this.attr(base, 'href') ?? '', this.url);
     if (!resolved) return this.url;
@@ -235,20 +281,46 @@ export class HtmlDocument {
     return node.children ?? [];
   }
 
-  static #collect(root: HtmlNode, intoTemplates: boolean): HtmlElement[] {
+  static #collect(root: HtmlNode, intoTemplates: boolean, hosts: Map<HtmlNode, HtmlElement>, shadowTemplates: Set<HtmlElement>, scopes: Map<HtmlElement, HtmlNode>): HtmlElement[] {
     const out: HtmlElement[] = [];
-    const stack: HtmlNode[] = [...(root.children ?? [])].reverse();
+    const stack: [HtmlNode, HtmlNode][] = [...(root.children ?? [])].reverse().map((node): [HtmlNode, HtmlNode] => [node, root]);
     while (stack.length > 0) {
-      const node = stack.pop();
-      if (!node) break;
+      const top = stack.pop();
+      if (!top) break;
+      const [node, scope] = top;
       if (HtmlDocument.isElement(node)) {
-        out.push(node);
         const isTemplate = node.name === 'template' && (node.namespace === undefined || node.namespace === HtmlDocument.HTML_NAMESPACE);
+        const content = isTemplate && !intoTemplates ? HtmlDocument.#shadowContent(node, hosts) : undefined;
+        if (content) {
+          hosts.set(content, node.parent as HtmlElement);
+          shadowTemplates.add(node);
+          const kids = content.children ?? [];
+          for (let i = kids.length - 1; i >= 0; i--) stack.push([kids[i] as HtmlNode, content]);
+          continue;
+        }
+        out.push(node);
+        scopes.set(node, scope);
         if (isTemplate && !intoTemplates) continue;
       } else if (node.type !== 'root') continue;
       const kids = node.children ?? [];
-      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i] as HtmlNode);
+      for (let i = kids.length - 1; i >= 0; i--) stack.push([kids[i] as HtmlNode, scope]);
     }
     return out;
+  }
+
+  static #shadowContent(template: HtmlElement, hosts: ReadonlyMap<HtmlNode, HtmlElement>): HtmlNode | undefined {
+    const mode = template.attribs[HtmlDocument.SHADOW_ROOT_MODE];
+    if (mode === undefined || !HtmlDocument.SHADOW_ROOT_MODES.has(HtmlMicrosyntax.asciiLower(mode))) return undefined;
+    const host = template.parent;
+    if (!HtmlDocument.isElement(host) || !HtmlDocument.#canHostShadow(host)) return undefined;
+    for (const existing of hosts.values()) if (existing === host) return undefined;
+    const content = (template.children ?? []).find((child) => child.type === 'root');
+    return content;
+  }
+
+  static #canHostShadow(host: HtmlElement): boolean {
+    if (host.namespace !== undefined && host.namespace !== HtmlDocument.HTML_NAMESPACE) return false;
+    if (HtmlDocument.SHADOW_HOST_NAMES.has(host.name)) return true;
+    return HtmlDocument.CUSTOM_ELEMENT_NAME.test(host.name) && !HtmlDocument.RESERVED_CUSTOM_NAMES.has(host.name);
   }
 }

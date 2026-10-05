@@ -38,6 +38,7 @@ describe('architecture', () => {
       ['byte order mark handling', /charCodeAt\(0\)\s*===\s*0xfeff/i],
       ['sorted unique response statuses', /new Set\(\s*\w+\.responses\.map\(/],
       ['in-band {{placeholder}} parsing', /\\\{\\\{\[a-z0-9_\]\+\\\}\\\}|hasPlaceholder/],
+      ['digit-run word splitting (Text.letterWords)', /\.split\(\/\[0-9\]\+\/\)|\bstatic\s+#words\s*\(/],
     ];
     const found: string[] = [];
     for (const file of SourceTree.domainFiles()) {

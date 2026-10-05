@@ -84,7 +84,7 @@ export class TokenDetector {
   documentTokens(doc: HtmlDocument): Record<string, string> {
     const found = new Map<string, string>();
     for (const element of doc.elements) {
-      if (!doc.isHtml(element, 'meta')) continue;
+      if (!doc.isHtml(element, 'meta') || !doc.inDocumentTree(element)) continue;
       const name = doc.attr(element, 'name');
       const content = doc.attr(element, 'content');
       if (name === undefined || content === undefined || found.has(name) || !this.isTokenMeta(name)) continue;

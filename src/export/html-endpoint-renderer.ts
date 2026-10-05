@@ -133,7 +133,7 @@ export class HtmlEndpointRenderer {
     if (fields.length > 0) {
       const rows = fields.map(
         (field) =>
-          `<tr><td><code>${esc(field.path)}</code></td><td>${esc(field.type)}</td><td>${field.required ? 'yes' : 'no'}</td><td>${esc(field.constraints.join('; '))}</td><td>${esc(field.description ?? '')}</td></tr>`,
+          `<tr><td><code>${esc(field.path)}</code></td><td>${esc(field.type)}</td><td>${esc(SchemaFieldList.requiredText(field))}</td><td>${esc(field.constraints.join('; '))}</td><td>${esc(field.description ?? '')}</td></tr>`,
       );
       out.push(`<div class="scroll"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Constraints</th><th>Label</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
     }

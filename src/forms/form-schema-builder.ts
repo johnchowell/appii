@@ -67,7 +67,7 @@ export class FormSchemaBuilder {
   }
 
   charset(form: FormDescriptor, options: FormBuildOptions = {}): string {
-    return ControlRules.submissionEncoding(form.acceptCharset, options.documentEncoding ?? ControlRules.CHARSET);
+    return options.documentEncoding === undefined ? form.charset : ControlRules.submissionEncoding(form.acceptCharset, options.documentEncoding);
   }
 
   build(form: FormDescriptor, submitter?: FormField, options: FormBuildOptions = {}): FormSchema {

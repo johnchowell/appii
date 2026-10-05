@@ -1,4 +1,4 @@
-import { CAPTURE_SOURCES, CAPTURE_VERSION, RESOURCE_TYPES, SAME_SITE_VALUES } from '../model/index.js';
+import { CACHE_KINDS, CAPTURE_SOURCES, CAPTURE_VERSION, RESOURCE_TYPES, SAME_SITE_VALUES, SERVED_BY_VALUES } from '../model/index.js';
 import type { Capture } from '../model/index.js';
 import { Json } from '../shared/index.js';
 
@@ -10,6 +10,8 @@ export class CaptureValidator {
   static readonly SOURCES: ReadonlySet<string> = new Set(CAPTURE_SOURCES);
   static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
   static readonly SAME_SITE: ReadonlySet<string> = new Set(SAME_SITE_VALUES);
+  static readonly SERVED_BY: ReadonlySet<string> = new Set(SERVED_BY_VALUES);
+  static readonly CACHE_KINDS: ReadonlySet<string> = new Set(CACHE_KINDS);
 
   validate(value: unknown): string[] {
     const problems: string[] = [];
@@ -71,6 +73,7 @@ export class CaptureValidator {
     CaptureValidator.#number(value.durationMs, `${path}.durationMs`, problems);
     CaptureValidator.#optionalString(value.error, `${path}.error`, problems);
     CaptureValidator.#optionalString(value.redirectedFrom, `${path}.redirectedFrom`, problems);
+    CaptureValidator.#servedBy(value, path, problems);
     const request = value.request;
     if (!Json.isPlainObject(request)) problems.push(`${path}.request must be an object`);
     else {
@@ -131,6 +134,22 @@ export class CaptureValidator {
     if (value.sameSite !== null && (typeof value.sameSite !== 'string' || !CaptureValidator.SAME_SITE.has(value.sameSite))) {
       problems.push(`${path}.sameSite must be "Strict", "Lax", "None" or null`);
     }
+    CaptureValidator.#optionalString(value.partitionKey, `${path}.partitionKey`, problems);
+  }
+
+  static #servedBy(value: Record<string, unknown>, path: string, problems: string[]): void {
+    const servedBy = value.servedBy;
+    if (servedBy !== undefined && (typeof servedBy !== 'string' || !CaptureValidator.SERVED_BY.has(servedBy))) {
+      problems.push(`${path}.servedBy must be one of ${CaptureValidator.#quoted(CaptureValidator.SERVED_BY)}`);
+    }
+    const cacheKind = value.cacheKind;
+    if (cacheKind === undefined) return;
+    if (typeof cacheKind !== 'string' || !CaptureValidator.CACHE_KINDS.has(cacheKind)) problems.push(`${path}.cacheKind must be one of ${CaptureValidator.#quoted(CaptureValidator.CACHE_KINDS)}`);
+    else if (servedBy !== 'cache') problems.push(`${path}.cacheKind is allowed only when servedBy is "cache"`);
+  }
+
+  static #quoted(values: ReadonlySet<string>): string {
+    return [...values].map((v) => JSON.stringify(v)).join(', ');
   }
 
   static #storage(value: unknown, path: string, problems: string[]): void {

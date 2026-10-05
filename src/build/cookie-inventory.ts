@@ -69,8 +69,9 @@ export class CookieInventory {
     for (const cookie of capture.cookies) {
       add(CookieParser.key(cookie), { cookie, final: true, stub: false, live: true, setBy: new Set(), usedBy: new Set() });
     }
-    for (const exchange of capture.exchanges) this.#observeSet(exchange, entries, add, endpointOf);
-    for (const exchange of capture.exchanges) CookieInventory.#observeSent(exchange, byName, add, endpointOf);
+    const served = capture.exchanges.filter((exchange) => Http.reachedServer(exchange));
+    for (const exchange of served) this.#observeSet(exchange, entries, add, endpointOf);
+    for (const exchange of served) CookieInventory.#observeSent(exchange, byName, add, endpointOf);
     for (const endpoint of endpoints) {
       if (endpoint.count > 0) continue;
       const url = Helpers.httpUrl(endpoint.origin + endpoint.path);
@@ -102,8 +103,9 @@ export class CookieInventory {
     if (lines.length === 0) return;
     const survivors = new Map(this.#parser.replay([exchange]).map((cookie) => [CookieParser.key(cookie), cookie]));
     const endpoint = endpointOf(exchange);
+    const partition = CookieParser.context(exchange).partition;
     for (const line of lines) {
-      const parsed = this.#parser.parse(line, exchange.request.url);
+      const parsed = this.#parser.parse(line, exchange.request.url, partition);
       if (!parsed) continue;
       const key = CookieParser.key(parsed);
       const live = survivors.get(key);
@@ -131,8 +133,9 @@ export class CookieInventory {
     const url = Helpers.httpUrl(exchange.request.url);
     if (header === undefined || !url) return;
     const endpoint = endpointOf(exchange);
+    const partition = CookieParser.context(exchange).partition;
     for (const { name, value } of Http.parseCookieHeader(header)) {
-      const known = (byName.get(name) ?? []).filter((entry) => CookieInventory.applies(entry.cookie, url));
+      const known = (byName.get(name) ?? []).filter((entry) => CookieInventory.applies(entry.cookie, url) && CookieParser.sentIn(entry.cookie, partition));
       if (known.length === 0) {
         const cookie: Cookie = {
           name,
@@ -158,7 +161,13 @@ export class CookieInventory {
   }
 
   static #compare(a: Cookie, b: Cookie): number {
-    return Helpers.compare(a.domain, b.domain) || Helpers.compare(a.name, b.name) || Helpers.compare(a.path, b.path) || Number(a.hostOnly) - Number(b.hostOnly);
+    return (
+      Helpers.compare(a.domain, b.domain) ||
+      Helpers.compare(a.name, b.name) ||
+      Helpers.compare(a.path, b.path) ||
+      Number(a.hostOnly) - Number(b.hostOnly) ||
+      Helpers.compare(a.partitionKey ?? '', b.partitionKey ?? '')
+    );
   }
 
   #info(entry: Entry, order: ReadonlyMap<Endpoint, number>): CookieInfo {
@@ -173,6 +182,7 @@ export class CookieInventory {
       httpOnly: cookie.httpOnly,
       secure: cookie.secure,
       sameSite: cookie.sameSite,
+      ...(cookie.partitionKey !== undefined ? { partitionKey: cookie.partitionKey } : {}),
       session: cookie.expires === null,
       expires: CookieInventory.#expires(cookie.expires),
       role,

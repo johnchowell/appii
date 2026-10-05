@@ -88,7 +88,7 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
       [200, 'OK', '200 OK'],
       [404, 'Not Found', '404 Not Found'],
     ]);
-    assert.equal(JSON.parse(String(responses[0]?.body)).name, 'Doohickey');
+    assert.equal(JSON.parse(String(responses[0]?.body)).name, 'Widget');
     assert.equal(obj(responses[0]?.originalRequest).description, undefined);
     const list = obj(obj(find(collection, 'listItems').request).url);
     assert.equal(list.raw, '{{baseUrl}}/api/items?page=1&limit=2');

@@ -1,10 +1,11 @@
 import type { JsonSchema } from '../model/index.js';
-import { AppiiError, Schema, Text } from '../shared/index.js';
+import { AppiiError, Schema } from '../shared/index.js';
 
 export interface SchemaTreeRow {
   path: string;
   type: string;
   required: boolean;
+  requiredWhen?: string[];
   constraints: string;
 }
 
@@ -49,7 +50,7 @@ export class SchemaTree {
 
   static constraints(schema: JsonSchema): string[] {
     const parts = Schema.constraintSummary(schema);
-    if ('default' in schema && !('const' in schema)) parts.push(`default ${Text.short(schema.default, SchemaTree.SHORT_VALUE)}`);
+    if ('default' in schema && !('const' in schema)) parts.push(`default ${Schema.displayValue(schema.default, SchemaTree.SHORT_VALUE)}`);
     if (typeof schema.$ref === 'string') parts.push(`ref ${schema.$ref}`);
     return parts;
   }
@@ -60,6 +61,11 @@ export class SchemaTree {
     const seen = new Set<string>();
     if (!SchemaTree.#children(schema, '').some((child) => !child.passThrough)) SchemaTree.#push(out, seen, SchemaTree.ROOT, schema, true);
     this.#descend(schema, '', 1, out, seen, new Set());
+    const conditional = Schema.requiredWhen(schema);
+    for (const row of out) {
+      const when = row.required ? undefined : conditional.get(row.path);
+      if (when && SchemaTree.key(row.path) === row.path) row.requiredWhen = [...when];
+    }
     return out;
   }
 

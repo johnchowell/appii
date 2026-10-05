@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { getDomain } from 'tldts';
-import type { BodyData, Header } from '../model/index.js';
+import type { BodyData, Exchange, Header } from '../model/index.js';
 
 export interface BodyDataOptions {
   maxBytes?: number;
@@ -305,6 +305,14 @@ export function parseCookieHeader(header: string | undefined): { name: string; v
     else out.push({ name: trimmed.slice(0, eq).trim(), value: trimmed.slice(eq + 1).trim() });
   }
   return out;
+}
+
+export function reachedServer(exchange: Pick<Exchange, 'servedBy'>): boolean {
+  return exchange.servedBy === undefined;
+}
+
+export function isWorkerResponse(exchange: Pick<Exchange, 'servedBy'>): boolean {
+  return exchange.servedBy === 'service-worker';
 }
 
 export const SAFE_METHODS: readonly string[] = ['GET', 'HEAD', 'OPTIONS', 'TRACE'];

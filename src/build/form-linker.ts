@@ -49,8 +49,6 @@ interface Link {
   readonly submissions: Submission[];
 }
 
-type Encodings = ReadonlyMap<string, string>;
-
 export class FormLinker {
   static readonly DEFAULT_MAX_EXAMPLES = 3;
   static readonly LINKED_KINDS: ReadonlySet<string> = new Set(['document', 'other']);
@@ -136,8 +134,7 @@ export class FormLinker {
       });
       link.submissions.push(submission);
     }
-    const encodings = this.#collector.encodings(capture);
-    for (const link of links.values()) this.#apply(link, encodings);
+    for (const link of links.values()) this.#apply(link);
     return { endpoints: [...endpoints, ...created], forms: forms.map((form) => this.#redactor.form(form)) };
   }
 
@@ -157,13 +154,11 @@ export class FormLinker {
     return out;
   }
 
-  #apply(link: Link, encodings: Encodings): void {
+  #apply(link: Link): void {
     const { endpoint, submissions } = link;
     const first = submissions[0];
     if (!first) return;
-    const built = submissions.map((submission) =>
-      this.#schemas.build(submission.form, submission.submitter, { documentEncoding: encodings.get(HtmlPages.documentKey(submission.form.pageUrl)) }),
-    );
+    const built = submissions.map((submission) => this.#schemas.build(submission.form, submission.submitter));
     const primary = built[0]!;
     const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)));
     const secrets = FormLinker.#secretNames(submissions);
@@ -275,6 +270,7 @@ export class FormLinker {
       action: form.action,
       method: form.method,
       enctype,
+      charset: form.charset,
       fields: Json.clone(form.fields),
       submitters: Json.clone(form.submitters),
       tokenFields: [...form.tokenFields],

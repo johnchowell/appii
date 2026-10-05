@@ -1,4 +1,4 @@
-import type { Cookie, PageSnapshot, StorageSnapshot } from '../model/index.js';
+import type { CacheKind, Cookie, PageSnapshot, StorageSnapshot } from '../model/index.js';
 
 export interface Har {
   log: HarLog;
@@ -117,6 +117,7 @@ export interface HarResponse {
   comment?: string;
   _error?: string;
   _transferSize?: number;
+  _fetchedViaServiceWorker?: boolean;
 }
 
 export interface HarCacheEntry {
@@ -163,6 +164,7 @@ export interface HarEntry {
   connection?: string;
   comment?: string;
   _resourceType?: string;
+  _fromCache?: string;
   _webSocketMessages?: HarWebSocketMessage[];
   _appiiId?: string;
   _appiiRedirectedFrom?: string;
@@ -170,4 +172,5 @@ export interface HarEntry {
   _appiiError?: string;
   _appiiRemoteAddress?: string;
   _appiiClosedAt?: string;
+  _appiiCacheKind?: CacheKind;
 }

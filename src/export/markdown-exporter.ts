@@ -184,7 +184,7 @@ export class MarkdownExporter extends BaseExporter {
     const md = this.#md;
     return md.table(
       ['Field', 'Type', 'Required', 'Constraints', 'Label'],
-      fields.map((field) => [md.code(field.path, true), md.text(field.type), field.required ? 'yes' : 'no', md.text(field.constraints.join('; ')), md.text(field.description ?? '')]),
+      fields.map((field) => [md.code(field.path, true), md.text(field.type), md.text(SchemaFieldList.requiredText(field)), md.text(field.constraints.join('; ')), md.text(field.description ?? '')]),
     );
   }
 
@@ -193,7 +193,7 @@ export class MarkdownExporter extends BaseExporter {
     if (model.cookies.length === 0) return 'No cookies were captured.';
     const yes = (flag: boolean): string => (flag ? 'yes' : 'no');
     return md.table(
-      ['Name', 'Domain', 'Path', 'Role', 'HttpOnly', 'Secure', 'SameSite', 'Expires', 'Set by', 'Used by'],
+      ['Name', 'Domain', 'Path', 'Role', 'HttpOnly', 'Secure', 'SameSite', 'Partition', 'Expires', 'Set by', 'Used by'],
       model.cookies.map((cookie) => [
         md.code(cookie.name, true),
         md.code(cookie.domain, true),
@@ -202,6 +202,7 @@ export class MarkdownExporter extends BaseExporter {
         yes(cookie.httpOnly),
         yes(cookie.secure),
         md.text(cookie.sameSite ?? ''),
+        md.text(cookie.partitionKey ?? ''),
         md.text(cookie.session ? 'session' : (cookie.expires ?? '')),
         md.text(cookie.setBy.join(', ')),
         md.text(cookie.usedBy.join(', ')),

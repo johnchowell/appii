@@ -201,6 +201,7 @@ test('form endpoints send the URL, method and entry of one submitter', () => {
         action: `${origin}/signup`,
         method: 'POST',
         enctype: 'multipart/form-data',
+        charset: 'UTF-8',
         fields: [],
         submitters,
         tokenFields: [],

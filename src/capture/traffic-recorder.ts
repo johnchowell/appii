@@ -1,11 +1,13 @@
 import type { BrowserContext, Download, Page, Request, Response, WebSocket } from 'playwright';
 import { AppiiError, Http } from '../shared/index.js';
 import type { BodyData, CapturedRequest, CapturedResponse, Exchange, Header, ResourceType, WebSocketCapture, WebSocketMessage } from '../model/index.js';
+import { BodyBudget } from './body-budget.js';
 import { Helpers } from './helpers.js';
 import { NetworkIdleMonitor } from './network-idle-monitor.js';
 import { PageNetworkTap } from './page-network-tap.js';
-import type { TapRecord } from './page-network-tap.js';
+import type { PageNetworkTapOptions, TapRecord, TapTarget } from './page-network-tap.js';
 import { ResourceTypeMapper } from './resource-type-mapper.js';
+import { ServiceWorkerRecorder } from './service-worker-recorder.js';
 
 export interface TrafficRecorderOptions {
   captureBodies?: boolean;
@@ -13,19 +15,21 @@ export interface TrafficRecorderOptions {
   maxTotalBodyBytes?: number;
   maxExchanges?: number;
   readTimeoutMs?: number;
-  tap?: (context: BrowserContext, page: Page) => Promise<PageNetworkTap | undefined>;
+  serviceWorkers?: boolean;
+  tap?: (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
 }
 
 interface ResponseReads {
   readonly requestHeaders: Promise<Header[] | undefined>;
   readonly responseHeaders: Promise<Header[] | undefined>;
-  readonly body: Promise<Buffer | undefined>;
   readonly serverAddr: Promise<string | undefined>;
 }
 
 interface PendingRequest {
   readonly id: string;
   readonly generation: number;
+  readonly method: string;
+  readonly url: string;
   readonly wallStart: number;
   readonly resourceType: ResourceType;
   readonly pageUrl: string | undefined;
@@ -33,6 +37,11 @@ interface PendingRequest {
   response?: Response;
   reads?: ResponseReads;
   finish?: () => void;
+}
+
+interface Tapped {
+  readonly tap: PageNetworkTap;
+  readonly record: TapRecord;
 }
 
 interface TrackedPage {
@@ -59,20 +68,25 @@ export class TrafficRecorder {
   static readonly READ_TIMEOUT_MS = 10000;
   static readonly FLUSH_TIMEOUT_MS = 2000;
   static readonly MAX_UNCLAIMED_DOWNLOADS = 100;
+  static readonly MIN_RESOURCE_BUFFER_BYTES = PageNetworkTap.DEFAULT_RESOURCE_BUFFER_BYTES;
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = Helpers.REDIRECT_STATUSES;
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
-  static readonly CHUNKED = 'chunked';
+  static readonly CHUNKED = Helpers.CHUNKED;
+  static readonly PASS_THROUGH_SOURCES: ReadonlySet<string> = new Set(['network', 'http-cache']);
 
   readonly exchanges: Exchange[] = [];
   readonly websockets: WebSocketCapture[] = [];
 
   readonly #captureBodies: boolean;
   readonly #maxBodyBytes: number;
-  readonly #maxTotalBodyBytes: number;
   readonly #maxExchanges: number;
   readonly #readTimeoutMs: number;
-  readonly #openTap: (context: BrowserContext, page: Page) => Promise<PageNetworkTap | undefined>;
+  readonly #budget: BodyBudget;
+  readonly #tapOptions: PageNetworkTapOptions;
+  readonly #workers: ServiceWorkerRecorder;
+  readonly #openTap: (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
   readonly #pending = new Map<Request, PendingRequest>();
+  readonly #building = new Set<PendingRequest>();
   readonly #ids = new WeakMap<Request, string>();
   readonly #builds = new Set<Promise<void>>();
   readonly #loading = new Set<Promise<void>>();
@@ -82,15 +96,32 @@ export class TrafficRecorder {
   readonly #downloadWaiters = new Map<string, ((download: Download) => void)[]>();
   #context: BrowserContext | undefined;
   #generation = 0;
-  #bodyBytes = 0;
 
   constructor(options: TrafficRecorderOptions = {}) {
     this.#captureBodies = options.captureBodies ?? true;
     this.#maxBodyBytes = TrafficRecorder.#positive(options.maxBodyBytes, TrafficRecorder.DEFAULT_MAX_BODY_BYTES, 'maxBodyBytes', true);
-    this.#maxTotalBodyBytes = TrafficRecorder.#positive(options.maxTotalBodyBytes, TrafficRecorder.DEFAULT_MAX_TOTAL_BODY_BYTES, 'maxTotalBodyBytes', true);
+    const maxTotalBodyBytes = TrafficRecorder.#positive(options.maxTotalBodyBytes, TrafficRecorder.DEFAULT_MAX_TOTAL_BODY_BYTES, 'maxTotalBodyBytes', true);
     this.#maxExchanges = TrafficRecorder.#positive(options.maxExchanges, TrafficRecorder.DEFAULT_MAX_EXCHANGES, 'maxExchanges', false);
     this.#readTimeoutMs = TrafficRecorder.#positive(options.readTimeoutMs, TrafficRecorder.READ_TIMEOUT_MS, 'readTimeoutMs', false);
-    this.#openTap = options.tap ?? ((context, page) => PageNetworkTap.open(context, page));
+    this.#budget = new BodyBudget({ maxBodyBytes: this.#maxBodyBytes, maxTotalBodyBytes });
+    const bufferBytes = Math.max(maxTotalBodyBytes, this.#maxBodyBytes, 1);
+    const resourceBufferBytes = Math.max(this.#maxBodyBytes, TrafficRecorder.MIN_RESOURCE_BUFFER_BYTES);
+    this.#workers = new ServiceWorkerRecorder({
+      budget: this.#budget,
+      captureBodies: this.#captureBodies,
+      readTimeoutMs: this.#readTimeoutMs,
+      flushTimeoutMs: TrafficRecorder.FLUSH_TIMEOUT_MS,
+      bufferBytes,
+      resourceBufferBytes,
+      emit: (exchange) => this.#push(exchange),
+      hasPageRequest: (method, url, startMs) => this.#hasPageRequest(method, url, startMs),
+    });
+    this.#tapOptions = {
+      bufferBytes,
+      resourceBufferBytes,
+      ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#workers.attach(channel) }),
+    };
+    this.#openTap = options.tap ?? ((context, page, tapOptions) => PageNetworkTap.open(context, page, tapOptions));
   }
 
   attach(context: BrowserContext): void {
@@ -121,9 +152,10 @@ export class TrafficRecorder {
     for (const [request, entry] of [...this.#pending]) {
       this.#pending.delete(request);
       const error = entry.response ? 'Capture ended before the response completed' : 'Capture ended before the request completed';
-      this.#track(this.#build(request, entry, { kind: 'incomplete', error }, Date.now()));
+      this.#startBuild(request, entry, { kind: 'incomplete', error });
       entry.finish?.();
     }
+    this.#workers.finish();
     const taps = [...this.#pages.values()].map((tracked) => tracked.tap);
     this.#pages.clear();
     this.#downloads.clear();
@@ -135,6 +167,12 @@ export class TrafficRecorder {
     return tracked ? tracked.tap.then((tap) => tap !== undefined) : Promise.resolve(false);
   }
 
+  async ready(): Promise<TapTarget[]> {
+    const taps = await Promise.all([...this.#pages.values()].map((tracked) => tracked.tap));
+    const targets = await Promise.all(taps.map((tap) => (tap ? tap.ready() : Promise.resolve([]))));
+    return targets.flat();
+  }
+
   onExchange(listener: (e: Exchange) => void): () => void {
     this.#listeners.add(listener);
     return () => {
@@ -143,16 +181,21 @@ export class TrafficRecorder {
   }
 
   async settled(): Promise<void> {
-    while (this.#builds.size > 0 || this.#loading.size > 0) await Promise.allSettled([...this.#builds, ...this.#loading]);
+    while (this.#builds.size > 0 || this.#loading.size > 0 || this.#workers.busy) {
+      await Promise.allSettled([...this.#builds, ...this.#loading, this.#workers.settled()]);
+    }
+    if (!this.#context) this.#workers.flush();
   }
 
   clear(): void {
     this.#generation++;
     for (const entry of this.#pending.values()) entry.finish?.();
     this.#pending.clear();
+    this.#building.clear();
+    this.#workers.clear();
     this.exchanges.length = 0;
     this.websockets.length = 0;
-    this.#bodyBytes = 0;
+    this.#budget.reset();
   }
 
   readonly #onRequest = (request: Request): void => {
@@ -163,6 +206,8 @@ export class TrafficRecorder {
     const entry: PendingRequest = {
       id,
       generation: this.#generation,
+      method: request.method(),
+      url: request.url(),
       wallStart: Date.now(),
       resourceType: ResourceTypeMapper.fromBrowser(request.resourceType()),
       pageUrl: TrafficRecorder.#pageUrlOf(request),
@@ -196,11 +241,12 @@ export class TrafficRecorder {
       return;
     }
     this.#pending.delete(request);
+    this.#building.add(entry);
     const build = this.#download(request.url()).then(async (download) => {
       const outcome: Outcome = download ? { kind: 'downloaded', body: await this.#readDownload(download) } : { kind: 'failed', error };
       await this.#build(request, entry, outcome, Date.now());
     });
-    this.#track(build);
+    this.#track(build, entry);
     entry.finish?.();
   };
 
@@ -210,7 +256,7 @@ export class TrafficRecorder {
     const tracked: TrackedPage = {
       onWebSocket: (ws: WebSocket): void => this.#onWebSocket(page, ws),
       onDownload: (download: Download): void => this.#onDownload(download),
-      tap: this.#openTap(context, page).catch(() => undefined),
+      tap: this.#openTap(context, page, this.#tapOptions).catch(() => undefined),
     };
     this.#pages.set(page, tracked);
     page.on('websocket', tracked.onWebSocket);
@@ -232,25 +278,42 @@ export class TrafficRecorder {
     const entry = this.#pending.get(request);
     if (!entry) return;
     this.#pending.delete(request);
-    this.#track(this.#build(request, entry, outcome, Date.now()));
+    this.#startBuild(request, entry, outcome);
     entry.finish?.();
   }
 
-  #track(build: Promise<void>): void {
-    const tracked = build.catch(() => undefined).finally(() => this.#builds.delete(tracked));
+  #startBuild(request: Request, entry: PendingRequest, outcome: Outcome): void {
+    this.#building.add(entry);
+    this.#track(this.#build(request, entry, outcome, Date.now()), entry);
+  }
+
+  #track(build: Promise<void>, entry: PendingRequest): void {
+    const tracked = build
+      .catch(() => undefined)
+      .finally(() => {
+        this.#builds.delete(tracked);
+        this.#building.delete(entry);
+        this.#workers.release();
+      });
     this.#builds.add(tracked);
+  }
+
+  #hasPageRequest(method: string, url: string, startMs: number): boolean {
+    const key = Helpers.withoutFragment(url);
+    const latest = startMs + ServiceWorkerRecorder.MATCH_TOLERANCE_MS;
+    const matches = (entry: PendingRequest): boolean => entry.method === method && entry.wallStart <= latest && Helpers.withoutFragment(entry.url) === key;
+    for (const entry of this.#pending.values()) if (matches(entry)) return true;
+    for (const entry of this.#building) if (matches(entry)) return true;
+    return false;
   }
 
   #startReads(request: Request, response: Response): ResponseReads {
     const timeout = this.#readTimeoutMs;
-    const readBody = this.#captureBodies && !TrafficRecorder.REDIRECT_STATUSES.has(response.status());
-    const body = readBody ? response.body().catch(() => undefined) : Promise.resolve(undefined);
     return {
       requestHeaders: Helpers.settle(request.headersArray(), timeout),
       responseHeaders: Helpers.settle(response.headersArray(), timeout),
-      body,
       serverAddr: Helpers.settle(
-        response.serverAddr().then((addr) => (addr ? TrafficRecorder.#formatAddress(addr.ipAddress, addr.port) : undefined)),
+        response.serverAddr().then((addr) => (addr ? Helpers.formatAddress(addr.ipAddress, addr.port) : undefined)),
         timeout,
       ),
     };
@@ -262,13 +325,19 @@ export class TrafficRecorder {
     let response = entry.response;
     if (!response && !incomplete) response = (await Helpers.settle(request.response(), wait)) ?? undefined;
     const reads = entry.reads ?? (response ? this.#startReads(request, response) : undefined);
-    const [requestHeaders, responseHeaders, body, remoteAddress, tapped] = await Promise.all([
+    const tapped = await this.#claim(request);
+    const [requestHeaders, responseHeaders, body, remoteAddress] = await Promise.all([
       reads ? Helpers.settle(reads.requestHeaders, wait) : incomplete ? Promise.resolve(undefined) : Helpers.settle(request.headersArray(), wait),
       reads ? Helpers.settle(reads.responseHeaders, wait) : Promise.resolve(undefined),
-      this.#responseBytes(reads, outcome),
+      this.#responseBytes(request, response, tapped, outcome),
       reads ? Helpers.settle(reads.serverAddr, wait) : Promise.resolve(undefined),
-      this.#claim(request),
     ]);
+    if (entry.generation !== this.#generation) return;
+
+    const fromWorker = response !== undefined && (tapped?.record.fromServiceWorker ?? response.fromServiceWorker());
+    const source = tapped?.record.serviceWorkerSource;
+    const passThrough = fromWorker && (source === undefined || TrafficRecorder.PASS_THROUGH_SOURCES.has(source));
+    if (passThrough && (await this.#passThrough(request, entry, outcome, endedAt, body))) return;
     if (entry.generation !== this.#generation) return;
 
     const reqHeaders = Helpers.stripPseudoHeaders(requestHeaders ?? Http.recordToHeaders(request.headers()));
@@ -277,13 +346,14 @@ export class TrafficRecorder {
     if (entry.generation !== this.#generation) return;
     if (requestBody) captured.body = requestBody;
 
+    const cacheKind = fromWorker ? undefined : tapped?.record.cache;
     let capturedResponse: CapturedResponse | undefined;
     if (response) {
       const resHeaders = Helpers.stripPseudoHeaders(responseHeaders ?? Http.recordToHeaders(response.headers()));
       capturedResponse = { status: response.status(), statusText: response.statusText(), headers: resHeaders };
-      const responseBody = this.#responseBody(request, response, resHeaders, body, outcome);
+      const responseBody = this.#responseBody(request, response, resHeaders, body, tapped, outcome);
       if (responseBody) capturedResponse.body = responseBody;
-      if (remoteAddress && tapped?.record.cached !== true) capturedResponse.remoteAddress = remoteAddress;
+      if (remoteAddress && !fromWorker && cacheKind === undefined) capturedResponse.remoteAddress = remoteAddress;
     }
     const finished = outcome.kind === 'finished' || outcome.kind === 'downloaded';
     const timing = TrafficRecorder.#timing(request, entry, finished, endedAt);
@@ -298,20 +368,52 @@ export class TrafficRecorder {
       ...(capturedResponse ? { response: capturedResponse } : {}),
       ...(outcome.kind === 'failed' || outcome.kind === 'incomplete' ? { error: outcome.error } : {}),
       ...(entry.redirectedFrom ? { redirectedFrom: entry.redirectedFrom } : {}),
+      ...(fromWorker ? { servedBy: 'service-worker' as const } : cacheKind ? { servedBy: 'cache' as const, cacheKind } : {}),
     };
     this.#push(exchange);
   }
 
-  async #responseBytes(reads: ResponseReads | undefined, outcome: Outcome): Promise<Buffer | undefined> {
-    if (outcome.kind === 'downloaded') return outcome.body?.bytes;
-    if (!reads || outcome.kind === 'incomplete') return undefined;
-    return Helpers.settle(reads.body, outcome.kind === 'finished' ? this.#readTimeoutMs : TrafficRecorder.FLUSH_TIMEOUT_MS);
+  async #passThrough(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number, pageBody: Buffer | undefined): Promise<boolean> {
+    const startMs = TrafficRecorder.#startTime(request) || entry.wallStart;
+    const worker = this.#workers.claim(entry.method, entry.url, startMs, Math.max(endedAt, startMs));
+    if (!worker) return false;
+    const network = worker.settled ? worker.exchange : await Helpers.settle(worker.done, outcome.kind === 'incomplete' ? TrafficRecorder.FLUSH_TIMEOUT_MS : this.#readTimeoutMs);
+    if (!network || entry.generation !== this.#generation) return false;
+    this.#workers.alias(network.id, entry.id);
+    let response = network.response;
+    const unread = response !== undefined && (response.body === undefined || (response.body.truncated === true && response.body.data === ''));
+    if (response && unread && pageBody && pageBody.length > 0) {
+      const body = this.#budget.of(pageBody, Http.getHeader(response.headers, 'content-type'), undefined);
+      if (body) response = { ...response, body };
+    }
+    this.#push({
+      id: entry.id,
+      source: network.source,
+      resourceType: entry.resourceType,
+      ...(entry.pageUrl ? { pageUrl: entry.pageUrl } : {}),
+      startedAt: network.startedAt,
+      durationMs: network.durationMs,
+      request: network.request,
+      ...(response ? { response } : {}),
+      ...(network.error !== undefined ? { error: network.error } : {}),
+      ...(entry.redirectedFrom ? { redirectedFrom: entry.redirectedFrom } : {}),
+      ...(network.servedBy ? { servedBy: network.servedBy } : {}),
+      ...(network.cacheKind ? { cacheKind: network.cacheKind } : {}),
+    });
+    return true;
   }
 
-  #responseBody(request: Request, response: Response, headers: Header[], bytes: Buffer | undefined, outcome: Outcome): BodyData | undefined {
+  async #responseBytes(request: Request, response: Response | undefined, tapped: Tapped | undefined, outcome: Outcome): Promise<Buffer | undefined> {
+    if (outcome.kind === 'downloaded') return outcome.body?.bytes;
+    if (!response || !tapped || outcome.kind !== 'finished' || !this.#captureBodies) return undefined;
+    if (request.method().toUpperCase() === 'HEAD' || TrafficRecorder.REDIRECT_STATUSES.has(response.status())) return undefined;
+    return Helpers.settle(tapped.tap.responseBody(tapped.record), this.#readTimeoutMs);
+  }
+
+  #responseBody(request: Request, response: Response, headers: Header[], bytes: Buffer | undefined, tapped: Tapped | undefined, outcome: Outcome): BodyData | undefined {
     const contentType = Http.getHeader(headers, 'content-type');
-    if (bytes) {
-      const body = this.#bodyOf(bytes, contentType, undefined);
+    if (bytes && bytes.length > 0) {
+      const body = this.#budget.of(bytes, contentType, undefined);
       if (body && outcome.kind === 'downloaded' && outcome.body && outcome.body.size > body.size) {
         body.size = outcome.body.size;
         body.truncated = true;
@@ -325,26 +427,25 @@ export class TrafficRecorder {
       !TrafficRecorder.REDIRECT_STATUSES.has(response.status()) &&
       !TrafficRecorder.NO_BODY_STATUSES.has(response.status());
     if (!expectsBody) return undefined;
-    const length = TrafficRecorder.#contentLength(headers);
-    const chunked = (Http.getHeader(headers, 'transfer-encoding') ?? '').toLowerCase().includes(TrafficRecorder.CHUNKED);
-    if ((length ?? 0) > 0 || chunked) return TrafficRecorder.#unread(contentType ?? '', length ?? 0);
+    const received = tapped?.record.dataLength ?? 0;
+    const size = received > 0 ? received : (Helpers.contentLength(headers) ?? 0);
+    if (size > 0 || Helpers.isChunked(headers)) return BodyBudget.unread(contentType ?? '', size);
     return undefined;
   }
 
-  async #requestBody(request: Request, headers: Header[], tapped: { tap: PageNetworkTap; record: TapRecord } | undefined): Promise<BodyData | undefined> {
+  async #requestBody(request: Request, headers: Header[], tapped: Tapped | undefined): Promise<BodyData | undefined> {
     const contentType = Http.getHeader(headers, 'content-type');
     const contentEncoding = Http.getHeader(headers, 'content-encoding');
-    const expected = TrafficRecorder.#contentLength(headers);
+    const expected = Helpers.contentLength(headers);
     const inline = request.postDataBuffer();
     const pending = tapped?.record.bodyPending === true || (expected !== undefined && (inline?.length ?? 0) < expected);
-    if (!pending) return this.#bodyOf(inline, contentType, contentEncoding);
+    if (!pending) return this.#budget.of(inline, contentType, contentEncoding);
     const text = tapped ? await Helpers.settle(tapped.tap.postData(tapped.record), this.#readTimeoutMs) : undefined;
     const bytes = text === undefined ? undefined : PageNetworkTap.bytes(text, expected);
     if (!bytes || bytes.length === 0) {
-      const chunked = (Http.getHeader(headers, 'transfer-encoding') ?? '').toLowerCase().includes(TrafficRecorder.CHUNKED);
-      return (expected ?? 0) > 0 || tapped?.record.bodyPending === true || chunked ? TrafficRecorder.#unread(contentType ?? '', expected ?? 0) : undefined;
+      return (expected ?? 0) > 0 || tapped?.record.bodyPending === true || Helpers.isChunked(headers) ? BodyBudget.unread(contentType ?? '', expected ?? 0) : undefined;
     }
-    const body = this.#bodyOf(Buffer.from(bytes), contentType, contentEncoding);
+    const body = this.#budget.of(Buffer.from(bytes), contentType, contentEncoding);
     if (body && expected !== undefined && bytes.length < expected) {
       body.size = expected;
       body.truncated = true;
@@ -352,7 +453,7 @@ export class TrafficRecorder {
     return body;
   }
 
-  async #claim(request: Request): Promise<{ tap: PageNetworkTap; record: TapRecord } | undefined> {
+  async #claim(request: Request): Promise<Tapped | undefined> {
     let page: Page | undefined;
     try {
       if (!request.serviceWorker()) page = request.frame().page();
@@ -436,11 +537,7 @@ export class TrafficRecorder {
     } catch {
       duration = endedAt - entry.wallStart;
     }
-    const whole = Math.floor(start);
-    return {
-      startedAt: new Date(whole).toISOString(),
-      durationMs: Math.round(Math.max(0, duration + (start - whole)) * 1000) / 1000,
-    };
+    return Helpers.timing(start, duration);
   }
 
   static #startTime(request: Request): number {
@@ -449,23 +546,6 @@ export class TrafficRecorder {
     } catch {
       return 0;
     }
-  }
-
-  static #contentLength(headers: Header[]): number | undefined {
-    const value = Http.getHeader(headers, 'content-length')?.trim();
-    return value !== undefined && /^\d+$/.test(value) ? Number(value) : undefined;
-  }
-
-  static #unread(mimeType: string, size: number): BodyData {
-    return { mimeType, encoding: 'base64', data: '', size, truncated: true };
-  }
-
-  #bodyOf(bytes: Uint8Array | null, contentType: string | undefined, contentEncoding: string | undefined): BodyData | undefined {
-    if (!bytes || bytes.length === 0) return undefined;
-    const kept = Math.min(bytes.length, this.#maxBodyBytes);
-    if (this.#bodyBytes + kept > this.#maxTotalBodyBytes) return TrafficRecorder.#unread(contentType ?? '', bytes.length);
-    this.#bodyBytes += kept;
-    return Http.toBodyData(bytes, contentType ?? '', { maxBytes: this.#maxBodyBytes, contentEncoding });
   }
 
   #push(exchange: Exchange): void {
@@ -527,11 +607,6 @@ export class TrafficRecorder {
     } catch {
       return undefined;
     }
-  }
-
-  static #formatAddress(ip: string, port: number): string {
-    const host = ip.includes(':') && !ip.startsWith('[') ? `[${ip}]` : ip;
-    return port > 0 ? `${host}:${port}` : host;
   }
 
   static #positive(value: number | undefined, fallback: number, name: string, allowZero: boolean): number {

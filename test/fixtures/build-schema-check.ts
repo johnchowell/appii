@@ -23,6 +23,7 @@ export class SchemaCheck {
     if (typeof value === 'number') {
       if (typeof schema.minimum === 'number' && value < schema.minimum) out.push(`${at}: below minimum`);
       if (typeof schema.maximum === 'number' && value > schema.maximum) out.push(`${at}: above maximum`);
+      if (typeof schema.multipleOf === 'number' && !SchemaCheck.#multiple(value, schema.multipleOf)) out.push(`${at}: not a multiple of ${schema.multipleOf}`);
     }
     if (Array.isArray(value)) {
       if (typeof schema.minItems === 'number' && value.length < schema.minItems) out.push(`${at}: too few items`);
@@ -49,6 +50,11 @@ export class SchemaCheck {
       if (branch !== undefined) out.push(...SchemaCheck.errors(branch as JsonSchema | boolean, value, at));
     }
     return out;
+  }
+
+  static #multiple(value: number, step: number): boolean {
+    const quotient = value / step;
+    return Math.abs(quotient - Math.round(quotient)) < 1e-9 * Math.max(1, Math.abs(quotient));
   }
 
   static #isType(type: string, value: unknown): boolean {

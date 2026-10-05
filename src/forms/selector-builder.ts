@@ -58,7 +58,7 @@ export class SelectorBuilder {
     const index = this.#index(doc);
     const steps: string[] = [];
     for (let current: HtmlElement | null = element; current; ) {
-      const parent = doc.parentElement(current);
+      const parent: HtmlElement | null = doc.parentElement(current) ?? doc.shadowHost(current) ?? null;
       if (!parent) {
         steps.unshift(SelectorBuilder.ROOT);
         break;
@@ -82,7 +82,7 @@ export class SelectorBuilder {
     const formNames = new Map<string, number>();
     const ids = new Map<string, number>();
     const positions = new Map<HtmlElement, number>();
-    const parents: HtmlNode[] = [doc.root];
+    const parents: HtmlNode[] = [doc.root, ...doc.shadowRoots];
     for (const element of doc.allElements) {
       parents.push(element);
       const id = doc.attr(element, 'id');

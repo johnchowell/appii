@@ -70,8 +70,8 @@ describe('MarkdownExporter', () => {
 
   test('cookies table', () => {
     const cookies = markdown.slice(markdown.indexOf('## Cookies'));
-    assert.match(cookies, /\n\| `auth` \| `127\.0\.0\.1` \| `\/` \| auth \| yes \| no \| Lax \| session \| post-login \| get-account, /);
-    assert.match(cookies, /\n\| `theme` \| `127\.0\.0\.1` \| `\/` \| preference \| no \| no \| Lax \| \d{4}-\d{2}-\d{2}T/);
+    assert.match(cookies, /\n\| `auth` \| `127\.0\.0\.1` \| `\/` \| auth \| yes \| no \| Lax \| - \| session \| post-login \| get-account, /);
+    assert.match(cookies, /\n\| `theme` \| `127\.0\.0\.1` \| `\/` \| preference \| no \| no \| - \| - \| \d{4}-\d{2}-\d{2}T/);
   });
 
   test('selection, title and baseUrl options', () => {

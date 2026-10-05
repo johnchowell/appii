@@ -165,7 +165,7 @@ export class Redactor {
   }
 
   isSecretField(name: string): boolean {
-    const words = Redactor.#words(name);
+    const words = Text.letterWords(name);
     if (words.length === 0) return false;
     if (words.some((word) => Redactor.#secretWord(word))) return true;
     if (Redactor.SECRET_PHRASES.some((phrase) => Redactor.#hasPhrase(words, phrase))) return true;
@@ -427,10 +427,6 @@ export class Redactor {
       const list = node[key];
       if (Array.isArray(list)) for (const item of list) if (Json.isPlainObject(item)) this.#schemaNode(item, secret);
     }
-  }
-
-  static #words(name: string): string[] {
-    return Text.words(name).flatMap((word) => word.split(/[0-9]+/)).filter((word) => word !== '');
   }
 
   static #secretWord(word: string): boolean {

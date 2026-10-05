@@ -15,7 +15,7 @@ import {
   SchemaInferrer,
 } from '../src/build/index.js';
 import { CaptureSession, CookieParser, HarConverter } from '../src/capture/index.js';
-import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
+import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
 import type { ApiModel, Capture, Endpoint, JsonSchema } from '../src/model/index.js';
 import { AppiiError, EndpointIndex, Samples, Schema } from '../src/shared/index.js';
 import { FIXTURE_USER, startFixtureSite } from './fixtures/site.js';
@@ -405,7 +405,8 @@ describe('ModelBuilder integration with a real browser capture', () => {
     assert.equal(login.form?.selector, 'form#login');
     const schema = login.requestBody?.schema;
     assert.deepEqual(schema?.required, ['email', 'password', 'action']);
-    assert.equal(prop(schema, 'email').format, 'email');
+    assert.equal(prop(schema, 'email').format, undefined);
+    assert.equal(prop(schema, 'email').pattern, EntrySlotFactory.PATTERNS.email);
     assert.equal(prop(schema, 'email')['x-html-type'], 'email');
     assert.equal(prop(schema, 'password')['x-html-minlength'], 8);
     assert.equal(prop(schema, 'csrf_token')['x-appii-token'], true);
@@ -421,8 +422,9 @@ describe('ModelBuilder integration with a real browser capture', () => {
     assert.deepEqual(schema?.required, ['intent']);
     const create = schema?.then as JsonSchema;
     assert.deepEqual(create.required, ['username', 'email', 'country', 'terms', 'intent']);
-    assert.equal(prop(create, 'username').pattern, '^(?:[a-z0-9_]{3,16})$');
-    assert.equal(prop(schema, 'email').format, 'email');
+    assert.equal(prop(create, 'username').pattern, '^(?:[a-z0-9_]{3,16})?$');
+    assert.equal(prop(schema, 'email').format, undefined);
+    assert.equal(prop(create, 'email').pattern, EntrySlotFactory.PATTERNS.email);
     assert.deepEqual([prop(create, 'age').minimum, prop(create, 'age').maximum], [13, 120]);
     assert.equal(prop(schema, 'website')['x-html-type'], 'url');
     assert.deepEqual([prop(schema, 'birthday')['x-html-min'], prop(schema, 'birthday')['x-html-max']], ['1900-01-01', '2026-12-31']);

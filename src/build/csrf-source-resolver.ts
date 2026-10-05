@@ -56,7 +56,7 @@ export class CsrfSourceResolver {
     capture.exchanges.forEach((exchange, index) => {
       this.#positions.set(exchange.id, index);
       const response = exchange.response;
-      if (!response) return;
+      if (!response || Http.isWorkerResponse(exchange)) return;
       const start = Helpers.startMs(exchange);
       const record = (value: string, name: string): void => {
         if (value.length < CsrfSourceResolver.MIN_TOKEN_LENGTH) return;

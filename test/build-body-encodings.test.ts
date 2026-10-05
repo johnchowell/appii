@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as zlib from 'node:zlib';
-import { BodyParser, ModelBuilder } from '../src/build/index.js';
+import { BodyParser, ModelBuilder, ModelValidator } from '../src/build/index.js';
 import type { BodyData } from '../src/model/index.js';
 import { Http, Schema } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
@@ -93,5 +93,25 @@ describe('BodyParser decodes urlencoded bytes with the submission encoding (FB-2
     const charset = (path: string): unknown => Schema.properties(model.endpoints.find((endpoint) => endpoint.path === path)?.requestBody?.schema)._charset_?.const;
     assert.equal(charset('/post'), 'windows-1252');
     assert.equal(charset('/other'), 'windows-1252');
+  });
+
+  test('the model records the submission encoding of each form and the validator requires it', () => {
+    const f = new CaptureFactory();
+    f.exchange({ url: '/b', resourceType: 'document', status: 200, responseHeaders: { 'content-type': 'text/html; charset=windows-1252' }, responseBody: '<!doctype html><form method="post" action="/post"><input name="q"></form>' });
+    f.snapshot('/a', 'A', '<!doctype html><meta charset="utf-8"><form method="post" action="/other"><input name="q"></form>');
+    const model = ModelBuilder.create({ now: new Date(0) }).build(f.capture());
+    const endpointCharset = (path: string): unknown => model.endpoints.find((endpoint) => endpoint.path === path)?.form?.charset;
+    assert.equal(endpointCharset('/post'), 'windows-1252');
+    assert.equal(endpointCharset('/other'), 'UTF-8');
+    assert.deepEqual(model.forms.map((item) => [new URL(item.action).pathname, item.charset]).sort(), [['/other', 'UTF-8'], ['/post', 'windows-1252']]);
+    const validator = new ModelValidator();
+    assert.deepEqual(validator.validate(model), []);
+    const broken = JSON.parse(JSON.stringify(model)) as { forms: Record<string, unknown>[]; endpoints: { form?: Record<string, unknown> }[] };
+    delete broken.forms[0]!.charset;
+    const linked = broken.endpoints.find((endpoint) => endpoint.form !== undefined);
+    if (linked?.form) linked.form.charset = 1;
+    const problems = validator.validate(broken);
+    assert.ok(problems.some((problem) => /^forms\[0\]\.charset: expected a string$/.test(problem)), problems.join('; '));
+    assert.ok(problems.some((problem) => /^endpoints\[\d+\]\.form\.charset: expected a string$/.test(problem)), problems.join('; '));
   });
 });

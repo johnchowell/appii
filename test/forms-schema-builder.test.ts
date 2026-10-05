@@ -5,6 +5,7 @@ import type { FormDescriptor, FormField, JsonSchema } from '../src/model/index.j
 import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
 import { AppiiError, Schema } from '../src/shared/index.js';
 import { startFixtureSite } from './fixtures/site.js';
+import { SchemaCheck } from './fixtures/build-schema-check.js';
 import { PageServer } from './forms-harness.js';
 import type { SubmittedValue } from './forms-harness.js';
 
@@ -55,7 +56,7 @@ describe('FormSchemaBuilder on fixture forms', () => {
           email: {
             type: 'string',
             title: 'Email',
-            format: 'email',
+            pattern: EntrySlotFactory.PATTERNS.email,
             minLength: 1,
             'x-html-type': 'email',
             'x-html-required': true,
@@ -99,14 +100,15 @@ describe('FormSchemaBuilder on fixture forms', () => {
       assert.deepEqual(prop(create.schema, 'username'), {
         type: 'string',
         title: '3-16 lowercase letters, digits or underscore',
-        pattern: '^(?:[a-z0-9_]{3,16})$',
+        pattern: '^(?:[a-z0-9_]{3,16})?$',
         minLength: 1,
         'x-html-pattern': '[a-z0-9_]{3,16}',
         'x-html-type': 'text',
         'x-html-required': true,
       });
       assert.deepEqual(prop(create.schema, 'age'), {
-        type: 'integer',
+        type: ['integer', 'string'],
+        maxLength: 0,
         minimum: 13,
         maximum: 120,
         'x-html-min': '13',
@@ -175,7 +177,8 @@ describe('FormSchemaBuilder on fixture forms', () => {
         'x-html-type': 'text',
         'x-html-required': true,
       });
-      assert.equal(prop(draft.schema, 'age').type, 'number');
+      assert.deepEqual(prop(draft.schema, 'age').type, ['number', 'string']);
+      assert.equal(prop(draft.schema, 'age').maxLength, 0);
       assert.equal(prop(draft.schema, 'age').minimum, undefined);
       assert.deepEqual(prop(draft.schema, 'country').enum, ['', 'us', 'ca']);
       assert.equal(prop(draft.schema, 'country').default, '');
@@ -346,14 +349,15 @@ describe('FormSchemaBuilder entry-list semantics', () => {
       <input type="range" name="vol"><input type="range" name="steps" min="0" max="10" step="3"><input type="range" name="tiny" min="0" max="1" step="0.1" value="0.3">
       <input type="range" name="free" step="any" min="1" max="2">
     </form>`)).schema;
-    assert.deepEqual(prop(schema, 'plain'), { type: 'integer', 'x-html-type': 'number' });
-    assert.deepEqual(prop(schema, 'any'), { type: 'number', minimum: 0, 'x-html-min': '0', 'x-html-step': 'any', 'x-html-type': 'number' });
-    assert.deepEqual(prop(schema, 'cents'), { type: 'number', multipleOf: 0.01, 'x-html-step': '0.01', 'x-html-type': 'number', default: 1.5 });
-    assert.deepEqual(prop(schema, 'half'), { type: 'number', minimum: 0.5, 'x-html-min': '0.5', 'x-html-type': 'number' });
-    assert.deepEqual(prop(schema, 'fives'), { type: 'integer', minimum: 10, multipleOf: 5, 'x-html-min': '10', 'x-html-step': '5', 'x-html-type': 'number' });
-    assert.deepEqual(prop(schema, 'odd'), { type: 'integer', minimum: 1, 'x-html-min': '1', 'x-html-step': '2', 'x-html-type': 'number', default: 3 });
-    assert.deepEqual(prop(schema, 'frac'), { type: 'number', 'x-html-type': 'number', default: 2.5 });
-    assert.deepEqual(prop(schema, 'frac0'), { type: 'integer', minimum: 0, 'x-html-min': '0', 'x-html-type': 'number' });
+    const empty = (type: string): JsonSchema => ({ type: [type, 'string'], maxLength: 0 });
+    assert.deepEqual(prop(schema, 'plain'), { ...empty('integer'), 'x-html-type': 'number' });
+    assert.deepEqual(prop(schema, 'any'), { ...empty('number'), minimum: 0, 'x-html-min': '0', 'x-html-step': 'any', 'x-html-type': 'number' });
+    assert.deepEqual(prop(schema, 'cents'), { ...empty('number'), multipleOf: 0.01, 'x-html-step': '0.01', 'x-html-type': 'number', default: 1.5 });
+    assert.deepEqual(prop(schema, 'half'), { ...empty('number'), minimum: 0.5, 'x-html-min': '0.5', 'x-html-type': 'number' });
+    assert.deepEqual(prop(schema, 'fives'), { ...empty('integer'), minimum: 10, multipleOf: 5, 'x-html-min': '10', 'x-html-step': '5', 'x-html-type': 'number' });
+    assert.deepEqual(prop(schema, 'odd'), { ...empty('integer'), minimum: 1, 'x-html-min': '1', 'x-html-step': '2', 'x-html-type': 'number', default: 3 });
+    assert.deepEqual(prop(schema, 'frac'), { ...empty('number'), 'x-html-type': 'number', default: 2.5 });
+    assert.deepEqual(prop(schema, 'frac0'), { ...empty('integer'), minimum: 0, 'x-html-min': '0', 'x-html-type': 'number' });
     assert.deepEqual(prop(schema, 'bad'), {
       type: 'integer',
       'x-html-min': 'x',
@@ -407,7 +411,7 @@ describe('FormSchemaBuilder entry-list semantics', () => {
     assert.deepEqual(EntrySlotFactory.pattern(undefined), {});
     const schema = builder.build(form(`<form method="post"><input name="ok" pattern="\\d{3}"><input name="broken" pattern="(" required>
       <input name="vonly" pattern="[\\w--\\d]+"><input type="number" name="num" pattern="\\d"></form>`)).schema;
-    assert.equal(prop(schema, 'ok').pattern, '^(?:\\d{3})$');
+    assert.equal(prop(schema, 'ok').pattern, '^(?:\\d{3})?$');
     assert.equal(prop(schema, 'broken').pattern, undefined);
     assert.equal(prop(schema, 'broken')['x-html-pattern'], undefined);
     assert.equal(prop(schema, 'vonly').pattern, undefined);
@@ -443,12 +447,12 @@ describe('FormSchemaBuilder entry-list semantics', () => {
       'x-html-type': 'time',
       'x-html-required': true,
     });
-    assert.deepEqual(prop(schema, 'mo'), { type: 'string', pattern: '^\\d{4,}-(?:0[1-9]|1[0-2])$', 'x-html-type': 'month', default: '2024-02' });
+    assert.deepEqual(prop(schema, 'mo'), { type: 'string', pattern: '^(?:\\d{4,}-(?:0[1-9]|1[0-2]))?$', 'x-html-type': 'month', default: '2024-02' });
     assert.equal(prop(schema, 'wk')['x-html-min'], '2024-W01');
     assert.equal(prop(schema, 'dt').default, '2024-01-02T03:04:05.6');
     assert.match('2024-01-02T03:04:05.6', new RegExp(String(prop(schema, 'dt').pattern), 'u'));
-    assert.deepEqual(prop(schema, 'tint'), { type: 'string', pattern: '^#[0-9a-f]{6}$', 'x-html-type': 'color', default: '#ff0000' });
-    assert.deepEqual(prop(schema, 'len'), { type: 'string', minLength: 1, maxLength: 5, 'x-html-minlength': 2, 'x-html-maxlength': 5, 'x-html-type': 'text' });
+    assert.deepEqual(prop(schema, 'tint'), { type: 'string', pattern: '^(?:#[0-9a-f]{6})$', 'x-html-type': 'color', default: '#ff0000' });
+    assert.deepEqual(prop(schema, 'len'), { type: 'string', maxLength: 5, 'x-html-minlength': 2, 'x-html-maxlength': 5, 'x-html-type': 'text' });
     assert.deepEqual(prop(schema, 'area'), {
       type: 'string',
       minLength: 1,
@@ -601,32 +605,21 @@ function count(entries: [string, SubmittedValue][]): Map<string, SubmittedValue[
   return out;
 }
 
-function checkValue(schema: JsonSchema, value: SubmittedValue, where: string, optional = false): void {
-  if (optional && value === '') return;
-  if (Array.isArray(schema.anyOf)) {
-    const ok = schema.anyOf.some((variant) => {
-      try {
-        checkValue(variant as JsonSchema, value, where);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    assert.ok(ok, `${where}: no anyOf variant accepts ${JSON.stringify(value)}`);
-    return;
-  }
+const HTML_FLOAT = /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function typed(schema: JsonSchema, value: string): unknown {
+  const types = Schema.schemaTypes(schema);
+  const numeric = types.includes('integer') || types.includes('number');
+  return numeric && HTML_FLOAT.test(value) ? Number(value) : value;
+}
+
+function checkValue(schema: JsonSchema, value: SubmittedValue, where: string): void {
   if (typeof value !== 'string') {
     assert.equal(schema.format, 'binary', where);
     if (typeof schema.contentMediaType === 'string') assert.equal(value.type, schema.contentMediaType, where);
     return;
   }
-  if ('const' in schema) assert.equal(value, schema.const, where);
-  if (Array.isArray(schema.enum)) assert.ok(schema.enum.includes(value), `${where}: ${value} in enum`);
-  if (schema.type === 'integer') assert.match(value, /^-?\d+$/, where);
-  if (schema.type === 'number') assert.ok(Number.isFinite(Number(value)) && value.trim() !== '', where);
-  if (typeof schema.pattern === 'string') assert.match(value, new RegExp(schema.pattern, 'u'), where);
-  if (typeof schema.maxLength === 'number') assert.ok(Array.from(value).length <= schema.maxLength, where);
-  if (typeof schema.minLength === 'number') assert.ok(Array.from(value).length >= schema.minLength, where);
+  assert.deepEqual(SchemaCheck.errors(schema, typed(schema, value), where), [], `${where}: ${JSON.stringify(value)} is valid`);
 }
 
 function checkSubmission(schema: JsonSchema, entries: [string, SubmittedValue][], expectedMissing: string[]): void {
@@ -646,10 +639,10 @@ function checkSubmission(schema: JsonSchema, entries: [string, SubmittedValue][]
       assert.ok(values.length >= minItems && values.length <= maxItems, `${name}: ${values.length} entries within ${minItems}..${maxItems}`);
       const inner = Schema.items(property);
       assert.ok(inner);
-      values.forEach((value, i) => checkValue(inner, value, `${name}[${i}]`, !required.has(name)));
+      values.forEach((value, i) => checkValue(inner, value, `${name}[${i}]`));
     } else {
       assert.equal(values.length, 1, `${name} is sent once`);
-      checkValue(property, values[0] as SubmittedValue, name, !required.has(name));
+      checkValue(property, values[0] as SubmittedValue, name);
     }
   }
 }

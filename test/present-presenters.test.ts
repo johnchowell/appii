@@ -328,18 +328,23 @@ describe('EndpointDetailPresenter', () => {
     assert.ok(tableRows(graphql.join('\n')).some((row) => row[0] === 'variables.id'));
     const signup = tableRows(section(detail(12, { width: 160 }), 'Request body').join('\n'));
     const rule = (field: string) => signup.find((row) => row[0] === field);
-    assert.deepEqual(rule('age'), ['age', 'integer', 'no', 'html number, range 13..120, step 1']);
-    assert.deepEqual(rule('country'), ['country', 'enum(2)', 'yes', 'one of us|ca']);
+    assert.deepEqual(rule('username'), ['username', 'string', 'if', 'pattern [a-z0-9_]{3,16}']);
+    assert.deepEqual(rule('age'), ['age', 'number|empty', 'no', 'html number, range 13..120, step 1']);
+    assert.deepEqual(rule('country'), ['country', 'enum(3)', 'if', 'one of us|ca|"", default ""']);
     assert.deepEqual(rule('interests[]'), ['interests[]', 'enum(3)', 'no', 'one of a|b|c']);
-    assert.deepEqual(rule('terms'), ['terms', 'const on', 'yes', 'html checkbox, always on']);
+    assert.deepEqual(rule('terms'), ['terms', 'const on', 'if', 'html checkbox, always on']);
+    assert.ok(section(detail(12, { width: 160 }), 'Request body').includes('Required if intent=create: username, email, country, terms.'));
+    assert.deepEqual(rule('intent'), ['intent', 'enum(2)', 'yes', 'html submit, one of create|draft']);
   });
 
   test('narrow widths wrap constraints instead of cutting them', () => {
     const out = detail(12, { width: 60 });
     const rows = lines(section(out, 'Request body').join('\n')).filter((line) => line.startsWith('|'));
-    const text = rows.map((line) => line.slice(2, -2).split(' | ')[3]?.trim() ?? '').join(' ');
-    assert.match(text, /range 13\.\.120, step 1/);
-    assert.match(text, /pattern \[a-z0-9_\]\{3,16\}/);
+    const text = rows.map((line) => line.slice(2, -2).split(' | ')[3]?.trim() ?? '').join('').replace(/\s+/g, '');
+    assert.match(text, /range13\.\.120,step1/);
+    assert.match(text, /pattern\[a-z0-9_\]\{3,16\}/);
+    assert.doesNotMatch(text, /\.\.\.(?!\d)/);
+    assert.ok(section(out, 'Request body').includes('Required if intent=create: username, email, country, terms.'));
     assertFits(out, 60, 'signup @60');
   });
 
