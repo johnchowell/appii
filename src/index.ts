@@ -1,1 +1,1 @@
-export const x: number = 1;
+export * as Shared from './shared/index.js';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bodyJson, bodyText, getHeader, isSameSite, isTextMime, mimeEssence, toBodyData } from '../src/util/http.js';
+import { bodyJson, bodyText, getHeader, isSameSite, isTextMime, mimeEssence, toBodyData } from '../src/shared/http.js';
 
 test('header helpers', () => {
   const h = [

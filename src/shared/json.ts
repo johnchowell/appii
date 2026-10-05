@@ -1,0 +1,51 @@
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+export function sortKeysDeep<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => sortKeysDeep(v)) as T;
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) out[key] = sortKeysDeep(value[key]);
+    return out as T;
+  }
+  return value;
+}
+
+export function stableStringify(value: unknown, indent = 2): string {
+  return JSON.stringify(sortKeysDeep(value), null, indent);
+}
+
+export function prettyJson(value: unknown, indent = 2): string {
+  return JSON.stringify(value, null, indent);
+}
+
+export function safeParse(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+export function getPath(value: unknown, path: (string | number)[]): unknown {
+  let cur: unknown = value;
+  for (const key of path) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    if (!Object.prototype.hasOwnProperty.call(cur, key)) return undefined;
+    cur = (cur as Record<string | number, unknown>)[key];
+  }
+  return cur;
+}
+
+export function walk(value: unknown, visit: (node: unknown, path: (string | number)[]) => void, path: (string | number)[] = []): void {
+  visit(value, path);
+  if (Array.isArray(value)) value.forEach((v, i) => walk(v, visit, [...path, i]));
+  else if (isPlainObject(value)) for (const [k, v] of Object.entries(value)) walk(v, visit, [...path, k]);
+}
