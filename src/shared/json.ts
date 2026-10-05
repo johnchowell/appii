@@ -1,3 +1,5 @@
+import { toAscii } from './text.js';
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
@@ -7,9 +9,7 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 export function sortKeysDeep<T>(value: T): T {
   if (Array.isArray(value)) return value.map((v) => sortKeysDeep(v)) as T;
   if (isPlainObject(value)) {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) out[key] = sortKeysDeep(value[key]);
-    return out as T;
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeysDeep(value[key])])) as T;
   }
   return value;
 }
@@ -20,6 +20,10 @@ export function stableStringify(value: unknown, indent = 2): string {
 
 export function prettyJson(value: unknown, indent = 2): string {
   return JSON.stringify(value, null, indent);
+}
+
+export function asciiJson(value: unknown, indent = 2): string {
+  return toAscii(JSON.stringify(value, null, indent) ?? 'null', 'escape');
 }
 
 export function safeParse(text: string): { ok: true; value: unknown } | { ok: false; error: string } {

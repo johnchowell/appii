@@ -1,11 +1,10 @@
 import type { ApiModel, Endpoint, Exchange } from '../model/index.js';
 import { HarConverter } from '../capture/index.js';
 import type { Har } from '../capture/index.js';
-import { AppiiError } from '../shared/index.js';
+import { AppiiError, Json } from '../shared/index.js';
 import { ExchangeSanitizer } from './exchange-sanitizer.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
-import { Helpers } from './helpers.js';
 
 export interface HarExporterDeps {
   har?: HarConverter;
@@ -22,7 +21,7 @@ export class HarExporter extends BaseExporter {
   readonly #sanitizer: (redact: boolean) => ExchangeSanitizer;
 
   static create(): HarExporter {
-    return new HarExporter({ har: new HarConverter(), sanitizer: (redact: boolean) => ExchangeSanitizer.create({ redact }) });
+    return new HarExporter({ har: HarConverter.create(), sanitizer: (redact: boolean) => ExchangeSanitizer.create({ redact }) });
   }
 
   constructor(deps: HarExporterDeps = {}) {
@@ -46,7 +45,7 @@ export class HarExporter extends BaseExporter {
   }
 
   protected render(_model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {
-    return Helpers.json(this.archive(endpoints, options)) + '\n';
+    return Json.asciiJson(this.archive(endpoints, options)) + '\n';
   }
 
   protected override filename(_model: ApiModel): string {

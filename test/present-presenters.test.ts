@@ -12,7 +12,9 @@ import {
   SummaryPresenter,
 } from '../src/present/index.js';
 import type { PresenterOptions } from '../src/present/index.js';
-import { Ansi, AppiiError, EndpointIndex, isAppiiError } from '../src/shared/index.js';
+import { Ansi, AppiiError, EndpointIndex, Samples, isAppiiError } from '../src/shared/index.js';
+import { LiteralPlaceholderSite } from './fixtures/foundation-literal-placeholders.js';
+import { ExportModel } from './helpers/export-model.js';
 import { PresentModels } from './helpers/present-models.js';
 
 const FIXTURE: ApiModel = PresentModels.fixture();
@@ -427,13 +429,13 @@ describe('EndpointDetailPresenter', () => {
     }
   });
 
-  test('bearer endpoints get a Bearer placeholder and form endpoints use -F fields', () => {
+  test('bearer endpoints get a Bearer placeholder and multipart text fields are sent as literal strings', () => {
     const bearer = detail('createOrder', { width: 200 }, MIXED);
     assert.match(bearer, /-H "authorization: Bearer \$\{ACCESS_TOKEN\}"/);
     assert.match(bearer, /Variables: ACCESS_TOKEN/);
     const signup = detail(12, { width: 200 });
-    assert.match(signup, /-F 'username=username'/);
-    assert.match(signup, /-F 'interests=a' \\\n {2}-F 'interests=c'/);
+    assert.match(signup, /--form-string 'username=username'/);
+    assert.match(signup, /--form-string 'interests=a' \\\n {2}--form-string 'interests=c'/);
     const login = detail(9, { width: 200 });
     assert.match(login, /--data-urlencode "csrf_token=\$\{CSRF_TOKEN\}"/);
   });
@@ -441,16 +443,20 @@ describe('EndpointDetailPresenter', () => {
   test('exampleRequest links double-submit cookies and leaves other placeholders alone', () => {
     const endpoint = EndpointIndex.of(FIXTURE).require(4);
     const { sample, cookie } = EndpointDetailPresenter.exampleRequest(endpoint);
-    assert.equal(cookie, 'auth={{auth}}; csrf={{csrf}}; sid={{sid}}; theme={{theme}}');
-    assert.deepEqual(sample.headers.find((header) => header.name === 'x-csrf-token'), { name: 'x-csrf-token', value: '{{csrf}}' });
+    assert.equal(String(cookie), 'auth={{auth}}; csrf={{csrf}}; sid={{sid}}; theme={{theme}}');
+    assert.equal(String(sample.headers.find((header) => header.name === 'x-csrf-token')?.value), '{{csrf}}');
     const bodyToken = {
       ...endpoint,
       auth: { ...endpoint.auth, csrf: [{ location: 'body' as const, name: 'token', source: 'cookie' as const, sourceName: 'csrf' }] },
     };
-    const body = EndpointDetailPresenter.exampleRequest(bodyToken).sample.body?.value as Record<string, unknown>;
+    const body = Samples.plainValue(EndpointDetailPresenter.exampleRequest(bodyToken).sample.body?.value) as Record<string, unknown>;
     assert.equal(body.token, '{{csrf}}');
-    const root = EndpointIndex.of(FIXTURE).require(1);
-    assert.deepEqual(EndpointDetailPresenter.exampleRequest(root), { sample: { method: 'GET', url: 'https://shop.example.com/', headers: [] } });
+    const root = EndpointDetailPresenter.exampleRequest(EndpointIndex.of(FIXTURE).require(1));
+    assert.equal(root.cookie, undefined);
+    assert.equal(root.sample.method, 'GET');
+    assert.equal(String(root.sample.url), 'https://shop.example.com/');
+    assert.deepEqual(root.sample.headers, []);
+    assert.equal(root.sample.body, undefined);
   });
 
   test('create() builds the default collaborators', () => {
@@ -580,5 +586,51 @@ describe('PresenterFactory', () => {
     assert.throws(() => new PresenterFactory({ width: 0 }), badInput);
     assert.throws(() => new SummaryPresenter({ width: Number.NaN }), badInput);
     assert.equal(lines(new SummaryPresenter({ width: 30.8 }).render(FIXTURE)).every((line) => line.length <= 30), true);
+  });
+});
+
+describe('EndpointDetailPresenter example requests', () => {
+  const curlBlock = (text: string): string[] => {
+    const block = section(text, 'Example request (curl)');
+    const end = block.indexOf('');
+    return end < 0 ? block : block.slice(0, end);
+  };
+  const argv = (script: string, env: Record<string, string> = {}): string[] =>
+    execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; }; ${script}`], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env } })
+      .toString()
+      .split('\n')
+      .slice(0, -1);
+
+  test('captured values that look like placeholders stay literal and read no variables', () => {
+    const model = LiteralPlaceholderSite.model();
+    for (const name of ['getSearch', 'postNote', 'postForm']) {
+      const text = new EndpointDetailPresenter({ width: 100 }).render({ model, ref: name });
+      assert.ok(!text.includes('${'), text);
+      assert.ok(!text.includes('Variables:'), text);
+      const args = argv(curlBlock(text).join('\n'), LiteralPlaceholderSite.LEAK_ENV);
+      assert.ok(!args.some((arg) => arg.includes('leak')), args.join('\n'));
+    }
+    const search = argv(curlBlock(new EndpointDetailPresenter({ width: 100 }).render({ model, ref: 'getSearch' })).join('\n'));
+    assert.ok(search.includes('x-trace: {{github_token}}'), search.join('\n'));
+  });
+
+  test('the example sends the exact UTF-8 bytes and control characters at any width', () => {
+    const city = ExportModel.endpoint({
+      method: 'POST',
+      path: '/city',
+      kind: 'form',
+      requestBody: { mimeType: 'application/x-www-form-urlencoded', kind: 'form', examples: [{ ville: 'Montr\u00e9al', note: 'a\tb', long: 'x'.repeat(70) + '\u00e9' }] },
+    });
+    const model = ExportModel.model([city]);
+    for (const width of [40, 60, 100]) {
+      const text = new EndpointDetailPresenter({ width }).render({ model, ref: 1 });
+      assertAscii(text, `width ${width}`);
+      const block = curlBlock(text);
+      assert.ok(block.every((line) => line.length <= width), block.join('\n'));
+      const args = argv(block.join('\n'));
+      assert.ok(args.includes('ville=Montr\u00e9al'), args.join('\n'));
+      assert.ok(args.includes('note=a\tb'), args.join('\n'));
+      assert.ok(args.includes('long=' + 'x'.repeat(70) + '\u00e9'), args.join('\n'));
+    }
   });
 });

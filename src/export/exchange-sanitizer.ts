@@ -24,7 +24,7 @@ export class ExchangeSanitizer {
   readonly #multipart: MultipartParser;
 
   static create(options: ExchangeSanitizerOptions = {}): ExchangeSanitizer {
-    return new ExchangeSanitizer({ redactor: new Redactor(options.redact ?? true), body: new BodyParser(), tokens: new TokenDetector(), multipart: new MultipartParser() });
+    return new ExchangeSanitizer({ redactor: new Redactor(options.redact ?? true), body: BodyParser.create(), tokens: new TokenDetector(), multipart: new MultipartParser() });
   }
 
   constructor(deps: ExchangeSanitizerDeps = {}) {
@@ -86,8 +86,8 @@ export class ExchangeSanitizer {
       .map((part) => {
         const eq = part.indexOf('=');
         const rawName = eq < 0 ? part : part.slice(0, eq);
-        const name = ExchangeSanitizer.#decode(rawName);
-        const value = eq < 0 ? '' : ExchangeSanitizer.#decode(part.slice(eq + 1));
+        const name = Http.decodeComponent(rawName.replace(/\+/g, ' '));
+        const value = eq < 0 ? '' : Http.decodeComponent(part.slice(eq + 1).replace(/\+/g, ' '));
         if (!this.#secretField(name) && !this.#redactor.isSecretValue(value)) return part;
         return `${rawName}=${encodeURIComponent(Samples.REDACTED)}`;
       })
@@ -167,13 +167,5 @@ export class ExchangeSanitizer {
 
   static #codePoint(code: number, fallback: string): string {
     return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback;
-  }
-
-  static #decode(text: string): string {
-    try {
-      return decodeURIComponent(text.replace(/\+/g, ' '));
-    } catch {
-      return text;
-    }
   }
 }

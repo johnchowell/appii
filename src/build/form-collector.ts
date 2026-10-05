@@ -1,7 +1,6 @@
 import type { Capture, FormDescriptor } from '../model/index.js';
-import type { FormExtractor } from '../forms/index.js';
-import { isAppiiError } from '../shared/index.js';
-import { Helpers } from './helpers.js';
+import { FormExtractor } from '../forms/index.js';
+import { Http, isAppiiError } from '../shared/index.js';
 import { HtmlPages } from './html-pages.js';
 
 export interface FormCollectorDeps {
@@ -18,8 +17,12 @@ export class FormCollector {
     this.#pages = deps.pages ?? new HtmlPages();
   }
 
+  static create(): FormCollector {
+    return new FormCollector({ extractor: FormExtractor.create(), pages: HtmlPages.create() });
+  }
+
   static key(form: FormDescriptor): string {
-    const url = Helpers.parseUrl(form.pageUrl);
+    const url = Http.parseUrl(form.pageUrl);
     const page = url ? url.origin + url.pathname : form.pageUrl;
     return JSON.stringify([page, form.selector, form.action, form.fields.map((field) => field.name), form.submitters.map((field) => field.name)]);
   }

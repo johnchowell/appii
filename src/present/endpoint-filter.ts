@@ -1,4 +1,5 @@
 import type { ApiModel, Endpoint, EndpointKind } from '../model/index.js';
+import { Http } from '../shared/index.js';
 
 export interface ListFilter {
   text?: string;
@@ -40,10 +41,10 @@ export class EndpointFilter {
     if (text === '') return undefined;
     const raw = text.toLowerCase().replace(/\/+$/, '');
     if (text.includes('://')) {
-      const url = EndpointFilter.#parse(text);
+      const url = Http.parseUrl(text);
       return url && EndpointFilter.HTTP_SCHEMES.has(url.protocol) ? { origin: url.origin } : { origin: raw };
     }
-    const url = EndpointFilter.#parse(`http://${text}`);
+    const url = Http.parseUrl(`http://${text}`);
     if (!url || url.pathname !== '/' || url.search !== '' || url.hash !== '' || url.username !== '') return { host: raw };
     return { host: url.port === '' ? url.hostname : `${url.hostname}:${url.port}` };
   }
@@ -78,17 +79,9 @@ export class EndpointFilter {
     return (value ?? '').split(EndpointFilter.LIST_SEPARATOR).filter((part) => part !== '');
   }
 
-  static #parse(value: string): URL | undefined {
-    try {
-      return new URL(value);
-    } catch {
-      return undefined;
-    }
-  }
-
   static #originMatches(matcher: OriginMatcher, origin: string): boolean {
     if (matcher.origin !== undefined) return origin.toLowerCase() === matcher.origin;
-    const url = EndpointFilter.#parse(origin);
+    const url = Http.parseUrl(origin);
     if (!url) return origin.toLowerCase() === matcher.host;
     return url.host === matcher.host || url.hostname === matcher.host;
   }

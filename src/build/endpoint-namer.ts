@@ -1,6 +1,5 @@
 import type { Endpoint } from '../model/index.js';
-import { Text } from '../shared/index.js';
-import { Helpers } from './helpers.js';
+import { Http, Text } from '../shared/index.js';
 
 interface Segment {
   readonly text: string;
@@ -29,7 +28,7 @@ export class EndpointNamer {
       .map((segment) => {
         const whole = /^\{([^{}]+)\}$/.exec(segment);
         if (whole) return { text: whole[1] ?? '', param: true };
-        return { text: Helpers.decode(segment.replace(/[{}]/g, '')), param: false };
+        return { text: Http.decodeComponent(segment.replace(/[{}]/g, '')), param: false };
       });
   }
 

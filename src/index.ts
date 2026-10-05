@@ -1,5 +1,5 @@
 export * as Shared from './shared/index.js';
-export type * as Model from './model/index.js';
+export * as Model from './model/index.js';
 export * as Capture from './capture/index.js';
 export * as Forms from './forms/index.js';
 export * as Build from './build/index.js';

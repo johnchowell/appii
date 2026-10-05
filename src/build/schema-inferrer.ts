@@ -71,6 +71,10 @@ export class SchemaInferrer {
     this.#formats = deps.formats ?? new FormatDetector();
   }
 
+  static create(options: SchemaInferrerOptions = {}): SchemaInferrer {
+    return new SchemaInferrer(options, { formats: new FormatDetector() });
+  }
+
   infer(samples: unknown[]): JsonSchema {
     let out: JsonSchema | undefined;
     for (const sample of samples) {

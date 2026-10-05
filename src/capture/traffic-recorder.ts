@@ -201,14 +201,14 @@ export class TrafficRecorder {
     const reqHeaders = Helpers.stripPseudoHeaders(requestHeaders ?? Http.recordToHeaders(request.headers()));
     const captured: CapturedRequest = { method: request.method(), url: request.url(), headers: reqHeaders };
     const postData = this.#captureBodies ? request.postDataBuffer() : null;
-    const requestBody = this.#bodyOf(postData, Http.getHeader(reqHeaders, 'content-type'));
+    const requestBody = this.#bodyOf(postData, Http.getHeader(reqHeaders, 'content-type'), Http.getHeader(reqHeaders, 'content-encoding'));
     if (requestBody) captured.body = requestBody;
 
     let capturedResponse: CapturedResponse | undefined;
     if (response) {
       const resHeaders = Helpers.stripPseudoHeaders(responseHeaders ?? Http.recordToHeaders(response.headers()));
       capturedResponse = { status: response.status(), statusText: response.statusText(), headers: resHeaders };
-      const responseBody = this.#bodyOf(body ?? null, Http.getHeader(resHeaders, 'content-type'));
+      const responseBody = this.#bodyOf(body ?? null, Http.getHeader(resHeaders, 'content-type'), undefined);
       if (responseBody) capturedResponse.body = responseBody;
       if (remoteAddress) capturedResponse.remoteAddress = remoteAddress;
     }
@@ -247,9 +247,9 @@ export class TrafficRecorder {
     };
   }
 
-  #bodyOf(bytes: Buffer | null, contentType: string | undefined): BodyData | undefined {
+  #bodyOf(bytes: Buffer | null, contentType: string | undefined, contentEncoding: string | undefined): BodyData | undefined {
     if (!bytes || bytes.length === 0) return undefined;
-    return Http.toBodyData(bytes, contentType ?? '', this.#maxBodyBytes);
+    return Http.toBodyData(bytes, contentType ?? '', { maxBytes: this.#maxBodyBytes, contentEncoding });
   }
 
   #push(exchange: Exchange): void {
@@ -297,9 +297,7 @@ export class TrafficRecorder {
     const at = new Date().toISOString();
     if (!this.#captureBodies) return { direction, at, opcode: typeof payload === 'string' ? 'text' : 'binary', data: '' };
     if (typeof payload === 'string') {
-      const bytes = Buffer.from(payload, 'utf8');
-      const data = bytes.length > this.#maxBodyBytes ? Http.toBodyData(bytes, 'text/plain', this.#maxBodyBytes).data : payload;
-      return { direction, at, opcode: 'text', data };
+      return { direction, at, opcode: 'text', data: Http.utf8Prefix(payload, this.#maxBodyBytes) };
     }
     const kept = payload.length > this.#maxBodyBytes ? payload.subarray(0, this.#maxBodyBytes) : payload;
     return { direction, at, opcode: 'binary', data: Buffer.from(kept).toString('base64') };

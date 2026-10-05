@@ -1,11 +1,10 @@
 import { dirname } from 'node:path';
 import { CaptureStore } from '../../capture/index.js';
-import { BasePresenter } from '../../present/index.js';
+import { BasePresenter, PresenterFactory } from '../../present/index.js';
 import { Fs, Meta } from '../../shared/index.js';
 import type { Capture } from '../../model/index.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
-import { CaptureSummaryPresenter } from '../capture-summary-presenter.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -55,7 +54,7 @@ export class CaptureCommand extends Command {
   }
 
   static create(): CaptureCommand {
-    return new CaptureCommand({ runner: CaptureRunner.create(), store: new CaptureStore(), capture: new CaptureOptionGroup() });
+    return new CaptureCommand({ runner: CaptureRunner.create(), store: CaptureStore.create(), capture: new CaptureOptionGroup() });
   }
 
   protected async execute(values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
@@ -79,7 +78,7 @@ export class CaptureCommand extends Command {
     await this.#store.save(out, capture);
     const file = ctx.display(out);
     const next = `${Meta.APP_NAME} build ${BasePresenter.fileArgument(file)}`;
-    ctx.out(new CaptureSummaryPresenter(ctx.presenterOptions()).render({ capture, file, next }));
+    ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file, next }));
     return ExitCode.OK;
   }
 }

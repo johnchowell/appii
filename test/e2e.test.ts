@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Page } from 'playwright';
-import { Build, Capture, Cli, Export, Present, Shared, main } from '../src/index.js';
+import { Build, Capture, Export, Present, Shared, main } from '../src/index.js';
 import type { Model } from '../src/index.js';
 import { FIXTURE_USER, startFixtureSite } from './fixtures/site.js';
 import type { FixtureSite } from './fixtures/site.js';
@@ -63,8 +63,8 @@ describe('end to end: capture, build, list and export the fixture site through t
     dir = await mkdtemp(join(tmpdir(), 'appii-e2e-'));
     capture = await Capture.CaptureSession.create({ url: site.url, headless: true, idleMs: 400, script: script(site) }).run();
     model = Build.ModelBuilder.create().build(capture);
-    await new Capture.CaptureStore().save(join(dir, 'capture.json'), capture);
-    await new Cli.ModelStore().save(join(dir, 'api.json'), model);
+    await Capture.CaptureStore.create().save(join(dir, 'capture.json'), capture);
+    await Build.ModelStore.create().save(join(dir, 'api.json'), model);
   });
 
   after(async () => {
@@ -167,6 +167,19 @@ describe('end to end: capture, build, list and export the fixture site through t
     assert.match(show.stdout, /hidden-field/);
   });
 
+  test('list --show for the signup form uses the URL and entry of the default submitter only', async () => {
+    const harness = new CliHarness(dir);
+    const io = harness.io();
+    assert.equal(await main(['list', 'api.json', '--show', endpoint(model, 'POST', '/signup').name, '--width', '200'], io.io), 0);
+    const text = io.stdout.text;
+    assert.match(text, /Submitter 2: +intent=draft .*formaction \S+\/signup\?draft=1/);
+    const curl = text.slice(text.indexOf('Example request (curl)'));
+    assert.match(curl, /curl -sS -X POST '[^']+\/signup' \\\n/);
+    assert.ok(!curl.includes('draft=1'), curl);
+    assert.match(curl, /--form-string 'intent=create'/);
+    assert.ok(!curl.includes('intent=draft'), curl);
+  });
+
   test('the build output compiles and dist/cli.js --help works', { timeout: 180_000 }, async () => {
     const root = resolve('node_modules/.cache', `appii-e2e-${process.pid}`);
     const out = join(root, 'dist');
@@ -184,7 +197,7 @@ describe('end to end: capture, build, list and export the fixture site through t
       assert.equal(list.code, 0, list.stderr);
       assert.equal((JSON.parse(list.stdout) as unknown[]).length, model.endpoints.length);
       const library = (await import(pathToFileURL(join(out, 'index.js')).href)) as Record<string, unknown>;
-      assert.deepEqual(Object.keys(library).sort(), ['Build', 'Capture', 'Cli', 'Export', 'Forms', 'Present', 'Shared', 'main']);
+      assert.deepEqual(Object.keys(library).sort(), ['Build', 'Capture', 'Cli', 'Export', 'Forms', 'Model', 'Present', 'Shared', 'main']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

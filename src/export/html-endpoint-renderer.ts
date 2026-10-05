@@ -52,7 +52,7 @@ export class HtmlEndpointRenderer {
     const number = ctx.index.numberOf(endpoint);
     const esc = HtmlEndpointRenderer.esc;
     const search = [endpoint.method, endpoint.origin + endpoint.path, endpoint.name, endpoint.id, endpoint.kind, endpoint.operationName ?? ''].join(' ').trim().toLowerCase();
-    const statuses = Helpers.statuses(endpoint)
+    const statuses = EndpointIndex.statuses(endpoint)
       .map((status) => `<span class="badge status-${HtmlEndpointRenderer.statusClass(status)}" title="${esc(Http.reasonPhrase(status))}">${status}</span>`)
       .join(' ');
     const badges = [`<span class="badge">${esc(endpoint.kind)}</span>`, statuses];

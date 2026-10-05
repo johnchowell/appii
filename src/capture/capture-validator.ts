@@ -1,27 +1,15 @@
-import { Json } from '../shared/index.js';
+import { CAPTURE_SOURCES, CAPTURE_VERSION, RESOURCE_TYPES, SAME_SITE_VALUES } from '../model/index.js';
 import type { Capture } from '../model/index.js';
+import { Json } from '../shared/index.js';
 
 type Check = (value: unknown, path: string, problems: string[]) => void;
 
 export class CaptureValidator {
-  static readonly VERSION = 1;
+  static readonly VERSION = CAPTURE_VERSION;
   static readonly MAX_PROBLEMS = 25;
-  static readonly SOURCES: ReadonlySet<string> = new Set(['browser', 'har']);
-  static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set([
-    'document',
-    'xhr',
-    'fetch',
-    'script',
-    'stylesheet',
-    'image',
-    'font',
-    'media',
-    'websocket',
-    'manifest',
-    'eventsource',
-    'other',
-  ]);
-  static readonly SAME_SITE: ReadonlySet<string> = new Set(['Strict', 'Lax', 'None']);
+  static readonly SOURCES: ReadonlySet<string> = new Set(CAPTURE_SOURCES);
+  static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
+  static readonly SAME_SITE: ReadonlySet<string> = new Set(SAME_SITE_VALUES);
 
   validate(value: unknown): string[] {
     const problems: string[] = [];

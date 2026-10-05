@@ -1,3 +1,4 @@
+import { ModelStore } from '../../build/index.js';
 import { ExporterRegistry } from '../../export/index.js';
 import type { ExportOptions } from '../../export/index.js';
 import { TextLayout } from '../../present/index.js';
@@ -10,7 +11,6 @@ import { ExitCode } from '../exit-code.js';
 import { ExportFormatsPresenter } from '../export-formats-presenter.js';
 import { Helpers } from '../helpers.js';
 import { InputLoader } from '../input-loader.js';
-import { ModelStore } from '../model-store.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
 import { UsageError } from '../usage-error.js';

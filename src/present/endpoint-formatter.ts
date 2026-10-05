@@ -1,5 +1,5 @@
 import type { Endpoint } from '../model/index.js';
-import { Ansi, Schema } from '../shared/index.js';
+import { Ansi, EndpointIndex, Schema } from '../shared/index.js';
 import { TextLayout } from './text-layout.js';
 
 export class EndpointFormatter {
@@ -11,10 +11,6 @@ export class EndpointFormatter {
 
   constructor(ansi: Ansi = Ansi.plain) {
     this.#ansi = ansi;
-  }
-
-  static statusCodes(endpoint: Endpoint): number[] {
-    return [...new Set(endpoint.responses.map((response) => response.status))].sort((a, b) => a - b);
   }
 
   static authLabels(endpoint: Endpoint): string[] {
@@ -70,7 +66,7 @@ export class EndpointFormatter {
   }
 
   statuses(endpoint: Endpoint): string {
-    return EndpointFormatter.statusCodes(endpoint)
+    return EndpointIndex.statuses(endpoint)
       .map((status) => this.#ansi.status(status))
       .join(' ');
   }

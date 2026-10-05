@@ -1,5 +1,6 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { gunzipSync } from 'node:zlib';
 import { chromium } from 'playwright';
 import type { Browser, BrowserContext } from 'playwright';
 import { TrafficRecorder } from '../src/capture/index.js';
@@ -203,6 +204,30 @@ describe('TrafficRecorder against a real browser', () => {
       assert.equal(body.data.length, 10);
       assert.ok(body.size > 10);
       small.detach();
+    });
+  });
+
+  test('keeps the exact bytes of content-encoded and non-UTF-8 request bodies', async () => {
+    await withContext(async (context) => {
+      const recorder = new TrafficRecorder();
+      recorder.attach(context);
+      const page = await context.newPage();
+      await page.goto(site.origin + '/products');
+      await page.evaluate(async () => {
+        const stream = new Blob(['{"event":"view","user":42}']).stream().pipeThrough(new CompressionStream('gzip'));
+        const gzip = await new Response(stream).arrayBuffer();
+        await fetch('/echo?gzip', { method: 'POST', headers: { 'content-type': 'text/plain;charset=UTF-8', 'content-encoding': 'gzip' }, body: gzip });
+        await fetch('/echo?latin1', { method: 'POST', headers: { 'content-type': 'text/plain; charset=windows-1252' }, body: new Uint8Array([0x63, 0x61, 0x66, 0xe9]) });
+      });
+      await recorder.settled();
+      const gzipped = one(recorder.exchanges, 'POST', '/echo?gzip').request.body!;
+      assert.equal(gzipped.encoding, 'base64');
+      assert.equal(gunzipSync(Buffer.from(Http.bodyBytes(gzipped))).toString('utf8'), '{"event":"view","user":42}');
+      assert.equal(gzipped.size, Http.bodyBytes(gzipped).length);
+      const latin1 = one(recorder.exchanges, 'POST', '/echo?latin1').request.body!;
+      assert.equal(latin1.encoding, 'base64');
+      assert.equal(Buffer.from(Http.bodyBytes(latin1)).toString('hex'), '636166e9');
+      recorder.detach();
     });
   });
 

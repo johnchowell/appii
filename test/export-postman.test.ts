@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { PostmanExporter } from '../src/export/index.js';
 import type { ApiModel } from '../src/model/index.js';
 import { Json, Text } from '../src/shared/index.js';
+import { LiteralPlaceholderSite } from './fixtures/foundation-literal-placeholders.js';
 import { ExportModel } from './helpers/export-model.js';
 import type { ExportFixture } from './helpers/export-model.js';
 
@@ -65,7 +66,8 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
     const variables = collection.variable as Item[];
     assert.deepEqual(variables[0], { key: 'baseUrl', value: fixture.site.origin, type: 'string', description: `Base URL for ${fixture.site.origin}` });
     const keys = new Set(variables.map((v) => String(v.key)));
-    for (const name of ['csrf_token', 'password', 'x_csrf_token']) assert.ok(keys.has(name), name);
+    for (const name of ['csrf', 'csrf_token', 'password']) assert.ok(keys.has(name), name);
+    assert.ok(!keys.has('x_csrf_token'));
     for (const name of referenced(collection.item)) assert.ok(keys.has(name), `variable ${name} is not defined`);
   });
 
@@ -99,7 +101,7 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
   test('raw JSON, urlencoded and formdata bodies with placeholders', () => {
     const create = obj(find(collection, 'createItem').request);
     assert.deepEqual(create.header, [
-      { key: 'x-csrf-token', value: '{{x_csrf_token}}', type: 'text' },
+      { key: 'x-csrf-token', value: '{{csrf}}', type: 'text' },
       { key: 'Content-Type', value: 'application/json', type: 'text' },
     ]);
     const body = obj(create.body);
@@ -171,5 +173,35 @@ describe('PostmanExporter edge cases', () => {
     const collection = JSON.parse(new PostmanExporter().export(ExportModel.model([], { primaryOrigin: '' })).content) as Record<string, unknown>;
     assert.deepEqual(collection.item, []);
     assert.deepEqual(collection.variable, []);
+  });
+});
+
+describe('PostmanExporter keeps captured text literal', () => {
+  function sent(request: Item): Set<string> {
+    const names = new Set<string>();
+    const visit = (node: unknown): void => {
+      if (typeof node === 'string') for (const m of node.matchAll(/\{\{([^{}]*)\}\}/g)) names.add(m[1] ?? '');
+      else if (Array.isArray(node)) node.forEach(visit);
+      else if (Json.isPlainObject(node) && node.disabled !== true) for (const [key, value] of Object.entries(node)) if (key !== 'description') visit(value);
+    };
+    visit(request);
+    return names;
+  }
+
+  test('captured values that look like variables are never resolved by Postman', () => {
+    const collection = JSON.parse(PostmanExporter.create().export(LiteralPlaceholderSite.model()).content) as Record<string, unknown>;
+    assert.deepEqual((collection.variable as Item[]).map((variable) => variable.key), ['baseUrl']);
+    for (const item of requests(collection)) assert.deepEqual([...sent(obj(item.request))], ['baseUrl'], String(item.name));
+    const search = obj(find(collection, 'getSearch').request);
+    assert.equal(obj(search.url).raw, '{{baseUrl}}/api/search?q=%7B%7Baws_secret_access_key%7D%7D');
+    const trace = (search.header as Item[]).find((header) => header.key === 'x-trace');
+    assert.equal(trace?.disabled, true);
+    assert.equal(trace?.value, '');
+    assert.match(String(trace?.description), /\{\{github_token\}\}/);
+    const note = obj(obj(find(collection, 'postNote').request).body);
+    assert.ok(!String(note.raw).includes('{{'));
+    assert.deepEqual(JSON.parse(String(note.raw)), { note: '{{home}}', n2: 'x{{path}}y' });
+    const form = obj(obj(find(collection, 'postForm').request).body).urlencoded as Item[];
+    assert.deepEqual(form.map((entry) => [entry.key, entry.disabled]), [['comment', true], ['c', true]]);
   });
 });

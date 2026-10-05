@@ -1,5 +1,5 @@
 import { load } from 'cheerio';
-import { AppiiError } from '../shared/index.js';
+import { AppiiError, Http } from '../shared/index.js';
 import { HtmlMicrosyntax } from './html-microsyntax.js';
 
 export interface HtmlNode {
@@ -136,11 +136,7 @@ export class HtmlDocument {
   }
 
   resolveUrl(href: string, base: string = this.baseUrl): string | undefined {
-    try {
-      return new URL(href, base).href;
-    } catch {
-      return undefined;
-    }
+    return Http.parseUrl(href, base)?.href;
   }
 
   actionUrl(value: string | undefined): string {

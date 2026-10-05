@@ -25,6 +25,7 @@ export class ShellFolder {
   static readonly MIN_ROOM = 6;
   static readonly NAME: RegExp = /^[A-Za-z_][A-Za-z0-9_]*/;
   static readonly UNSUPPORTED_AFTER_DOLLAR: ReadonlySet<string> = new Set(['(', "'", '"']);
+  static readonly ANSI_C_QUOTE = "$'";
 
   readonly #indent: number;
 
@@ -74,6 +75,13 @@ export class ShellFolder {
         if (next === '\n') endGroup(true);
         else add(ch + next, '');
         i += 2;
+        continue;
+      }
+      if (command.startsWith(ShellFolder.ANSI_C_QUOTE, i)) {
+        const end = ShellFolder.#ansiCEnd(command, i + ShellFolder.ANSI_C_QUOTE.length);
+        if (end < 0) return undefined;
+        add(command.slice(i, end + 1), '');
+        i = end + 1;
         continue;
       }
       if (ch === "'") {
@@ -211,6 +219,15 @@ export class ShellFolder {
       if (ch === '\\') i++;
       else if (ch === '{') depth++;
       else if (ch === '}' && --depth === 0) return i;
+    }
+    return -1;
+  }
+
+  static #ansiCEnd(source: string, from: number): number {
+    for (let i = from; i < source.length; i++) {
+      const ch = source.charAt(i);
+      if (ch === '\\') i++;
+      else if (ch === "'") return i;
     }
     return -1;
   }

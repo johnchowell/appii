@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { CaptureStore, HarConverter } from '../src/capture/index.js';
-import { ModelStore } from '../src/cli/index.js';
+import { ModelStore } from '../src/build/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, CookieInfo, Endpoint } from '../src/model/index.js';
 import { Meta } from '../src/shared/index.js';
@@ -84,6 +84,17 @@ describe('cli commands', () => {
       assert.equal(existingDir.code, 0, existingDir.stderr);
       assert.match(existingDir.stdout, /^Wrote captures\/api\.json \(/);
       assert.equal((await new ModelStore().load(join(dir, 'captures', 'api.json'))).source.file, 'capture.json');
+    });
+
+    test('capture --from-har accepts a HAR file that starts with a UTF-8 byte order mark', async () => {
+      const capture = await CaptureStore.create().load(join(dir, 'browser.json'));
+      await writeFile(join(dir, 'bom.har'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(HarConverter.create().toHar(capture)))]));
+      const run = await cli.run(['capture', '--from-har', 'bom.har', '-o', 'from-bom.json']);
+      assert.equal(run.code, 0, run.stderr);
+      assert.equal(run.stderr, '');
+      assert.equal((await CaptureStore.create().load(join(dir, 'from-bom.json'))).exchanges.length, capture.exchanges.length);
+      const listed = await cli.run(['list', 'bom.har', '--json']);
+      assert.equal(listed.code, 0, listed.stderr);
     });
 
     test('capture usage errors and failures', async () => {

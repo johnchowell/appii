@@ -1,5 +1,5 @@
 import type { BodyData, BodyKind } from '../model/index.js';
-import { Http, Json } from '../shared/index.js';
+import { Http, Json, Text } from '../shared/index.js';
 import { GraphqlDocument } from './graphql-document.js';
 import { MultipartParser } from './multipart-parser.js';
 
@@ -50,6 +50,10 @@ export class BodyParser {
     this.#multipart = deps.multipart ?? new MultipartParser();
   }
 
+  static create(): BodyParser {
+    return new BodyParser({ multipart: new MultipartParser() });
+  }
+
   static kindOf(mimeType: string): BodyKind {
     const mime = Http.mimeEssence(mimeType);
     if (mime === '') return 'empty';
@@ -95,7 +99,7 @@ export class BodyParser {
     if (BodyParser.GRAPHQL_MIMES.has(mime)) return BodyParser.#graphqlDocument(text, mime);
     if (BodyParser.LINE_JSON_MIMES.has(mime)) return BodyParser.#lines(text, mime, body.truncated === true);
     if (Http.isJsonMime(mime)) {
-      const parsed = Json.safeParse(BodyParser.#stripBom(text));
+      const parsed = Json.safeParse(Text.stripBom(text));
       if (parsed.ok) return BodyParser.#json(parsed.value, mime);
       return body.truncated ? { kind: 'json', mimeType: mime } : { kind: 'text', mimeType: mime, value: text };
     }
@@ -176,15 +180,11 @@ export class BodyParser {
   }
 
   static #sniff(text: string): unknown {
-    const trimmed = BodyParser.#stripBom(text).trimStart();
+    const trimmed = Text.stripBom(text).trimStart();
     if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
     const parsed = Json.safeParse(trimmed);
     if (!parsed.ok) return undefined;
     return Json.isPlainObject(parsed.value) || Array.isArray(parsed.value) ? parsed.value : undefined;
-  }
-
-  static #stripBom(text: string): string {
-    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   }
 
   static #text(body: BodyData, declared: string): string | undefined {

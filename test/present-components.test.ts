@@ -239,7 +239,9 @@ describe('ShellFolder', () => {
     assert.deepEqual(groups[0]?.words.map((word) => ShellFolder.render(word)), ['a', "'b c'", '"d ${E}"', 'f\\ g']);
     assert.equal(ShellFolder.parse("curl 'unterminated"), undefined);
     assert.equal(ShellFolder.parse('curl "$(date)"'), undefined);
-    assert.equal(ShellFolder.parse("curl $'a\\nb'"), undefined);
+    assert.deepEqual(ShellFolder.parse("curl $'a\\nb\\'c'")?.[0]?.words[1], [{ text: "$'a\\nb\\'c'", quote: '' }]);
+    assert.equal(ShellFolder.parse("curl $'unterminated"), undefined);
+    assert.equal(ShellFolder.parse(`curl "$'x'"`), undefined);
     assert.equal(ShellFolder.parse('curl x # a comment'), undefined);
     assert.ok(ShellFolder.parse('curl x#y'));
     assert.deepEqual(ShellFolder.parse('curl "${A:-${B}}"')?.[0]?.words[1], [{ text: '${A:-${B}}', quote: '"' }]);
@@ -282,7 +284,7 @@ describe('EndpointFormatter', () => {
   });
 
   test('statuses are distinct and sorted; auth labels follow a fixed order', () => {
-    assert.deepEqual(EndpointFormatter.statusCodes(byId(FIXTURE, 'post-api-items')), [201, 400]);
+    assert.deepEqual(EndpointIndex.statuses(byId(FIXTURE, 'post-api-items')), [201, 400]);
     assert.equal(plain.statuses(byId(FIXTURE, 'get-api-items-itemid')), '200 404');
     assert.equal(color.statuses(byId(FIXTURE, 'get-api-items-itemid')), `${Ansi.color.green('200')} ${Ansi.color.yellow('404')}`);
     assert.equal(plain.auth(byId(FIXTURE, 'post-api-items')), 'cookie,csrf');

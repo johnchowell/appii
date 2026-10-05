@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Curl, EndpointIndex, Meta, Text } from '../shared/index.js';
+import { EndpointIndex, Json, Meta, Samples, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -71,7 +71,7 @@ export class PostmanExporter extends BaseExporter {
     for (const endpoint of endpoints) {
       const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
       const item = this.#requests.item(endpoint, { model, index, options: opts, variable });
-      for (const name of Curl.placeholderNames(Helpers.sample(model, endpoint, opts))) placeholders.add(name.toLowerCase());
+      for (const name of Samples.placeholderNames(Helpers.sample(model, endpoint, opts))) placeholders.add(name);
       const group = Helpers.group(endpoint);
       const list = folders.get(group) ?? [];
       list.push(item);
@@ -95,7 +95,7 @@ export class PostmanExporter extends BaseExporter {
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {
-    return Helpers.json(this.collection(model, endpoints, options)) + '\n';
+    return Json.asciiJson(this.collection(model, endpoints, options)) + '\n';
   }
 
   protected override filename(_model: ApiModel): string {

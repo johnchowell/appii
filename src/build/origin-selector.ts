@@ -19,7 +19,7 @@ export class OriginSelector {
     if (!start) return [];
     const chain = [start.href];
     let current: Exchange | undefined = capture.exchanges.find(
-      (exchange) => exchange.resourceType === 'document' && Helpers.parseUrl(exchange.request.url)?.href === start.href,
+      (exchange) => exchange.resourceType === 'document' && Http.parseUrl(exchange.request.url)?.href === start.href,
     );
     for (let hops = 0; current && hops < OriginSelector.MAX_REDIRECTS; hops++) {
       const id: string = current.id;

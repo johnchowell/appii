@@ -1,3 +1,4 @@
+import { ENDPOINT_KINDS } from '../model/index.js';
 import type { ApiModel, Endpoint, EndpointKind } from '../model/index.js';
 import { EndpointIndex, Meta, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
@@ -15,7 +16,7 @@ export interface HtmlExporterDeps {
 
 export class HtmlExporter extends BaseExporter {
   static readonly TOP_ENDPOINTS = 15;
-  static readonly KINDS: readonly EndpointKind[] = ['json', 'form', 'graphql', 'document', 'other'];
+  static readonly KINDS: readonly EndpointKind[] = ENDPOINT_KINDS;
 
   readonly format: ExportFormat = 'html';
   readonly extension = 'html';

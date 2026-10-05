@@ -1,7 +1,6 @@
 import { chromium } from 'playwright';
 import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions } from 'playwright';
-import { AppiiError, Fs } from '../shared/index.js';
-import { Helpers } from './helpers.js';
+import { AppiiError, Fs, Text } from '../shared/index.js';
 
 export interface BrowserLauncherOptions {
   headless?: boolean;
@@ -58,7 +57,7 @@ export class BrowserLauncher {
     } catch (err) {
       throw new AppiiError(
         'BROWSER',
-        `Cannot launch Chromium: ${Helpers.errorMessage(err)}. Install it with "npx playwright install chromium" or pass an executable path.`,
+        `Cannot launch Chromium: ${Text.errorMessage(err, { firstLine: true })}. Install it with "npx playwright install chromium" or pass an executable path.`,
         { cause: err },
       );
     }
@@ -67,7 +66,7 @@ export class BrowserLauncher {
       return { browser, context };
     } catch (err) {
       await browser.close().catch(() => undefined);
-      throw new AppiiError('BROWSER', `Cannot create a browser context: ${Helpers.errorMessage(err)}`, { cause: err });
+      throw new AppiiError('BROWSER', `Cannot create a browser context: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
     }
   }
 

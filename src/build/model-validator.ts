@@ -1,5 +1,19 @@
-import { Json } from '../shared/index.js';
+import {
+  BODY_KINDS,
+  COOKIE_ROLES,
+  CSRF_LOCATIONS,
+  ENDPOINT_KINDS,
+  FIELD_KINDS,
+  FORM_ENCTYPES,
+  FORM_METHODS,
+  MODEL_VERSION,
+  PARAM_LOCATIONS,
+  RESOURCE_TYPES,
+  SAME_SITE_VALUES,
+  TOKEN_SOURCES,
+} from '../model/index.js';
 import type { ApiModel } from '../model/index.js';
+import { Json } from '../shared/index.js';
 
 type Fields = Record<string, unknown>;
 
@@ -9,21 +23,19 @@ interface FieldRule {
 }
 
 export class ModelValidator {
-  static readonly VERSION = 1;
+  static readonly VERSION = MODEL_VERSION;
   static readonly MAX_PROBLEMS = 25;
-  static readonly ENDPOINT_KINDS: ReadonlySet<string> = new Set(['json', 'form', 'graphql', 'document', 'other']);
-  static readonly BODY_KINDS: ReadonlySet<string> = new Set(['json', 'form', 'multipart', 'graphql', 'html', 'text', 'binary', 'empty']);
-  static readonly PARAM_LOCATIONS: ReadonlySet<string> = new Set(['path', 'query', 'header', 'cookie']);
-  static readonly CSRF_LOCATIONS: ReadonlySet<string> = new Set(['header', 'body', 'query']);
-  static readonly TOKEN_SOURCES: ReadonlySet<string> = new Set(['cookie', 'meta', 'hidden-field', 'response', 'unknown']);
-  static readonly COOKIE_ROLES: ReadonlySet<string> = new Set(['session', 'auth', 'csrf', 'preference', 'tracking', 'unknown']);
-  static readonly SAME_SITE: ReadonlySet<string> = new Set(['Strict', 'Lax', 'None']);
-  static readonly FORM_METHODS: ReadonlySet<string> = new Set(['GET', 'POST', 'DIALOG']);
-  static readonly FORM_ENCTYPES: ReadonlySet<string> = new Set(['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain']);
-  static readonly FIELD_KINDS: ReadonlySet<string> = new Set(['input', 'select', 'textarea', 'button']);
-  static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set([
-    'document', 'xhr', 'fetch', 'script', 'stylesheet', 'image', 'font', 'media', 'websocket', 'manifest', 'eventsource', 'other',
-  ]);
+  static readonly ENDPOINT_KINDS: ReadonlySet<string> = new Set(ENDPOINT_KINDS);
+  static readonly BODY_KINDS: ReadonlySet<string> = new Set(BODY_KINDS);
+  static readonly PARAM_LOCATIONS: ReadonlySet<string> = new Set(PARAM_LOCATIONS);
+  static readonly CSRF_LOCATIONS: ReadonlySet<string> = new Set(CSRF_LOCATIONS);
+  static readonly TOKEN_SOURCES: ReadonlySet<string> = new Set(TOKEN_SOURCES);
+  static readonly COOKIE_ROLES: ReadonlySet<string> = new Set(COOKIE_ROLES);
+  static readonly SAME_SITE: ReadonlySet<string> = new Set(SAME_SITE_VALUES);
+  static readonly FORM_METHODS: ReadonlySet<string> = new Set(FORM_METHODS);
+  static readonly FORM_ENCTYPES: ReadonlySet<string> = new Set(FORM_ENCTYPES);
+  static readonly FIELD_KINDS: ReadonlySet<string> = new Set(FIELD_KINDS);
+  static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
 
   static looksLikeModel(value: unknown): boolean {
     return Json.isPlainObject(value) && Array.isArray(value.endpoints) && !Array.isArray(value.exchanges) && !Json.isPlainObject(value.log);
@@ -92,6 +104,7 @@ export class ModelValidator {
         this.#oneOf(problems, token, 'source', ModelValidator.TOKEN_SOURCES, p + '.');
         this.#string(problems, token, 'sourceName', p + '.', { optional: true });
         this.#string(problems, token, 'sourceUrl', p + '.', { optional: true });
+        this.#string(problems, token, 'sourceMethod', p + '.', { optional: true });
       });
     }
     if (endpoint.form !== undefined) {
@@ -99,6 +112,8 @@ export class ModelValidator {
       if (form) {
         this.#string(problems, form, 'pageUrl', at + 'form.');
         this.#string(problems, form, 'selector', at + 'form.');
+        this.#string(problems, form, 'action', at + 'form.');
+        this.#oneOf(problems, form, 'method', ModelValidator.FORM_METHODS, at + 'form.');
         this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at + 'form.');
         this.#fields(problems, form, at + 'form.');
       }

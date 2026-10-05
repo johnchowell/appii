@@ -1,6 +1,6 @@
 import { errors } from 'playwright';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import { AppiiError, Meta, isAppiiError } from '../shared/index.js';
+import { AppiiError, Meta, Text, isAppiiError } from '../shared/index.js';
 import type { Capture, Cookie, Exchange, PageSnapshot, StorageSnapshot } from '../model/index.js';
 import { BrowserLauncher } from './browser-launcher.js';
 import type { BrowserLauncherOptions } from './browser-launcher.js';
@@ -27,6 +27,15 @@ export interface CaptureSessionDeps {
   launcher: BrowserLauncher;
   recorder: TrafficRecorder;
   cookies: CookieParser;
+  snapshots?: () => PageSnapshotter;
+  state?: () => BrowserStateTracker;
+  idle?: () => NetworkIdleMonitor;
+}
+
+interface RunFactories {
+  readonly snapshots: () => PageSnapshotter;
+  readonly state: () => BrowserStateTracker;
+  readonly idle: () => NetworkIdleMonitor;
 }
 
 interface CaptureRun {
@@ -54,6 +63,7 @@ export class CaptureSession {
   readonly recorder: TrafficRecorder;
   readonly #options: Readonly<CaptureSessionOptions>;
   readonly #deps: CaptureSessionDeps;
+  readonly #factories: RunFactories;
   readonly #stopSignal: Promise<void>;
   readonly #resolveStop: () => void;
   #started = false;
@@ -65,6 +75,11 @@ export class CaptureSession {
     if (options.url !== undefined) CaptureSession.#checkUrl(options.url);
     this.#options = { ...options };
     this.#deps = deps;
+    this.#factories = {
+      snapshots: deps.snapshots ?? (() => new PageSnapshotter()),
+      state: deps.state ?? (() => new BrowserStateTracker()),
+      idle: deps.idle ?? (() => new NetworkIdleMonitor()),
+    };
     this.recorder = deps.recorder;
     let resolveStop: () => void = () => undefined;
     this.#stopSignal = new Promise<void>((resolve) => {
@@ -78,6 +93,9 @@ export class CaptureSession {
       launcher: new BrowserLauncher(options),
       recorder: new TrafficRecorder(options.recorder),
       cookies: new CookieParser(),
+      snapshots: () => new PageSnapshotter(),
+      state: () => new BrowserStateTracker(),
+      idle: () => new NetworkIdleMonitor(),
     });
   }
 
@@ -119,9 +137,9 @@ export class CaptureSession {
     const run: CaptureRun = {
       browser,
       context,
-      snapshots: new PageSnapshotter(),
-      state: new BrowserStateTracker(),
-      idle: new NetworkIdleMonitor(),
+      snapshots: this.#factories.snapshots(),
+      state: this.#factories.state(),
+      idle: this.#factories.idle(),
       attached: false,
       contextClosed: false,
     };
@@ -193,7 +211,7 @@ export class CaptureSession {
       try {
         page = await run.context.newPage();
       } catch (err) {
-        throw new AppiiError('BROWSER', `Cannot open a browser page: ${Helpers.errorMessage(err)}`, { cause: err });
+        throw new AppiiError('BROWSER', `Cannot open a browser page: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
       }
     }
     const url = this.#options.url;
@@ -205,7 +223,7 @@ export class CaptureSession {
         await script(page);
       } catch (err) {
         if (this.#gone(run)) return;
-        throw new AppiiError('CAPTURE', `Capture script failed: ${Helpers.errorMessage(err)}`, { cause: err });
+        throw new AppiiError('CAPTURE', `Capture script failed: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
       }
       await run.idle.waitForIdle(this.#idleMs);
       return;
@@ -222,7 +240,7 @@ export class CaptureSession {
       await page.goto(url, { waitUntil: 'load', timeout: CaptureSession.NAVIGATION_TIMEOUT_MS });
     } catch (err) {
       if (this.#gone(run) || page.isClosed() || err instanceof errors.TimeoutError || !this.#headless) return;
-      throw new AppiiError('CAPTURE', `Cannot open ${url}: ${Helpers.errorMessage(err)}`, { cause: err });
+      throw new AppiiError('CAPTURE', `Cannot open ${url}: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
     }
   }
 
@@ -287,7 +305,7 @@ export class CaptureSession {
 
   static #failure(err: unknown, capture: Capture): AppiiError {
     if (isAppiiError(err)) return new AppiiError(err.code, err.message, { cause: err.cause ?? err, details: { capture } });
-    return new AppiiError('CAPTURE', `Capture failed: ${Helpers.errorMessage(err)}`, { cause: err, details: { capture } });
+    return new AppiiError('CAPTURE', `Capture failed: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err, details: { capture } });
   }
 
   static #checkDuration(value: number | undefined, name: string): void {

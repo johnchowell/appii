@@ -37,6 +37,10 @@ export class ControlReader {
     this.#revealPasswords = options.revealPasswords ?? false;
   }
 
+  static create(options: ControlReaderOptions = {}): ControlReader {
+    return new ControlReader({ sanitizer: new ValueSanitizer() }, options);
+  }
+
   isControl(doc: HtmlDocument, element: HtmlElement): boolean {
     return doc.isHtml(element, ...ControlReader.CONTROL_TAGS);
   }

@@ -14,6 +14,8 @@ export { EndpointFormatter } from './endpoint-formatter.js';
 export { BasePresenter } from './presenter.js';
 export type { Presenter, PresenterBlock, PresenterOptions } from './presenter.js';
 export { SummaryPresenter } from './summary-presenter.js';
+export { CaptureSummaryPresenter } from './capture-summary-presenter.js';
+export type { CaptureSummaryInput } from './capture-summary-presenter.js';
 export { EndpointListPresenter } from './endpoint-list-presenter.js';
 export type { EndpointListPresenterDeps } from './endpoint-list-presenter.js';
 export { EndpointDetailPresenter } from './endpoint-detail-presenter.js';

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { load } from 'cheerio';
-import { AppiiError, Http, Json, Meta } from '../shared/index.js';
+import { AppiiError, Http, Json, Meta, Text } from '../shared/index.js';
 import type {
   BodyData,
   Capture,
@@ -48,6 +48,10 @@ export class HarConverter {
   constructor(deps: HarConverterDeps = {}) {
     this.#cookies = deps.cookies ?? new CookieParser();
     this.#validator = deps.validator ?? new CaptureValidator();
+  }
+
+  static create(): HarConverter {
+    return new HarConverter({ cookies: new CookieParser(), validator: new CaptureValidator() });
   }
 
   toHar(input: Capture | Exchange[]): Har {
@@ -395,7 +399,7 @@ export class HarConverter {
       bytes = rebuilt.bytes;
     }
     if (!bytes || bytes.length === 0) return undefined;
-    const body = Http.toBodyData(bytes, mimeType);
+    const body = Http.toBodyData(bytes, mimeType, { contentEncoding: Http.getHeader(headers, 'content-encoding') });
     if (typeof req.bodySize === 'number' && Number.isFinite(req.bodySize) && req.bodySize > 0) body.size = req.bodySize;
     if (pd._appiiTruncated === true) body.truncated = true;
     return body;
@@ -650,7 +654,7 @@ export class HarConverter {
   }
 
   static #parse(text: string): unknown {
-    const parsed = Json.safeParse(text);
+    const parsed = Json.safeParse(Text.stripBom(text));
     if (!parsed.ok) throw new AppiiError('BAD_INPUT', `HAR is not valid JSON: ${parsed.error}`);
     return parsed.value;
   }

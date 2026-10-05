@@ -1,12 +1,13 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CurlExporter, ShellScript } from '../src/export/index.js';
+import { CurlExporter } from '../src/export/index.js';
 import type { ApiModel } from '../src/model/index.js';
 import { Text } from '../src/shared/index.js';
+import { LiteralPlaceholderSite } from './fixtures/foundation-literal-placeholders.js';
 import { ExportModel } from './helpers/export-model.js';
 import type { ExportFixture } from './helpers/export-model.js';
 
@@ -57,8 +58,9 @@ describe('CurlExporter against the fixture site', () => {
     assert.match(content, /\nset -euo pipefail\n/);
     assert.match(content, new RegExp(`\\nDEFAULT_BASE_URL='${fixture.site.origin.replace(/\./g, '\\.')}'\\nBASE_URL="\\$\\{BASE_URL:-\\$DEFAULT_BASE_URL\\}"\\n`));
     assert.match(content, /\nDEFAULT_COOKIE='theme=dark'\nCOOKIE="\$\{COOKIE-\$DEFAULT_COOKIE\}"\n/);
-    for (const name of ['CSRF_TOKEN', 'PASSWORD', 'X_CSRF_TOKEN']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
-    assert.match(content, /\ncreateItem\(\) \{\n {2}local X_CSRF_TOKEN="\$\{X_CSRF_TOKEN:-\$\(appii_cookie 'csrf'\)\}"\n {2}curl -sS -X POST "\$\{BASE_URL\}\/api\/items" \\\n/);
+    for (const name of ['CSRF', 'CSRF_TOKEN', 'PASSWORD']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
+    assert.ok(!content.includes('X_CSRF_TOKEN'));
+    assert.match(content, /\ncreateItem\(\) \{\n {2}local CSRF="\$\{CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}curl -sS -X POST "\$\{BASE_URL\}\/api\/items" \\\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
     );
@@ -109,7 +111,7 @@ describe('CurlExporter against the fixture site', () => {
     assert.equal(fixture.site.items.length, before + 1);
     const request = fixture.site.requests.at(-1);
     assert.equal(request?.headers['x-csrf-token'], '0123456789abcdef');
-    const explicit = await run(script, ['createItem'], { BASE_URL: fixture.site.origin, COOKIE: 'csrf=aaaaaaaaaaaa', X_CSRF_TOKEN: 'bbbbbbbbbbbb' });
+    const explicit = await run(script, ['createItem'], { BASE_URL: fixture.site.origin, COOKIE: 'csrf=aaaaaaaaaaaa', CSRF: 'bbbbbbbbbbbb' });
     assert.equal(JSON.parse(explicit.stdout).error, 'csrf token mismatch');
     const empty = await run(script, ['getMe'], { BASE_URL: fixture.site.origin, COOKIE: '' });
     assert.equal(JSON.parse(empty.stdout).error, 'unauthorized');
@@ -152,28 +154,65 @@ describe('CurlExporter against the fixture site', () => {
   });
 });
 
-describe('ShellScript', () => {
-  test('ascii encodes non-ASCII characters per quoting context', () => {
-    assert.equal(ShellScript.ascii("echo 'caf\u00e9'"), "echo 'caf'$'\\303\\251'''");
-    assert.equal(ShellScript.ascii('echo "caf\u00e9"'), `echo "caf"$'\\303\\251'""`);
-    assert.equal(ShellScript.ascii('echo caf\u00e9'), "echo caf$'\\303\\251'");
-    assert.equal(ShellScript.ascii('echo \\\u00e9'), "echo $'\\303\\251'");
-    assert.equal(ShellScript.ascii('echo "\\\u00e9"'), `echo "\\\\"$'\\303\\251'""`);
-    assert.equal(ShellScript.ascii("echo '\\' \u00e9"), "echo '\\' $'\\303\\251'");
-  });
 
-  test('indent only indents lines that start outside quotes', () => {
-    assert.equal(ShellScript.indent("curl 'a\nb' \\\n  -x", 2), "  curl 'a\nb' \\\n    -x");
-    assert.equal(ShellScript.indent('x "a\\\nb"\ny', 2), '  x "a\\\nb"\n  y');
+describe('CurlExporter keeps captured text literal', () => {
+  test('captured values that look like placeholders never read environment variables', async () => {
+    const model = LiteralPlaceholderSite.model();
+    const exporter = new CurlExporter();
+    const text = exporter.export(model).content;
+    assert.doesNotMatch(text, /: "\$\{[A-Z0-9_]+:=\}"/);
+    assert.ok(!/\$\{(?:AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|HOME|PATH|USER|1)\}/.test(text));
+    const dir = await mkdtemp(join(tmpdir(), 'appii-curl-literal-'));
+    try {
+      const file = join(dir, 'endpoints.sh');
+      const bin = join(dir, 'bin');
+      await mkdir(bin);
+      await writeFile(file, text);
+      await writeFile(join(bin, 'curl'), '#!/usr/bin/env bash\nfor arg in "$@"; do printf \'ARG[%s]\\n\' "$arg"; done\n', { mode: 0o755 });
+      const env = { ...LiteralPlaceholderSite.LEAK_ENV, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` };
+      const list = await run(file, [], env);
+      assert.equal(list.code, 0, list.stderr);
+      const names = [...exporter.functionNames(model.endpoints).values()];
+      const outputs: string[] = [];
+      for (const name of names) {
+        const result = await run(file, [name], env);
+        assert.equal(result.code, 0, `${name}: ${result.stderr}`);
+        outputs.push(result.stdout);
+      }
+      const all = outputs.join('');
+      assert.ok(!all.includes('leak'), all);
+      for (const arg of [
+        'https://evil.example.com/api/search?q=%7B%7Baws_secret_access_key%7D%7D',
+        'x-trace: {{github_token}}',
+        '{"note":"{{home}}","n2":"x{{path}}y"}',
+        'comment={{user}}',
+        'c={{1}}',
+      ]) {
+        assert.ok(all.includes(`ARG[${arg}]`), arg);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
+});
 
-  test('the encoded strings evaluate to the original bytes in bash', async () => {
-    const value = "a'b\"c\u00e9 \u{1F600} $x `y` \\z\nnext";
-    const command = ShellScript.ascii(`printf '%s' ${Text.shellQuote(value)}`);
-    assert.ok(Text.isAscii(command));
-    const out = await new Promise<string>((resolve, reject) =>
-      execFile('bash', ['-c', command], { env: { LANG: 'C' } }, (err, stdout) => (err ? reject(err) : resolve(stdout))),
-    );
-    assert.equal(out, value);
+describe('CurlExporter request variables agree with the other renderers', () => {
+  test('a bearer endpoint reads ACCESS_TOKEN and a cookie-sourced CSRF header reads the cookie variable', () => {
+    const me = ExportModel.endpoint({
+      method: 'POST',
+      path: '/api/me',
+      headerParams: [
+        { name: 'authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] },
+        { name: 'x-csrf-token', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },
+      ],
+      auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
+    });
+    const text = new CurlExporter().export(ExportModel.model([me])).content;
+    assert.ok(text.includes(': "${ACCESS_TOKEN:=}"\n'), text);
+    assert.ok(text.includes('-H "authorization: Bearer ${ACCESS_TOKEN}"'), text);
+    assert.ok(text.includes(`local CSRFTOKEN="\${CSRFTOKEN:-$(appii_cookie 'csrftoken')}"`), text);
+    assert.ok(text.includes('-H "x-csrf-token: ${CSRFTOKEN}"'), text);
+    assert.ok(!text.includes('AUTHORIZATION'));
+    assert.ok(!text.includes('X_CSRF_TOKEN'));
   });
 });

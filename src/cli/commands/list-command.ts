@@ -1,7 +1,8 @@
+import { ENDPOINT_KINDS } from '../../model/index.js';
 import type { ApiModel, EndpointKind } from '../../model/index.js';
 import { EndpointFilter, PresenterFactory } from '../../present/index.js';
 import type { ListFilter } from '../../present/index.js';
-import { EndpointIndex, Json, Meta, Text } from '../../shared/index.js';
+import { EndpointIndex, Json, Meta } from '../../shared/index.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -16,7 +17,7 @@ export interface ListCommandDeps extends CommandDeps {
 }
 
 export class ListCommand extends Command {
-  static readonly KINDS: readonly EndpointKind[] = ['json', 'form', 'graphql', 'document', 'other'];
+  static readonly KINDS: readonly EndpointKind[] = ENDPOINT_KINDS;
 
   readonly spec: CommandSpec;
   readonly #loader: InputLoader;
@@ -75,10 +76,6 @@ export class ListCommand extends Command {
     return filter;
   }
 
-  static json(value: unknown): string {
-    return Text.toAscii(Json.prettyJson(value), 'escape');
-  }
-
   static selection(model: ApiModel, filter: ListFilter, view: { show?: string; cookies: boolean }): unknown {
     if (view.show !== undefined) return EndpointIndex.of(model).require(view.show);
     const endpoints = new EndpointFilter(filter);
@@ -97,7 +94,7 @@ export class ListCommand extends Command {
     const filter = ListCommand.filter(values);
     const { model } = await this.#loader.load(ctx.resolve(file));
     if (OptionReader.boolean(values, 'json') === true) {
-      ctx.out(ListCommand.json(ListCommand.selection(model, filter, { ...(show === undefined ? {} : { show }), cookies })));
+      ctx.out(Json.asciiJson(ListCommand.selection(model, filter, { ...(show === undefined ? {} : { show }), cookies })));
       return ExitCode.OK;
     }
     const presenters = new PresenterFactory(ctx.presenterOptions({ filter, file }));

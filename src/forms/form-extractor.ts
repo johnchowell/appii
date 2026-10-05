@@ -37,7 +37,10 @@ export class FormExtractor {
   }
 
   static create(options: FormExtractorOptions = {}): FormExtractor {
-    return new FormExtractor({}, options);
+    return new FormExtractor(
+      { tokens: new TokenDetector(), owners: new FormOwnerResolver(), controls: ControlReader.create(options), labels: new LabelResolver(), selectors: new SelectorBuilder() },
+      options,
+    );
   }
 
   extract(html: string, pageUrl: string): FormDescriptor[] {

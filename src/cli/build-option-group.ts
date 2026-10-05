@@ -1,8 +1,8 @@
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { ModelBuilder } from '../build/index.js';
 import type { BuildOptions } from '../build/index.js';
+import { Text } from '../shared/index.js';
 import type { CliContext } from './cli-context.js';
-import { Helpers } from './helpers.js';
 import type { OptionDocs, OptionGroup } from './option-group.js';
 import { OptionReader } from './option-reader.js';
 import type { OptionValues } from './option-reader.js';
@@ -48,7 +48,7 @@ export class BuildOptionGroup implements OptionGroup<BuildOptions> {
     try {
       return ModelBuilder.normalizeOrigin(value);
     } catch (err) {
-      throw new UsageError(`--origin: ${Helpers.errorMessage(err)}`);
+      throw new UsageError(`--origin: ${Text.errorMessage(err)}`);
     }
   }
 }

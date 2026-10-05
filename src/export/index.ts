@@ -27,8 +27,6 @@ export type { PostmanExporterDeps } from './postman-exporter.js';
 export { PostmanRequestBuilder } from './postman-request-builder.js';
 export type { PostmanItemContext, PostmanObject } from './postman-request-builder.js';
 export { CurlExporter } from './curl-exporter.js';
-export { ShellScript } from './shell-script.js';
-export type { QuoteState, ShellChar } from './shell-script.js';
 export { TypeScriptExporter } from './typescript-exporter.js';
 export type { TypeScriptExporterDeps } from './typescript-exporter.js';
 export { TsTypeWriter } from './ts-type-writer.js';

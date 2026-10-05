@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Ansi, AppiiError, EndpointIndex, Fs, Http, Json, Meta, Schema, Text } from '../src/shared/index.js';
+import { Ansi, AppiiError, EndpointIndex, Fs, Http, Json, Meta, Samples, Schema, Text } from '../src/shared/index.js';
 import type { Endpoint } from '../src/model/index.js';
 
 test('Text casing, singularize, escaping', () => {
@@ -103,4 +103,70 @@ test('Http and Meta helpers', () => {
   assert.ok(Http.isSafeMethod('get'));
   assert.equal(Meta.appVersion(), '0.1.0');
   assert.deepEqual(Meta.creator(), { name: 'appii', version: '0.1.0' });
+});
+
+test('Text short, summarize, errorMessage and stripBom', () => {
+  assert.equal(Text.short('abcdefghijklmnopqrstuvwxyz'), 'abcdefghijklmnopqrstu...');
+  assert.equal(Text.short({ a: 1 }), '{"a":1}');
+  assert.equal(Text.short(undefined), 'undefined');
+  assert.equal(Text.short('abcdef', 5), 'ab...');
+  assert.equal(Text.summarize(['a', 'b']), 'a; b');
+  assert.equal(Text.summarize(['a', 'b', 'c', 'd', 'e']), 'a; b; c; and 2 more');
+  assert.equal(Text.summarize(['a', 'b', 'c'], 1), 'a; and 2 more');
+  const err = new Error('first line\nCall log:\n  - details');
+  assert.equal(Text.errorMessage(err), 'first line\nCall log:\n  - details');
+  assert.equal(Text.errorMessage(err, { firstLine: true }), 'first line');
+  assert.equal(Text.errorMessage('plain'), 'plain');
+  assert.equal(Text.errorMessage(new Error('')), 'Unknown error');
+  assert.equal(Text.stripBom('\ufeff{}'), '{}');
+  assert.equal(Text.stripBom('{}\ufeff'), '{}\ufeff');
+});
+
+test('Json.asciiJson, EndpointIndex.statuses and Samples.isRedacted', () => {
+  assert.equal(Json.asciiJson({ a: 'caf\u00e9' }, 0), '{"a":"caf\\u00e9"}');
+  assert.equal(Json.asciiJson(undefined), 'null');
+  assert.deepEqual(JSON.parse(Json.asciiJson({ s: 'x\u{1F600}' })), { s: 'x\u{1F600}' });
+  const endpoint = { responses: [{ status: 404 }, { status: 200 }, { status: 404 }] } as unknown as Endpoint;
+  assert.deepEqual(EndpointIndex.statuses(endpoint), [200, 404]);
+  assert.equal(Samples.isRedacted('Bearer <redacted>'), true);
+  assert.equal(Samples.isRedacted('token'), false);
+  assert.equal(Samples.isRedacted(3), false);
+});
+
+test('Fs.readJson ignores a UTF-8 byte order mark and Fs.assertWritable probes the target without side effects', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'appii-shared-'));
+  try {
+    const file = join(dir, 'bom.json');
+    await writeFile(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"a":1}')]));
+    assert.deepEqual(await Fs.readJson(file), { a: 1 });
+    await Fs.assertWritable(join(dir, 'new', 'deep', 'out.json'));
+    await Fs.assertWritable(file);
+    await Fs.assertWritable(join(dir, 'other.json'));
+    await assert.rejects(Fs.assertWritable(dir), (e: unknown) => e instanceof AppiiError && e.code === 'IO' && /is a directory/.test(e.message));
+    await assert.rejects(Fs.assertWritable(join(file, 'child.json')), (e: unknown) => e instanceof AppiiError && e.code === 'IO' && /bom\.json is not a directory/.test(e.message));
+    await assert.rejects(Fs.assertWritable(join(file, 'a', 'b.json')), (e: unknown) => e instanceof AppiiError && e.code === 'IO' && /bom\.json is not a directory/.test(e.message));
+    assert.deepEqual(await readdir(dir), ['bom.json']);
+    assert.deepEqual(await Fs.readJson(file), { a: 1 });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('package metadata describes only the features that exist', async () => {
+  const pkg = JSON.parse(await readFile('package.json', 'utf8')) as { description: string; version: string };
+  assert.doesNotMatch(pkg.description, /\bserve\b/i);
+  assert.match(pkg.description, /OpenAPI/);
+  assert.equal(Meta.VERSION, pkg.version);
+  assert.equal(Meta.appVersion(), pkg.version);
+});
+
+test('generic object helpers keep own keys such as __proto__', () => {
+  const props = Schema.properties({ type: 'object', properties: JSON.parse('{"__proto__":{"type":"string"},"a":{"type":"integer"}}') as Record<string, unknown> });
+  assert.deepEqual(Object.keys(props), ['__proto__', 'a']);
+  const sorted = Json.sortKeysDeep(JSON.parse('{"b":1,"__proto__":{"z":1,"y":2}}') as Record<string, unknown>);
+  assert.equal(JSON.stringify(sorted), '{"__proto__":{"y":2,"z":1},"b":1}');
+  const record = Http.headersToRecord([{ name: '__proto__', value: 'x' }, { name: 'A', value: '1' }, { name: 'a', value: '2' }]);
+  assert.deepEqual(Object.keys(record), ['__proto__', 'a']);
+  assert.equal(record.a, '1, 2');
+  assert.equal(Object.getPrototypeOf(record), Object.prototype);
 });

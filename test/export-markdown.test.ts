@@ -147,3 +147,22 @@ describe('MarkdownWriter', () => {
     assert.equal(md.heading(9, 'Deep #'), '###### Deep \\#');
   });
 });
+
+describe('MarkdownExporter request examples agree with the other renderers', () => {
+  test('a bearer endpoint uses the access_token placeholder and a cookie-sourced CSRF header uses the cookie placeholder', () => {
+    const me = ExportModel.endpoint({
+      method: 'POST',
+      path: '/api/me',
+      headerParams: [
+        { name: 'authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] },
+        { name: 'x-csrf-token', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },
+      ],
+      auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
+    });
+    const markdown = new MarkdownExporter().export(ExportModel.model([me])).content;
+    assert.ok(markdown.includes(`-H 'authorization: Bearer {{access_token}}'`), markdown);
+    assert.ok(markdown.includes(`-H 'x-csrf-token: {{csrftoken}}'`), markdown);
+    assert.ok(!markdown.includes('{{authorization}}'));
+    assert.ok(!markdown.includes('{{x_csrf_token}}'));
+  });
+});

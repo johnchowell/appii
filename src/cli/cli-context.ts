@@ -46,6 +46,10 @@ export class CliContext {
     this.#status = deps.status ?? new StatusLine(io.stderr);
   }
 
+  static create(io: CliIo, options: CliContextOptions = {}): CliContext {
+    return new CliContext(io, options, { status: new StatusLine(io.stderr), signals: io.signals ?? new ProcessSignals() });
+  }
+
   static autoColor(io: Pick<CliIo, 'stdout' | 'env'>): boolean {
     const noColor = io.env[CliContext.NO_COLOR_VARIABLE];
     return io.stdout.isTTY === true && (noColor === undefined || noColor === '');

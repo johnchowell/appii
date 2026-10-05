@@ -1,5 +1,6 @@
 import type { JsonSchema } from '../model/index.js';
 import { isPlainObject } from './json.js';
+import { short } from './text.js';
 
 export function asSchema(value: unknown): JsonSchema | undefined {
   return isPlainObject(value) ? (value as JsonSchema) : undefined;
@@ -42,12 +43,12 @@ export function primaryType(schema: JsonSchema | undefined): string | undefined 
 export function properties(schema: JsonSchema | undefined): Record<string, JsonSchema> {
   const props = schema?.properties;
   if (!isPlainObject(props)) return {};
-  const out: Record<string, JsonSchema> = {};
-  for (const [k, v] of Object.entries(props)) {
-    const s = asSchema(v);
-    if (s) out[k] = s;
-  }
-  return out;
+  return Object.fromEntries(
+    Object.entries(props).flatMap(([k, v]): [string, JsonSchema][] => {
+      const s = asSchema(v);
+      return s ? [[k, s]] : [];
+    }),
+  );
 }
 
 export function requiredSet(schema: JsonSchema | undefined): Set<string> {
@@ -80,11 +81,6 @@ export function typeLabel(schema: JsonSchema | undefined): string {
       return t;
     })
     .join('|');
-}
-
-function short(value: unknown, max = 24): string {
-  const s = typeof value === 'string' ? value : JSON.stringify(value);
-  return s.length > max ? s.slice(0, max - 3) + '...' : s;
 }
 
 function str(value: unknown): string | undefined {
@@ -142,11 +138,8 @@ export function sampleValue(schema: JsonSchema | undefined, name = '', depth = 0
   if (vs.length) return sampleValue(vs[0], name, depth + 1);
   const type = primaryType(schema);
   switch (type) {
-    case 'object': {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(properties(schema))) out[k] = sampleValue(v, k, depth + 1);
-      return out;
-    }
+    case 'object':
+      return Object.fromEntries(Object.entries(properties(schema)).map(([k, v]) => [k, sampleValue(v, k, depth + 1)]));
     case 'array':
       return [sampleValue(items(schema), name, depth + 1)];
     case 'integer': {

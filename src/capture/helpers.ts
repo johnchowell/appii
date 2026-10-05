@@ -1,64 +1,29 @@
-import { isIP } from 'node:net';
 import { getPublicSuffix } from 'tldts';
 import type { Exchange, Header } from '../model/index.js';
+import { Http } from '../shared/index.js';
 
 export class Helpers {
   static readonly NETWORK_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'ws:', 'wss:']);
-  static readonly SECURE_SCHEMES: ReadonlySet<string> = new Set(['https:', 'wss:']);
-  static readonly LOOPBACK_NAMES: ReadonlySet<string> = new Set(['localhost', 'localhost.']);
+  static readonly WEB_PAGE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'file:']);
 
   static stripPseudoHeaders(headers: readonly Header[]): Header[] {
     return headers.filter((h) => !h.name.startsWith(':')).map((h) => ({ name: h.name, value: h.value }));
   }
 
-  static bareHost(host: string): string {
-    return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-  }
-
-  static isIpAddress(host: string): boolean {
-    return isIP(Helpers.bareHost(host)) !== 0;
-  }
-
   static isPublicSuffix(domain: string): boolean {
     const d = domain.toLowerCase().replace(/\.$/, '');
-    if (!d || Helpers.isIpAddress(d)) return false;
+    if (!d || Http.isIpAddress(d)) return false;
     return getPublicSuffix(d, { allowPrivateDomains: true }) === d;
   }
 
-  static isLoopbackHost(host: string): boolean {
-    const h = Helpers.bareHost(host.toLowerCase());
-    if (Helpers.LOOPBACK_NAMES.has(h) || h.endsWith('.localhost') || h.endsWith('.localhost.')) return true;
-    if (isIP(h) === 4) return h.split('.')[0] === '127';
-    if (isIP(h) === 6) return h === '::1' || h === '0:0:0:0:0:0:0:1';
-    return false;
-  }
-
-  static isPotentiallyTrustworthy(url: URL): boolean {
-    if (Helpers.SECURE_SCHEMES.has(url.protocol)) return true;
-    if (url.protocol !== 'http:' && url.protocol !== 'ws:') return false;
-    return Helpers.isLoopbackHost(url.hostname);
-  }
-
   static isNetworkUrl(url: string): boolean {
-    try {
-      return Helpers.NETWORK_SCHEMES.has(new URL(url).protocol);
-    } catch {
-      return false;
-    }
+    const parsed = Http.parseUrl(url);
+    return parsed !== undefined && Helpers.NETWORK_SCHEMES.has(parsed.protocol);
   }
 
   static isWebPageUrl(url: string): boolean {
-    try {
-      const protocol = new URL(url).protocol;
-      return protocol === 'http:' || protocol === 'https:' || protocol === 'file:';
-    } catch {
-      return false;
-    }
-  }
-
-  static errorMessage(err: unknown): string {
-    const text = err instanceof Error ? err.message : String(err);
-    return (text.split('\n')[0] ?? '').trim() || 'Unknown error';
+    const parsed = Http.parseUrl(url);
+    return parsed !== undefined && Helpers.WEB_PAGE_SCHEMES.has(parsed.protocol);
   }
 
   static async withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T): Promise<T> {

@@ -149,7 +149,7 @@ export class CookieParser {
     const h = host.toLowerCase();
     const d = domain.toLowerCase();
     if (h === d) return true;
-    return h.endsWith(d) && h.charAt(h.length - d.length - 1) === '.' && !Helpers.isIpAddress(h);
+    return h.endsWith(d) && h.charAt(h.length - d.length - 1) === '.' && !Http.isIpAddress(h);
   }
 
   static pathMatches(requestPath: string, cookiePath: string): boolean {
@@ -193,7 +193,7 @@ export class CookieParser {
   #store(store: Map<string, Cookie>, line: string, requestUrl: string, at: number): void {
     const cookie = this.#parseAt(line, requestUrl, at);
     if (!cookie) return;
-    if (!cookie.secure && !Helpers.isPotentiallyTrustworthy(new URL(requestUrl))) {
+    if (!cookie.secure && !Http.isPotentiallyTrustworthy(new URL(requestUrl))) {
       for (const existing of store.values()) {
         if (
           existing.secure &&
@@ -229,7 +229,7 @@ export class CookieParser {
       if (domainAttribute !== host) return null;
       domainAttribute = '';
     }
-    if (domainAttribute && Helpers.isIpAddress(host) && domainAttribute === host) domainAttribute = '';
+    if (domainAttribute && Http.isIpAddress(host) && domainAttribute === host) domainAttribute = '';
     let hostOnly = true;
     let domain = host;
     if (domainAttribute) {
@@ -239,7 +239,7 @@ export class CookieParser {
     }
 
     const path = attrs.path ?? CookieParser.defaultPath(url);
-    if (attrs.secure && !Helpers.isPotentiallyTrustworthy(url)) return null;
+    if (attrs.secure && !Http.isPotentiallyTrustworthy(url)) return null;
     if (attrs.sameSite === 'None' && !attrs.secure) return null;
 
     const lowerName = parts.name.toLowerCase();

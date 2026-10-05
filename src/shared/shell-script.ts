@@ -7,6 +7,15 @@ export interface ShellChar {
 }
 
 export class ShellScript {
+  static readonly LINE_FEED = '\n';
+  static readonly LAST_ASCII = 0x7e;
+  static readonly FIRST_PRINTABLE = 0x20;
+
+  static isLiteralSafe(ch: string): boolean {
+    const cp = ch.codePointAt(0) ?? 0;
+    return ch === ShellScript.LINE_FEED || (cp >= ShellScript.FIRST_PRINTABLE && cp <= ShellScript.LAST_ASCII);
+  }
+
   static *scan(text: string): Generator<ShellChar> {
     let state: QuoteState = 'none';
     const chars = [...text];
@@ -37,7 +46,7 @@ export class ShellScript {
   static ascii(text: string): string {
     let out = '';
     for (const { ch, state, escaped } of ShellScript.scan(text)) {
-      if ((ch.codePointAt(0) ?? 0) <= 0x7f) {
+      if (ShellScript.isLiteralSafe(ch)) {
         out += ch;
         continue;
       }

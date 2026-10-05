@@ -1,7 +1,7 @@
 import type { ApiModel, Capture, Endpoint, WebSocketCapture } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
-import { AppiiError, Json, Text } from '../shared/index.js';
+import { AppiiError, Http, Json, Text } from '../shared/index.js';
 import { AuthDetector } from './auth-detector.js';
 import { BodyParser } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
@@ -66,8 +66,8 @@ export class ModelBuilder {
 
   static create(options: BuildOptions = {}): ModelBuilder {
     const maxExamples = ModelBuilder.#checkMaxExamples(options.maxExamples);
-    const body = new BodyParser();
-    const schemas = new SchemaInferrer();
+    const body = BodyParser.create();
+    const schemas = SchemaInferrer.create();
     const paths = new PathTemplater();
     const redactor = new Redactor(options.redact ?? true);
     const headers = new HeaderPolicy();
@@ -185,7 +185,7 @@ export class ModelBuilder {
   }
 
   static #socketAllowed(socket: WebSocketCapture, allowed: ReadonlySet<string>): boolean {
-    const url = Helpers.parseUrl(socket.url);
+    const url = Http.parseUrl(socket.url);
     const http = url ? ModelBuilder.WEBSOCKET_SCHEMES[url.protocol] : undefined;
     if (url && http && allowed.has(`${http}//${url.host}`)) return true;
     return allowed.has(Helpers.originOf(socket.pageUrl) ?? '');

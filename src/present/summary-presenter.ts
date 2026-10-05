@@ -1,3 +1,4 @@
+import { COOKIE_ROLES, ENDPOINT_KINDS } from '../model/index.js';
 import type { ApiModel, CookieRole, EndpointKind } from '../model/index.js';
 import { Text } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
@@ -5,8 +6,8 @@ import { TextLayout } from './text-layout.js';
 import type { Definition } from './text-layout.js';
 
 export class SummaryPresenter extends BasePresenter<ApiModel> {
-  static readonly KIND_ORDER: readonly EndpointKind[] = ['json', 'form', 'graphql', 'document', 'other'];
-  static readonly ROLE_ORDER: readonly CookieRole[] = ['session', 'auth', 'csrf', 'preference', 'tracking', 'unknown'];
+  static readonly KIND_ORDER: readonly EndpointKind[] = ENDPOINT_KINDS;
+  static readonly ROLE_ORDER: readonly CookieRole[] = COOKIE_ROLES;
 
   static tally<K extends string>(values: readonly K[], order: readonly K[]): string {
     const counts = new Map<K, number>();

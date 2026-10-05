@@ -1,13 +1,12 @@
 import { join } from 'node:path';
 import { CaptureStore } from '../../capture/index.js';
 import { ExporterRegistry } from '../../export/index.js';
-import { BasePresenter, TextLayout } from '../../present/index.js';
+import { BasePresenter, PresenterFactory, TextLayout } from '../../present/index.js';
 import { Fs, Meta } from '../../shared/index.js';
 import { BuildOptionGroup } from '../build-option-group.js';
 import { BuildStep } from '../build-step.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
-import { CaptureSummaryPresenter } from '../capture-summary-presenter.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -66,7 +65,7 @@ export class RunCommand extends Command {
   static create(): RunCommand {
     return new RunCommand({
       runner: CaptureRunner.create(),
-      store: new CaptureStore(),
+      store: CaptureStore.create(),
       step: BuildStep.create(),
       registry: ExporterRegistry.default(),
       capture: new CaptureOptionGroup(),
@@ -86,7 +85,7 @@ export class RunCommand extends Command {
     const modelFile = join(dir, RunCommand.MODEL_FILE);
     const capture = await this.#runner.record({ ...captureOptions, url }, ctx);
     await this.#store.save(captureFile, capture);
-    ctx.out(new CaptureSummaryPresenter(ctx.presenterOptions()).render({ capture, file: ctx.display(captureFile) }));
+    ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: ctx.display(captureFile) }));
     ctx.out('');
     await this.#step.run(capture, { out: modelFile, source: RunCommand.CAPTURE_FILE, options: buildOptions }, ctx);
     const formats = this.#registry.list().map((exporter) => exporter.format).join(', ');

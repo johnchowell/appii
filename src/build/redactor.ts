@@ -105,7 +105,7 @@ export class Redactor {
 
   url(url: string): string {
     if (!this.#enabled) return url;
-    const parsed = Helpers.parseUrl(url);
+    const parsed = Http.parseUrl(url);
     if (!parsed) return url;
     let changed = false;
     if (parsed.password !== '') {
@@ -116,8 +116,8 @@ export class Redactor {
       const parts = parsed.search.slice(1).split('&').map((part) => {
         const eq = part.indexOf('=');
         const rawName = eq < 0 ? part : part.slice(0, eq);
-        const name = Helpers.decode(rawName.replace(/\+/g, ' '));
-        const value = eq < 0 ? '' : Helpers.decode(part.slice(eq + 1).replace(/\+/g, ' '));
+        const name = Http.decodeComponent(rawName.replace(/\+/g, ' '));
+        const value = eq < 0 ? '' : Http.decodeComponent(part.slice(eq + 1).replace(/\+/g, ' '));
         if (!this.isSecretField(name) && !this.isSecretValue(value)) return part;
         changed = true;
         return `${rawName}=${encodeURIComponent(Samples.REDACTED)}`;

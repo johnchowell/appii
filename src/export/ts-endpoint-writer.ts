@@ -1,5 +1,5 @@
 import type { ApiModel, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
-import { Json, Schema, Text } from '../shared/index.js';
+import { Json, Samples, Schema, Text } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import { Helpers } from './helpers.js';
 import { TsClientRuntime } from './ts-client-runtime.js';
@@ -216,7 +216,7 @@ export class TsEndpointWriter {
     for (const param of endpoint.headerParams) {
       const lower = param.name.toLowerCase();
       if (!param.required || csrf.has(lower) || TsEndpointWriter.SKIPPED_HEADERS.has(lower)) continue;
-      const example = param.examples.find((value) => !Helpers.isRedacted(value));
+      const example = param.examples.find((value) => !Samples.isRedacted(value));
       if (example !== undefined) out.push([lower, example]);
     }
     return Object.fromEntries(out);

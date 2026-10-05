@@ -1,5 +1,5 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { EndpointIndex, Meta, Text } from '../shared/index.js';
+import { EndpointIndex, Json, Meta, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -108,7 +108,7 @@ export class OpenApiExporter extends BaseExporter {
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {
-    return Helpers.json(this.document(model, endpoints, options)) + '\n';
+    return Json.asciiJson(this.document(model, endpoints, options)) + '\n';
   }
 
   protected override filename(_model: ApiModel): string {

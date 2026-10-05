@@ -1,5 +1,5 @@
 import type { JsonSchema } from '../model/index.js';
-import { AppiiError, Schema } from '../shared/index.js';
+import { AppiiError, Schema, Text } from '../shared/index.js';
 
 export interface SchemaTreeRow {
   path: string;
@@ -49,7 +49,7 @@ export class SchemaTree {
 
   static constraints(schema: JsonSchema): string[] {
     const parts = Schema.constraintSummary(schema);
-    if ('default' in schema && !('const' in schema)) parts.push(`default ${SchemaTree.#short(schema.default)}`);
+    if ('default' in schema && !('const' in schema)) parts.push(`default ${Text.short(schema.default, SchemaTree.SHORT_VALUE)}`);
     if (typeof schema.$ref === 'string') parts.push(`ref ${schema.$ref}`);
     return parts;
   }
@@ -118,10 +118,5 @@ export class SchemaTree {
 
   static #isContainer(schema: JsonSchema): boolean {
     return Object.keys(Schema.properties(schema)).length > 0 || Schema.asSchema(schema.additionalProperties) !== undefined;
-  }
-
-  static #short(value: unknown): string {
-    const text = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
-    return text.length > SchemaTree.SHORT_VALUE ? text.slice(0, SchemaTree.SHORT_VALUE - 3) + '...' : text;
   }
 }

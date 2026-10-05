@@ -1,5 +1,6 @@
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
 import { Curl, EndpointIndex, Json, Samples, Schema, Text } from '../shared/index.js';
+import type { SampleText } from '../shared/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
@@ -47,9 +48,6 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     { header: 'STARTED', optional: true },
   ];
   static readonly MAX_PARAM_EXAMPLES = 3;
-  static readonly COOKIE_HEADER = 'Cookie';
-  static readonly AUTHORIZATION = 'authorization';
-  static readonly BEARER_TOKEN = 'access_token';
   static readonly STRUCTURED_KINDS: ReadonlySet<BodyKind> = new Set(['json', 'graphql', 'form', 'multipart']);
 
   readonly #format: EndpointFormatter;
@@ -78,33 +76,10 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return TextLayout.clean(parts.join(' '));
   }
 
-  static exampleRequest(endpoint: Endpoint): { sample: Samples.RequestSample; cookie?: string } {
+  static exampleRequest(endpoint: Endpoint): { sample: Samples.RequestSample; cookie?: SampleText } {
     const sample = Samples.requestSample(endpoint);
-    let linked: Samples.RequestSample = sample;
-    for (const token of endpoint.auth.csrf) {
-      if (token.source !== 'cookie' || token.sourceName === undefined || !endpoint.auth.cookies.includes(token.sourceName)) continue;
-      const from = Samples.placeholder(token.name);
-      const to = Samples.placeholder(token.sourceName);
-      if (from === to) continue;
-      linked = {
-        method: linked.method,
-        url: linked.url.split(from).join(to),
-        headers: linked.headers.map((header) => ({ name: header.name, value: header.value.split(from).join(to) })),
-        ...(linked.body ? { body: { ...linked.body, value: EndpointDetailPresenter.#swap(linked.body.value, from, to) } } : {}),
-      };
-    }
-    if (endpoint.auth.bearer) {
-      linked = {
-        ...linked,
-        headers: linked.headers.map((header) =>
-          header.name.toLowerCase() === EndpointDetailPresenter.AUTHORIZATION && header.value === Samples.placeholder(header.name)
-            ? { name: header.name, value: `Bearer ${Samples.placeholder(EndpointDetailPresenter.BEARER_TOKEN)}` }
-            : header,
-        ),
-      };
-    }
-    const jar = endpoint.auth.cookies.map((name) => `${name}=${Samples.placeholder(name)}`).join('; ');
-    return jar === '' ? { sample: linked } : { sample: linked, cookie: jar };
+    const cookie = Samples.cookieJar(endpoint);
+    return cookie === undefined ? { sample } : { sample, cookie };
   }
 
   render(input: EndpointDetailInput): string {
@@ -249,9 +224,9 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
 
   #curl(endpoint: Endpoint): PresenterBlock {
     const { sample, cookie } = EndpointDetailPresenter.exampleRequest(endpoint);
-    const command = Curl.curlCommand(sample, { variables: 'shell', ...(cookie === undefined ? {} : { cookie: Curl.shellArg(cookie, 'shell') }) });
-    const names = Curl.placeholderNames(cookie === undefined ? sample : { ...sample, headers: [...sample.headers, { name: EndpointDetailPresenter.COOKIE_HEADER, value: cookie }] });
-    const lines = [this.heading('Example request (curl)'), ...this.#shell.fold(TextLayout.cleanBlock(command), this.width)];
+    const command = Curl.curlCommand(sample, { variables: 'shell', ...(cookie === undefined ? {} : { cookie }) });
+    const names = Curl.placeholderNames(sample, cookie === undefined ? [] : [cookie]);
+    const lines = [this.heading('Example request (curl)'), ...this.#shell.fold(command, this.width)];
     if (names.length > 0) lines.push('', ...TextLayout.flow(names, this.width, { prefix: this.ansi.dim('Variables:') + ' ', separator: ' ' }));
     return lines;
   }
@@ -273,12 +248,5 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     const lines: string[] = [];
     for (let i = 0; i < text.length; i += width) lines.push(text.slice(i, i + width));
     return lines;
-  }
-
-  static #swap(value: unknown, from: string, to: string): unknown {
-    if (typeof value === 'string') return value.split(from).join(to);
-    if (Array.isArray(value)) return value.map((item) => EndpointDetailPresenter.#swap(item, from, to));
-    if (Json.isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, EndpointDetailPresenter.#swap(item, from, to)]));
-    return value;
   }
 }

@@ -418,7 +418,7 @@ describe('Generated runtime units', () => {
             })),
           }
         : { requestBody: { mimeType: built.mimeType, kind: built.mimeType === 'multipart/form-data' ? 'multipart' : 'form', schema: built.schema, examples: [] } }),
-      form: { pageUrl: page, selector: form.selector, enctype: form.enctype, fields: form.fields, submitters: form.submitters, tokenFields: form.tokenFields },
+      form: { pageUrl: page, selector: form.selector, action: form.action, method: form.method, enctype: form.enctype, fields: form.fields, submitters: form.submitters, tokenFields: form.tokenFields },
       ...extra,
     });
   }

@@ -22,12 +22,16 @@ export class ModelStore {
     this.#validator = deps.validator ?? new ModelValidator();
   }
 
+  static create(): ModelStore {
+    return new ModelStore({ validator: new ModelValidator() });
+  }
+
   static looksLikeModel(value: unknown): boolean {
     return ModelValidator.looksLikeModel(value);
   }
 
   static serialize(model: ApiModel): string {
-    return Text.toAscii(Json.prettyJson(model), 'escape') + '\n';
+    return Json.asciiJson(model) + '\n';
   }
 
   async load(path: string): Promise<ApiModel> {
@@ -40,7 +44,7 @@ export class ModelStore {
     }
     const problems = this.#validator.validate(value);
     if (problems.length > 0) {
-      throw new AppiiError('BAD_INPUT', `${path} is not a valid API model (api.json): ${ModelStore.#summary(problems)}`, { details: { problems } });
+      throw new AppiiError('BAD_INPUT', `${path} is not a valid API model (api.json): ${Text.summarize(problems, ModelStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
     return value as ApiModel;
   }
@@ -48,13 +52,8 @@ export class ModelStore {
   async save(path: string, model: ApiModel, options: ModelSaveOptions = {}): Promise<void> {
     const problems = this.#validator.validate(model);
     if (problems.length > 0) {
-      throw new AppiiError('INTERNAL', `Refusing to save an invalid API model: ${ModelStore.#summary(problems)}`, { details: { problems } });
+      throw new AppiiError('INTERNAL', `Refusing to save an invalid API model: ${Text.summarize(problems, ModelStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
     await Fs.writeFileAtomic(path, ModelStore.serialize(model), { mode: options.private === true ? ModelStore.PRIVATE_MODE : ModelStore.SHARED_MODE });
-  }
-
-  static #summary(problems: readonly string[]): string {
-    const head = problems.slice(0, ModelStore.SUMMARY_PROBLEMS).join('; ');
-    return problems.length > ModelStore.SUMMARY_PROBLEMS ? `${head}; and ${problems.length - ModelStore.SUMMARY_PROBLEMS} more` : head;
   }
 }

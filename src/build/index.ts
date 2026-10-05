@@ -42,3 +42,6 @@ export { EndpointNamer } from './endpoint-namer.js';
 export { OriginSelector } from './origin-selector.js';
 export { ModelBuilder } from './model-builder.js';
 export type { BuildOptions, ModelBuilderParts } from './model-builder.js';
+export { ModelValidator } from './model-validator.js';
+export { ModelStore } from './model-store.js';
+export type { ModelSaveOptions, ModelStoreDeps } from './model-store.js';

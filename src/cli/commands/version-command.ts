@@ -2,6 +2,7 @@ import { Meta } from '../../shared/index.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
+import { DisplayOptionGroup } from '../display-option-group.js';
 import { ExitCode } from '../exit-code.js';
 import type { OptionValues } from '../option-reader.js';
 
@@ -18,6 +19,10 @@ export class VersionCommand extends Command {
       allowPositionals: false,
       docs: {},
     };
+  }
+
+  static create(): VersionCommand {
+    return new VersionCommand({ display: new DisplayOptionGroup() });
   }
 
   static line(): string {

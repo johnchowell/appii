@@ -106,7 +106,7 @@ function sampleCapture(): Capture {
           { name: 'content-type', value: 'application/json' },
           { name: 'content-encoding', value: 'br' },
         ],
-        body: Http.toBodyData(Buffer.from(JSON.stringify({ items: [1, 2, 3, 4, 5, 6, 7, 8] })), 'application/json', 16),
+        body: Http.toBodyData(Buffer.from(JSON.stringify({ items: [1, 2, 3, 4, 5, 6, 7, 8] })), 'application/json', { maxBytes: 16 }),
         remoteAddress: '[2001:db8::1]:8443',
       },
     },

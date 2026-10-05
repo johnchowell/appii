@@ -7,10 +7,6 @@ export class Helpers {
   static readonly MIN_PREFIX_LENGTH = 2;
   static readonly DIRECTORY_SUFFIX: RegExp = /[\\/]$/;
 
-  static errorMessage(err: unknown): string {
-    return err instanceof Error ? err.message : String(err);
-  }
-
   static splitList(values: readonly string[]): string[] {
     return values.flatMap((value) => value.split(Helpers.LIST_SEPARATOR)).map((part) => part.trim()).filter((part) => part !== '');
   }

@@ -1,7 +1,9 @@
-import { BasePresenter, SummaryPresenter, TextLayout } from '../present/index.js';
-import type { Definition } from '../present/index.js';
-import { Http, Text } from '../shared/index.js';
 import type { Capture, ResourceType } from '../model/index.js';
+import { Http, Text } from '../shared/index.js';
+import { BasePresenter } from './presenter.js';
+import { SummaryPresenter } from './summary-presenter.js';
+import { TextLayout } from './text-layout.js';
+import type { Definition } from './text-layout.js';
 
 export interface CaptureSummaryInput {
   capture: Capture;

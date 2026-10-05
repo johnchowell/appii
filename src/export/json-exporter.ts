@@ -1,7 +1,7 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
+import { Json } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
-import { Helpers } from './helpers.js';
 
 export class JsonExporter extends BaseExporter {
   readonly format: ExportFormat = 'json';
@@ -14,7 +14,7 @@ export class JsonExporter extends BaseExporter {
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], _options: ExportOptions): string {
-    return Helpers.json(this.model(model, endpoints)) + '\n';
+    return Json.asciiJson(this.model(model, endpoints)) + '\n';
   }
 
   protected override filename(_model: ApiModel): string {

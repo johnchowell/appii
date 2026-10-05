@@ -4,13 +4,12 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CaptureStore, HarConverter } from '../src/capture/index.js';
+import { CaptureSession, CaptureStore, HarConverter, TrafficRecorder } from '../src/capture/index.js';
 import {
   BuildOptionGroup,
   CaptureOptionGroup,
   CaptureProgress,
   CaptureRunner,
-  CaptureSummaryPresenter,
   CliApp,
   CliContext,
   Command,
@@ -21,8 +20,6 @@ import {
   ExportFormatsPresenter,
   HelpFormatter,
   InputLoader,
-  ModelStore,
-  ModelValidator,
   OptionReader,
   StatusLine,
   UsageError,
@@ -31,8 +28,9 @@ import {
 import type { CommandSpec, OptionValues, RecordingSession } from '../src/cli/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, Capture, Exchange } from '../src/model/index.js';
-import { Ansi, AppiiError, Json, Meta } from '../src/shared/index.js';
-import { ModelBuilder } from '../src/build/index.js';
+import { Ansi, AppiiError, Meta } from '../src/shared/index.js';
+import { ModelBuilder, ModelStore } from '../src/build/index.js';
+import { CaptureSummaryPresenter } from '../src/present/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 import { CliHarness, FakeSignals, MemoryStream } from './helpers/cli-harness.js';
 import { PresentModels } from './helpers/present-models.js';
@@ -389,6 +387,13 @@ describe('CliContext, StatusLine and the option groups', () => {
     assert.throws(() => group.read({ 'max-body': '-1' }, ctx), /--max-body must be a whole number/);
   });
 
+  test('CaptureOptionGroup help shows the defaults of the capture classes', () => {
+    const docs = new CaptureOptionGroup().docs;
+    assert.ok(docs.idle?.description.endsWith(`(default: ${CaptureSession.DEFAULT_IDLE_MS / 1000})`), docs.idle?.description);
+    assert.ok(docs['max-body']?.description.endsWith(`(default: ${TrafficRecorder.DEFAULT_MAX_BODY_BYTES})`), docs['max-body']?.description);
+    assert.equal(CaptureOptionGroup.seconds(2500), '2.5');
+  });
+
   test('BuildOptionGroup reads build options, normalizes origins and rejects conflicts', () => {
     const group = new BuildOptionGroup();
     assert.deepEqual(group.read({}), { includeDocuments: true, redact: true });
@@ -551,60 +556,6 @@ describe('Cli services', () => {
 
   after(async () => {
     if (dir) await rm(dir, { recursive: true, force: true });
-  });
-
-  test('ModelValidator accepts built models and pinpoints broken ones', () => {
-    const validator = new ModelValidator();
-    const model = PresentModels.fixture();
-    assert.deepEqual(validator.validate(model), []);
-    assert.equal(validator.isModel(model), true);
-    assert.deepEqual(validator.validate(PresentModels.mixed()), []);
-    assert.deepEqual(validator.validate(PresentModels.empty()), []);
-    const broken = Json.clone(model) as unknown as Record<string, any>;
-    broken.version = 2;
-    broken.endpoints[0].kind = 'rest';
-    broken.endpoints[1].auth.csrf = [{ location: 'cookie', name: 1, source: 'cookie' }];
-    delete broken.endpoints[2].responses;
-    broken.cookies[0].sameSite = 'lax';
-    broken.forms[0].fields[0].kind = 'div';
-    broken.websockets = {};
-    assert.deepEqual(validator.validate(broken), [
-      'version: expected 1, got 2',
-      'endpoints[0].kind: expected one of json, form, graphql, document, other',
-      'endpoints[1].auth.csrf[0].location: expected one of header, body, query',
-      'endpoints[1].auth.csrf[0].name: expected a string',
-      'endpoints[2].responses: expected an array',
-      'cookies[0].sameSite: expected one of Strict, Lax, None',
-      'forms[0].fields[0].kind: expected one of input, select, textarea, button',
-      'websockets: expected an array',
-    ]);
-    assert.deepEqual(validator.validate([]), ['(root): expected an object']);
-    const many = { ...model, endpoints: Array.from({ length: 40 }, () => ({})) };
-    assert.equal(validator.validate(many).length, ModelValidator.MAX_PROBLEMS);
-    assert.equal(ModelValidator.looksLikeModel(model), true);
-    assert.equal(ModelValidator.looksLikeModel(CaptureFactory.fixture().capture), false);
-    assert.equal(ModelValidator.looksLikeModel({ log: { entries: [] }, endpoints: [] }), false);
-  });
-
-  test('ModelStore saves ASCII JSON with the right file mode and loads it back', async () => {
-    const store = new ModelStore();
-    const model = PresentModels.mixed();
-    const path = join(dir, 'mixed.json');
-    await store.save(path, model);
-    const text = await readFile(path, 'utf8');
-    assert.ok(CliHarness.isAscii(text));
-    assert.ok(text.endsWith('}\n'));
-    assert.deepEqual(await store.load(path), JSON.parse(JSON.stringify(model)));
-    const { stat } = await import('node:fs/promises');
-    assert.equal((await stat(path)).mode & 0o777, 0o644 & ~process.umask());
-    const secret = join(dir, 'secret.json');
-    await store.save(secret, model, { private: true });
-    assert.equal((await stat(secret)).mode & 0o777, 0o600);
-    await assert.rejects(store.save(join(dir, 'bad.json'), { ...model, endpoints: 'x' } as unknown as ApiModel), (err: unknown) => err instanceof AppiiError && err.code === 'INTERNAL');
-    await writeFile(join(dir, 'v2.json'), JSON.stringify({ ...model, version: 2 }));
-    await assert.rejects(store.load(join(dir, 'v2.json')), /unsupported API model version 2/);
-    await writeFile(join(dir, 'broken.json'), JSON.stringify({ ...model, endpoints: [{}] }));
-    await assert.rejects(store.load(join(dir, 'broken.json')), (err: unknown) => err instanceof AppiiError && err.code === 'BAD_INPUT' && /is not a valid API model \(api\.json\): endpoints\[0\]\.id: expected a string; .* and \d+ more$/.test(err.message));
   });
 
   test('InputLoader reads api.json, capture.json and HAR files', async () => {

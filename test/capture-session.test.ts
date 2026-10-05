@@ -180,6 +180,41 @@ describe('CaptureSession end to end', () => {
     assert.ok(capture.pages.some((p) => p.url === site.origin + '/app' && p.html.includes('<div id="out">done 2</div>')));
   });
 
+  test('per-run collaborators come from the injected factories', async () => {
+    const monitors: NetworkIdleMonitor[] = [];
+    const waits: number[] = [];
+    const snapshotters: PageSnapshotter[] = [];
+    class CountingIdleMonitor extends NetworkIdleMonitor {
+      override waitForIdle(idleMs: number): Promise<void> {
+        waits.push(idleMs);
+        return super.waitForIdle(idleMs);
+      }
+    }
+    const session = new CaptureSession(
+      { url: site.origin + '/products', headless: true, idleMs: 150 },
+      {
+        launcher: new BrowserLauncher({ headless: true }),
+        recorder: new TrafficRecorder(),
+        cookies: new CookieParser(),
+        idle: () => {
+          const monitor = new CountingIdleMonitor();
+          monitors.push(monitor);
+          return monitor;
+        },
+        snapshots: () => {
+          const snapshotter = new PageSnapshotter();
+          snapshotters.push(snapshotter);
+          return snapshotter;
+        },
+      },
+    );
+    const capture = await session.run();
+    assert.equal(monitors.length, 1);
+    assert.equal(snapshotters.length, 1);
+    assert.ok(waits.includes(150), JSON.stringify(waits));
+    assert.ok(capture.exchanges.some((e) => pathOf(e) === '/products'));
+  });
+
   test('durationMs bounds a session', async () => {
     const started = Date.now();
     const capture = await CaptureSession.create({ url: site.origin + '/products', headless: true, durationMs: 700 }).run();

@@ -21,8 +21,12 @@ export class HtmlPages {
     this.#body = deps.body ?? new BodyParser();
   }
 
+  static create(): HtmlPages {
+    return new HtmlPages({ body: BodyParser.create() });
+  }
+
   static documentKey(url: string): string {
-    const parsed = Helpers.parseUrl(url);
+    const parsed = Http.parseUrl(url);
     if (!parsed) return url;
     parsed.hash = '';
     return parsed.href;

@@ -1,3 +1,18 @@
+import type {
+  BODY_KINDS,
+  CAPTURE_SOURCES,
+  COOKIE_ROLES,
+  CSRF_LOCATIONS,
+  ENDPOINT_KINDS,
+  FIELD_KINDS,
+  FORM_ENCTYPES,
+  FORM_METHODS,
+  PARAM_LOCATIONS,
+  RESOURCE_TYPES,
+  SAME_SITE_VALUES,
+  TOKEN_SOURCES,
+} from './constants.js';
+
 export interface Header {
   name: string;
   value: string;
@@ -11,21 +26,9 @@ export interface BodyData {
   truncated?: boolean;
 }
 
-export type ResourceType =
-  | 'document'
-  | 'xhr'
-  | 'fetch'
-  | 'script'
-  | 'stylesheet'
-  | 'image'
-  | 'font'
-  | 'media'
-  | 'websocket'
-  | 'manifest'
-  | 'eventsource'
-  | 'other';
+export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
-export type CaptureSource = 'browser' | 'har';
+export type CaptureSource = (typeof CAPTURE_SOURCES)[number];
 
 export interface CapturedRequest {
   method: string;
@@ -72,7 +75,7 @@ export interface WebSocketCapture {
   messages: WebSocketMessage[];
 }
 
-export type SameSite = 'Strict' | 'Lax' | 'None';
+export type SameSite = (typeof SAME_SITE_VALUES)[number];
 
 export interface Cookie {
   name: string;
@@ -119,11 +122,11 @@ export interface SelectOption {
   disabled: boolean;
 }
 
-export type FieldKind = 'input' | 'select' | 'textarea' | 'button';
+export type FieldKind = (typeof FIELD_KINDS)[number];
 
-export type FormMethod = 'GET' | 'POST' | 'DIALOG';
+export type FormMethod = (typeof FORM_METHODS)[number];
 
-export type FormEnctype = 'application/x-www-form-urlencoded' | 'multipart/form-data' | 'text/plain';
+export type FormEnctype = (typeof FORM_ENCTYPES)[number];
 
 export interface FormField {
   name: string;
@@ -176,7 +179,7 @@ export interface FormDescriptor {
 
 export type JsonSchema = { [key: string]: unknown };
 
-export type ParamLocation = 'path' | 'query' | 'header' | 'cookie';
+export type ParamLocation = (typeof PARAM_LOCATIONS)[number];
 
 export interface ParamInfo {
   name: string;
@@ -186,7 +189,7 @@ export interface ParamInfo {
   examples: string[];
 }
 
-export type BodyKind = 'json' | 'form' | 'multipart' | 'graphql' | 'html' | 'text' | 'binary' | 'empty';
+export type BodyKind = (typeof BODY_KINDS)[number];
 
 export interface BodyShape {
   mimeType: string;
@@ -202,14 +205,17 @@ export interface EndpointResponse {
   headers: string[];
 }
 
-export type TokenSource = 'cookie' | 'meta' | 'hidden-field' | 'response' | 'unknown';
+export type TokenSource = (typeof TOKEN_SOURCES)[number];
+
+export type CsrfLocation = (typeof CSRF_LOCATIONS)[number];
 
 export interface CsrfToken {
-  location: 'header' | 'body' | 'query';
+  location: CsrfLocation;
   name: string;
   source: TokenSource;
   sourceName?: string;
   sourceUrl?: string;
+  sourceMethod?: string;
 }
 
 export interface EndpointAuth {
@@ -222,13 +228,15 @@ export interface EndpointAuth {
 export interface EndpointForm {
   pageUrl: string;
   selector: string;
+  action: string;
+  method: FormMethod;
   enctype: FormEnctype;
   fields: FormField[];
   submitters: FormField[];
   tokenFields: string[];
 }
 
-export type EndpointKind = 'json' | 'form' | 'graphql' | 'document' | 'other';
+export type EndpointKind = (typeof ENDPOINT_KINDS)[number];
 
 export interface EndpointSample {
   exchangeId: string;
@@ -259,7 +267,7 @@ export interface Endpoint {
   count: number;
 }
 
-export type CookieRole = 'session' | 'auth' | 'csrf' | 'preference' | 'tracking' | 'unknown';
+export type CookieRole = (typeof COOKIE_ROLES)[number];
 
 export interface CookieInfo {
   name: string;

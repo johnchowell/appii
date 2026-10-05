@@ -3,8 +3,8 @@ import { Json, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody, UploadedFile } from './body-parser.js';
 import { Helpers } from './helpers.js';
-import type { Redactor } from './redactor.js';
-import type { SchemaInferrer } from './schema-inferrer.js';
+import { Redactor } from './redactor.js';
+import { SchemaInferrer } from './schema-inferrer.js';
 
 export interface BodyShaperDeps {
   schemas: SchemaInferrer;
@@ -30,6 +30,10 @@ export class BodyShaper {
     this.#schemas = deps.schemas;
     this.#redactor = deps.redactor;
     this.#maxExamples = options.maxExamples;
+  }
+
+  static create(options: BodyShaperOptions): BodyShaper {
+    return new BodyShaper({ schemas: SchemaInferrer.create(), redactor: new Redactor() }, options);
   }
 
   shape(bodies: readonly ParsedBody[], compact = false): BodyShape | undefined {

@@ -1,10 +1,10 @@
 import type { Header, JsonSchema, ParamInfo, ParamLocation } from '../model/index.js';
+import { EndpointIndex } from '../shared/index.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
-import { PathTemplater } from './path-templater.js';
 import type { PathTemplate, SegmentKind } from './path-templater.js';
-import type { Redactor } from './redactor.js';
-import type { SchemaInferrer } from './schema-inferrer.js';
+import { Redactor } from './redactor.js';
+import { SchemaInferrer } from './schema-inferrer.js';
 
 export interface ParamInferrerDeps {
   schemas: SchemaInferrer;
@@ -35,6 +35,10 @@ export class ParamInferrer {
     this.#redactor = deps.redactor;
     this.#headers = deps.headers ?? new HeaderPolicy();
     this.#maxExamples = options.maxExamples;
+  }
+
+  static create(options: ParamInferrerOptions): ParamInferrer {
+    return new ParamInferrer({ schemas: SchemaInferrer.create(), redactor: new Redactor(), headers: new HeaderPolicy() }, options);
   }
 
   static pathSchema(kind: SegmentKind, values: readonly string[]): JsonSchema {
@@ -97,7 +101,7 @@ export class ParamInferrer {
   }
 
   path(template: PathTemplate, paths: readonly string[]): ParamInfo[] {
-    const matches = paths.map((path) => PathTemplater.match(template.template, path)).filter((m): m is Record<string, string> => m !== undefined);
+    const matches = paths.map((path) => EndpointIndex.matchPath(template.template, path)).filter((m): m is Record<string, string> => m !== undefined);
     return template.params.map((param) => {
       const values = matches.map((m) => m[param.name]).filter((value): value is string => value !== undefined);
       const examples = values.map((value) => String(this.#redactor.field(param.name, value)));

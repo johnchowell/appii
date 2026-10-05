@@ -1,7 +1,7 @@
 {
   "name": "appii",
   "version": "0.1.0",
-  "description": "Turn any website into your own API: inspect cookies, capture endpoint traffic, validate and submit forms like a browser, infer OpenAPI specs, and serve custom API routes.",
+  "description": "Turn any website into a usable API description: record traffic in Chromium, infer endpoints, schemas, cookies, CSRF tokens and form rules, and export OpenAPI, Postman, curl, a TypeScript client and more.",
   "type": "module",
   "license": "MIT",
   "bin": {

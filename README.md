@@ -56,6 +56,13 @@ endpoint in detail with an example curl command, `--cookies` prints the cookie
 table, and `--filter`, `--method`, `--kind`, `--origin` and `--json` narrow or
 change the output. `list` also accepts `capture.json` and HAR files directly.
 
+The example curl command uses a shell variable only for a value that appii does
+not know: a redacted secret, a CSRF token, a bearer token (`${ACCESS_TOKEN}`) or
+a cookie. The `Variables:` line names these variables. A CSRF token that comes
+from a cookie uses the variable of that cookie. Captured values are always sent
+as literal text, also when they contain text such as `{{name}}` or `${NAME}`.
+The `curl` script and the Postman collection use the same variables.
+
 ### export: write a spec, client, script or report
 
 ```sh

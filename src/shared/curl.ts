@@ -1,75 +1,81 @@
 import type { RequestSample } from './samples.js';
-import { hasPlaceholder } from './samples.js';
-import { isPlainObject } from './json.js';
+import { formEntries, isRecord, jsonText, placeholderNames as samplePlaceholderNames } from './samples.js';
+import { SampleText } from './sample-text.js';
+import type { SampleTextInput } from './sample-text.js';
+import { ShellScript } from './shell-script.js';
 import { shellQuote } from './text.js';
 
+export type VariableMode = 'literal' | 'shell';
+
 export interface CurlOptions {
-  variables?: 'literal' | 'shell';
-  cookie?: string;
+  variables?: VariableMode;
+  cookie?: SampleText;
   multiline?: boolean;
-  extraArgs?: string[];
+  extraArgs?: readonly string[];
 }
 
-export function shellArg(value: string, variables: 'literal' | 'shell' = 'literal'): string {
-  if (variables === 'literal' || !hasPlaceholder(value)) return shellQuote(value);
-  let out = '"';
-  let last = 0;
-  const re = /\{\{([a-z0-9_]+)\}\}/g;
-  for (let m = re.exec(value); m; m = re.exec(value)) {
-    out += escapeDouble(value.slice(last, m.index)) + '${' + m[1]!.toUpperCase() + '}';
-    last = m.index + m[0].length;
+export const FORM_FLAG = '--data-urlencode';
+export const MULTIPART_TEXT_FLAG = '--form-string';
+export const MULTIPART_FILE_FLAG = '-F';
+export const RAW_FLAG = '--data-raw';
+export const DEFAULT_UPLOAD = 'file.bin';
+export const SAFE_UPLOAD_NAME: RegExp = /^[A-Za-z0-9._+-]+$/;
+export const CONTINUATION = ' \\\n  ';
+export const SAFE_WORD: RegExp = /^[A-Za-z0-9_.-]+$/;
+export const DOUBLE_QUOTE_SPECIAL: RegExp = /[!"$\\`]/;
+
+export function variableName(name: string): string {
+  return name.toUpperCase();
+}
+
+export function shellArg(input: SampleTextInput, variables: VariableMode = 'literal'): string {
+  const text = SampleText.of(input);
+  if (variables === 'literal' || text.isLiteral) return shellQuote(text.toString());
+  const reference = (name: string): string => `\${${variableName(name)}}`;
+  if (text.parts.every((part) => part.kind === 'placeholder' || !DOUBLE_QUOTE_SPECIAL.test(part.text))) {
+    return `"${text.render({ literal: (literal) => literal, placeholder: reference })}"`;
   }
-  return out + escapeDouble(value.slice(last)) + '"';
+  return text.parts.map((part) => (part.kind === 'literal' ? shellQuote(part.text) : `"${reference(part.name)}"`)).join('');
 }
 
-function escapeDouble(s: string): string {
-  return s.replace(/[\\"$`]/g, (c) => '\\' + c);
+export function shellWord(text: string): string {
+  return SAFE_WORD.test(text) ? text : shellQuote(text);
 }
 
-export function placeholderNames(sample: RequestSample): string[] {
-  const names = new Set<string>();
-  const scan = (s: string) => {
-    for (const m of s.matchAll(/\{\{([a-z0-9_]+)\}\}/g)) names.add(m[1]!.toUpperCase());
-  };
-  scan(sample.url);
-  sample.headers.forEach((h) => scan(h.value));
-  if (sample.body) scan(typeof sample.body.value === 'string' ? sample.body.value : JSON.stringify(sample.body.value ?? ''));
-  return [...names].sort();
+export function placeholderNames(sample: RequestSample, extra: readonly SampleText[] = []): string[] {
+  return samplePlaceholderNames(sample, extra).map(variableName).sort();
 }
 
-function stringify(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value === undefined || value === null) return '';
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+export function uploadPath(filename: string): string {
+  const base = filename.split(/[\\/]/).pop() ?? '';
+  const name = base === '' || base === '.' || base === '..' ? DEFAULT_UPLOAD : base;
+  return SAFE_UPLOAD_NAME.test(name) ? name : `"${name.replace(/["\\]/g, (c) => '\\' + c)}"`;
 }
 
 export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): string {
   const vars = opts.variables ?? 'literal';
+  const arg = (text: SampleTextInput): string => shellArg(text, vars);
   const head: string[] = ['curl', '-sS'];
-  if (sample.method !== 'GET' || sample.body) head.push('-X', sample.method);
-  head.push(shellArg(sample.url, vars));
+  if (sample.method !== 'GET' || sample.body) head.push('-X', shellWord(sample.method));
+  head.push(arg(sample.url));
   const groups: string[][] = [head];
-  for (const h of sample.headers) groups.push(['-H', shellArg(`${h.name}: ${h.value}`, vars)]);
-  if (opts.cookie) groups.push(['-b', opts.cookie]);
+  for (const header of sample.headers) groups.push(['-H', arg(SampleText.concat(`${header.name}: `, header.value))]);
+  if (opts.cookie) groups.push(['-b', arg(opts.cookie)]);
   const body = sample.body;
-  if (body) {
-    if ((body.kind === 'form' || body.kind === 'multipart') && isPlainObject(body.value)) {
-      const flag = body.kind === 'form' ? '--data-urlencode' : '-F';
-      for (const [k, v] of Object.entries(body.value)) {
-        const values = Array.isArray(v) ? v : [v];
-        for (const item of values) {
-          if (body.kind === 'multipart' && isPlainObject(item) && typeof item.filename === 'string') {
-            groups.push([flag, shellArg(`${k}=@${item.filename || 'file.bin'}`, vars)]);
-          } else {
-            groups.push([flag, shellArg(`${k}=${stringify(item)}`, vars)]);
-          }
-        }
-      }
-    } else if (body.value !== undefined) {
-      groups.push(['--data-raw', shellArg(stringify(body.value), vars)]);
+  if (body?.kind === 'form' && isRecord(body.value)) {
+    for (const entry of formEntries(body.value)) groups.push([FORM_FLAG, arg(SampleText.concat(`${encodeURIComponent(entry.name)}=`, entry.value))]);
+  } else if (body?.kind === 'multipart' && isRecord(body.value)) {
+    for (const entry of formEntries(body.value)) {
+      groups.push(
+        entry.file
+          ? [MULTIPART_FILE_FLAG, arg(`${entry.name}=@${uploadPath(entry.value.toString())}`)]
+          : [MULTIPART_TEXT_FLAG, arg(SampleText.concat(`${entry.name}=`, entry.value))],
+      );
     }
+  } else if (body && body.value !== undefined) {
+    groups.push([RAW_FLAG, arg(body.value instanceof SampleText ? body.value : jsonText(body.value))]);
   }
-  for (const a of opts.extraArgs ?? []) groups.push([a]);
-  const parts = groups.map((g) => g.join(' '));
-  return opts.multiline === false ? parts.join(' ') : parts.join(' \\\n  ');
+  for (const extra of opts.extraArgs ?? []) groups.push([extra]);
+  const parts = groups.map((group) => group.join(' '));
+  return ShellScript.ascii(opts.multiline === false ? parts.join(' ') : parts.join(CONTINUATION));
 }

@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { Meta } from '../shared/index.js';
+import { Meta, Text } from '../shared/index.js';
 import { TextLayout } from '../present/index.js';
 import { CliContext } from './cli-context.js';
 import type { CliContextOptions, CliIo } from './cli-context.js';
@@ -74,7 +74,7 @@ export class CliApp {
   }
 
   static crash(err: unknown, stderr: NodeJS.WritableStream): number {
-    stderr.write(ErrorReporter.PREFIX + TextLayout.clean(Helpers.errorMessage(err)) + '\n');
+    stderr.write(ErrorReporter.PREFIX + TextLayout.clean(Text.errorMessage(err)) + '\n');
     return ExitCode.ERROR;
   }
 
@@ -105,7 +105,7 @@ export class CliApp {
   }
 
   async run(argv: readonly string[]): Promise<number> {
-    let ctx = new CliContext(this.#io);
+    let ctx = CliContext.create(this.#io);
     try {
       const { options, rest } = CliApp.globals(argv);
       ctx = ctx.withOptions(options);

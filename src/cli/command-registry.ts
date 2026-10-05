@@ -18,8 +18,8 @@ export class CommandRegistry {
       .register(ListCommand.create())
       .register(ExportCommand.create())
       .register(RunCommand.create())
-      .register(new HelpCommand(registry))
-      .register(new VersionCommand());
+      .register(HelpCommand.create(registry))
+      .register(VersionCommand.create());
   }
 
   register(command: Command): this {

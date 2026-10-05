@@ -2,6 +2,7 @@ import { Meta } from '../../shared/index.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
+import { DisplayOptionGroup } from '../display-option-group.js';
 import type { CommandRegistry } from '../command-registry.js';
 import { ExitCode } from '../exit-code.js';
 import { HelpFormatter } from '../help-formatter.js';
@@ -25,6 +26,10 @@ export class HelpCommand extends Command {
       docs: {},
       examples: [`${Meta.APP_NAME} help export`],
     };
+  }
+
+  static create(registry: CommandRegistry): HelpCommand {
+    return new HelpCommand(registry, { display: new DisplayOptionGroup() });
   }
 
   overview(ctx: CliContext): string {

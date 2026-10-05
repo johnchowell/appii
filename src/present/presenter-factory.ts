@@ -1,5 +1,6 @@
 import type { ApiModel } from '../model/index.js';
 import { AppiiError } from '../shared/index.js';
+import { CaptureSummaryPresenter } from './capture-summary-presenter.js';
 import { CookieListPresenter } from './cookie-list-presenter.js';
 import { EndpointDetailPresenter } from './endpoint-detail-presenter.js';
 import type { EndpointDetailInput } from './endpoint-detail-presenter.js';
@@ -50,6 +51,10 @@ export class PresenterFactory {
 
   cookies(): CookieListPresenter {
     return new CookieListPresenter(this.#options);
+  }
+
+  captureSummary(): CaptureSummaryPresenter {
+    return new CaptureSummaryPresenter(this.#options);
   }
 
   create<K extends PresenterKind>(kind: K): Presenter<PresenterInputs[K]>;

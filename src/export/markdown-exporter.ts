@@ -87,7 +87,7 @@ export class MarkdownExporter extends BaseExporter {
           md.code(endpoint.path, true),
           `[${md.text(endpoint.name)}](#${MarkdownExporter.anchor(index.numberOf(endpoint), endpoint)})`,
           md.text(endpoint.kind),
-          Helpers.statuses(endpoint).join(', '),
+          EndpointIndex.statuses(endpoint).join(', '),
           this.#auth(model, endpoint),
           String(endpoint.count),
         ]);

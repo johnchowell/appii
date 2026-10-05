@@ -16,6 +16,10 @@ const IRREGULAR_SINGULARS: Record<string, string> = {
   class: 'class',
 };
 
+export const SHORT_VALUE = 24;
+export const SUMMARY_ITEMS = 3;
+export const UNKNOWN_ERROR = 'Unknown error';
+
 export function words(input: string): string[] {
   return input
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -72,6 +76,26 @@ export function truncate(input: string, max: number, ellipsis = '...'): string {
   if (input.length <= max) return input;
   if (max <= ellipsis.length) return ellipsis.slice(0, max);
   return input.slice(0, max - ellipsis.length) + ellipsis;
+}
+
+export function short(value: unknown, max = SHORT_VALUE): string {
+  const text = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
+  return truncate(text, max);
+}
+
+export function summarize(items: readonly string[], max = SUMMARY_ITEMS): string {
+  const head = items.slice(0, max).join('; ');
+  return items.length > max ? `${head}; and ${items.length - max} more` : head;
+}
+
+export function errorMessage(err: unknown, options: { firstLine?: boolean } = {}): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const chosen = options.firstLine === true ? (text.split('\n')[0] ?? '').trim() : text;
+  return chosen.trim() === '' ? UNKNOWN_ERROR : chosen;
+}
+
+export function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 export function indent(text: string, spaces = 2): string {

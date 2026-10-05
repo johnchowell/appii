@@ -11,7 +11,7 @@ import type {
 } from '../model/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
-import { Json, Schema } from '../shared/index.js';
+import { EndpointIndex, Json, Schema } from '../shared/index.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { FormCollector } from './form-collector.js';
@@ -81,7 +81,7 @@ export class FormLinker {
 
   static create(options: FormLinkerOptions = {}): FormLinker {
     const tokens = new TokenDetector();
-    const inferrer = new SchemaInferrer();
+    const inferrer = SchemaInferrer.create();
     const redactor = new Redactor(options.redact ?? true);
     return new FormLinker({
       extractor: new FormExtractor({ tokens }),
@@ -166,7 +166,7 @@ export class FormLinker {
     for (const endpoint of endpoints) {
       if (endpoint.method !== submission.target.method || endpoint.origin !== submission.url.origin) continue;
       if (endpoint.kind === 'graphql' || endpoint.operationName !== undefined) continue;
-      if (PathTemplater.match(endpoint.path, submission.url.pathname) === undefined) continue;
+      if (EndpointIndex.matchPath(endpoint.path, submission.url.pathname) === undefined) continue;
       const params = EndpointMatcher.paramCount(endpoint.path);
       if (params < bestParams) {
         best = endpoint;
@@ -232,6 +232,8 @@ export class FormLinker {
     return {
       pageUrl: form.pageUrl,
       selector: form.selector,
+      action: form.action,
+      method: form.method,
       enctype,
       fields: Json.clone(form.fields),
       submitters: Json.clone(form.submitters),

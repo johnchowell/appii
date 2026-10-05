@@ -20,7 +20,7 @@ export const METHOD_COLORS: Readonly<Record<string, AnsiStyle>> = {
   DELETE: 'red',
 };
 
-const PATTERN = /\x1b\[[0-9;]*m/g;
+const ESCAPE_SOURCE = '\\x1b\\[[0-9;]*m';
 
 export class Ansi {
   static readonly plain = new Ansi(false);
@@ -29,7 +29,7 @@ export class Ansi {
   constructor(readonly enabled: boolean) {}
 
   static strip(input: string): string {
-    return input.replace(PATTERN, '');
+    return input.replace(new RegExp(ESCAPE_SOURCE, 'g'), '');
   }
 
   static width(input: string): number {
@@ -43,11 +43,11 @@ export class Ansi {
     let out = '';
     let visible = 0;
     let sawCode = false;
-    PATTERN.lastIndex = 0;
+    const escape = new RegExp(ESCAPE_SOURCE, 'y');
     for (let i = 0; i < input.length; ) {
-      PATTERN.lastIndex = i;
-      const m = PATTERN.exec(input);
-      if (m && m.index === i) {
+      escape.lastIndex = i;
+      const m = escape.exec(input);
+      if (m) {
         out += m[0];
         sawCode = true;
         i += m[0].length;

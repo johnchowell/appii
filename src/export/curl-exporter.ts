@@ -1,9 +1,8 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Curl, EndpointIndex, Meta, Samples, Text } from '../shared/index.js';
+import { Curl, EndpointIndex, Meta, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
-import { ShellScript } from './shell-script.js';
 
 export class CurlExporter extends BaseExporter {
   static readonly BASE_VARIABLE = 'BASE_URL';
@@ -63,7 +62,7 @@ export class CurlExporter extends BaseExporter {
     for (const cookie of model.cookies) {
       if (pairs.has(cookie.name) || cookie.name === '') continue;
       if (!used.has(cookie.name) && !cookie.usedBy.some((id) => ids.has(id))) continue;
-      if (CurlExporter.REDACTED_VALUE.test(cookie.valueExample) || Helpers.isRedacted(cookie.valueExample)) continue;
+      if (CurlExporter.REDACTED_VALUE.test(cookie.valueExample) || Samples.isRedacted(cookie.valueExample)) continue;
       pairs.set(cookie.name, cookie.valueExample);
     }
     return [...pairs].map(([name, value]) => `${name}=${value}`).join('; ');
@@ -79,7 +78,7 @@ export class CurlExporter extends BaseExporter {
     const placeholders = new Set<string>();
     for (const endpoint of endpoints) {
       const variable = origins.get(endpoint.origin) ?? CurlExporter.BASE_VARIABLE;
-      const sample = Samples.requestSample(endpoint, { baseUrl: `{{${variable.toLowerCase()}}}` });
+      const sample = Samples.requestSample(endpoint, { baseUrl: SampleText.placeholder(variable) });
       const used = Curl.placeholderNames(sample).filter((name) => !originNames.has(name));
       used.forEach((name) => placeholders.add(name));
       functions.push(this.#function(endpoint, names.get(endpoint) ?? endpoint.name, sample, used));
@@ -118,13 +117,15 @@ export class CurlExporter extends BaseExporter {
 
   #function(endpoint: Endpoint, name: string, sample: Samples.RequestSample, placeholders: readonly string[]): string {
     const lines = [`${name}() {`];
+    const linked = new Set<string>();
     for (const token of endpoint.auth.csrf) {
       if (token.source !== 'cookie' || !token.sourceName) continue;
-      const variable = Samples.placeholder(token.name).slice(2, -2).toUpperCase();
-      if (!placeholders.includes(variable)) continue;
+      const variable = Curl.variableName(SampleText.placeholderName(token.sourceName));
+      if (!placeholders.includes(variable) || linked.has(variable)) continue;
+      linked.add(variable);
       lines.push(`  local ${variable}="\${${variable}:-$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})}"`);
     }
-    const command = Curl.curlCommand(sample, { variables: 'shell', cookie: `"$${CurlExporter.COOKIE_VARIABLE}"`, extraArgs: ['"$@"'] });
+    const command = Curl.curlCommand(sample, { variables: 'shell', cookie: SampleText.placeholder(CurlExporter.COOKIE_VARIABLE), extraArgs: ['"$@"'] });
     lines.push(ShellScript.indent(command, 2), '}');
     return ShellScript.ascii(lines.join('\n'));
   }

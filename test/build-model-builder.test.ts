@@ -116,9 +116,15 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
     );
     assert.deepEqual(model.websockets, [{ url: 'wss://shop.example.com/live', messages: 4, examples: ['{"type":"auth","token":"<redacted>"}', 'hello'] }]);
     const sample = Samples.requestSample(endpoint(model, 'createItem'));
-    assert.equal(sample.url, `${ORIGIN}/api/items`);
-    assert.deepEqual(sample.headers, [{ name: 'x-csrf-token', value: '{{x_csrf_token}}' }, { name: 'Content-Type', value: 'application/json' }]);
-    assert.deepEqual(Samples.requestSample(endpoint(model, 'getItem')).url, `${ORIGIN}/api/items/1`);
+    assert.equal(String(sample.url), `${ORIGIN}/api/items`);
+    assert.deepEqual(
+      sample.headers.map((header) => ({ name: header.name, value: String(header.value) })),
+      [
+        { name: 'x-csrf-token', value: '{{csrf}}' },
+        { name: 'Content-Type', value: 'application/json' },
+      ],
+    );
+    assert.equal(String(Samples.requestSample(endpoint(model, 'getItem')).url), `${ORIGIN}/api/items/1`);
   });
 
   test('building is deterministic and does not mutate the capture', () => {

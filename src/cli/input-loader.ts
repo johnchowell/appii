@@ -1,10 +1,9 @@
 import { basename } from 'node:path';
 import { CaptureStore } from '../capture/index.js';
-import { ModelBuilder } from '../build/index.js';
+import { ModelBuilder, ModelStore } from '../build/index.js';
 import type { BuildOptions } from '../build/index.js';
 import { Fs } from '../shared/index.js';
 import type { ApiModel, Capture } from '../model/index.js';
-import { ModelStore } from './model-store.js';
 
 export type InputKind = 'model' | 'capture' | 'har';
 
@@ -32,7 +31,7 @@ export class InputLoader {
   }
 
   static create(): InputLoader {
-    return new InputLoader({ store: new CaptureStore(), models: new ModelStore(), builder: (options) => ModelBuilder.create(options) });
+    return new InputLoader({ store: CaptureStore.create(), models: ModelStore.create(), builder: (options) => ModelBuilder.create(options) });
   }
 
   async load(path: string, buildOptions: BuildOptions = {}): Promise<LoadedInput> {

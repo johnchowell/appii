@@ -84,6 +84,19 @@ describe('CaptureStore', () => {
     assert.deepEqual(Http.bodyJson(loaded.exchanges[0]?.response?.body), { id: 1 });
   });
 
+  test('ignores a UTF-8 byte order mark at the start of a HAR file and of a HAR string (HAR 1.2)', async () => {
+    const har = new HarConverter().toHar(capture().exchanges);
+    const path = join(dir, 'bom.har');
+    await writeFile(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(har))]));
+    const loaded = await CaptureStore.create().load(path);
+    assert.equal(loaded.exchanges.length, 1);
+    assert.deepEqual(Http.bodyJson(loaded.exchanges[0]?.response?.body), { id: 1 });
+    assert.equal(HarConverter.create().fromHar('\ufeff' + JSON.stringify(har)).exchanges.length, 1);
+    const saved = join(dir, 'bom-capture.json');
+    await writeFile(saved, '\ufeff' + JSON.stringify(capture()));
+    assert.deepEqual(await CaptureStore.create().load(saved), capture());
+  });
+
   test('inlines Playwright attach-mode HAR content files and ignores paths outside the HAR folder', async () => {
     const folder = join(dir, 'attached');
     await mkdir(folder, { recursive: true });

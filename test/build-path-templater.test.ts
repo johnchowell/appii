@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PathTemplater } from '../src/build/index.js';
 import type { PathTemplate } from '../src/build/index.js';
+import { EndpointIndex } from '../src/shared/index.js';
 
 const templater = new PathTemplater();
 
@@ -148,36 +149,36 @@ describe('PathTemplater.template', () => {
   });
 });
 
-describe('PathTemplater.match', () => {
+describe('EndpointIndex.matchPath', () => {
   test('matches whole-segment and partial-segment params and decodes values', () => {
-    assert.deepEqual(PathTemplater.match('/api/items/{itemId}', '/api/items/42'), { itemId: '42' });
-    assert.deepEqual(PathTemplater.match('/users/{user}/posts', '/users/caf%C3%A9/posts'), { user: 'caf\u00e9' });
-    assert.deepEqual(PathTemplater.match('/files/{name}.{ext}', '/files/report.final.pdf'), { name: 'report', ext: 'final.pdf' });
-    assert.deepEqual(PathTemplater.match('/login', '/login'), {});
-    assert.deepEqual(PathTemplater.match('/a/{x}', '/a/%E0%A4%A'), { x: '%E0%A4%A' });
+    assert.deepEqual(EndpointIndex.matchPath('/api/items/{itemId}', '/api/items/42'), { itemId: '42' });
+    assert.deepEqual(EndpointIndex.matchPath('/users/{user}/posts', '/users/caf%C3%A9/posts'), { user: 'caf\u00e9' });
+    assert.deepEqual(EndpointIndex.matchPath('/files/{name}.{ext}', '/files/report.final.pdf'), { name: 'report', ext: 'final.pdf' });
+    assert.deepEqual(EndpointIndex.matchPath('/login', '/login'), {});
+    assert.deepEqual(EndpointIndex.matchPath('/a/{x}', '/a/%E0%A4%A'), { x: '%E0%A4%A' });
   });
 
   test('rejects different lengths, literals, empty params and malformed templates', () => {
-    assert.equal(PathTemplater.match('/api/items/{itemId}', '/api/items'), undefined);
-    assert.equal(PathTemplater.match('/api/items/{itemId}', '/api/items/'), undefined);
-    assert.equal(PathTemplater.match('/api/items/{itemId}', '/api/other/1'), undefined);
-    assert.equal(PathTemplater.match('/login', '/logout'), undefined);
-    assert.deepEqual(PathTemplater.match('/a/{', '/a/{'), {});
-    assert.equal(PathTemplater.match('/a/{', '/a/b'), undefined);
-    assert.equal(PathTemplater.match('/a.b/{x}', '/aXb/1'), undefined);
+    assert.equal(EndpointIndex.matchPath('/api/items/{itemId}', '/api/items'), undefined);
+    assert.equal(EndpointIndex.matchPath('/api/items/{itemId}', '/api/items/'), undefined);
+    assert.equal(EndpointIndex.matchPath('/api/items/{itemId}', '/api/other/1'), undefined);
+    assert.equal(EndpointIndex.matchPath('/login', '/logout'), undefined);
+    assert.deepEqual(EndpointIndex.matchPath('/a/{', '/a/{'), {});
+    assert.equal(EndpointIndex.matchPath('/a/{', '/a/b'), undefined);
+    assert.equal(EndpointIndex.matchPath('/a.b/{x}', '/aXb/1'), undefined);
   });
 
   test('does not backtrack catastrophically on hostile segments', () => {
     const started = Date.now();
     const segment = 'a'.repeat(5000) + '{';
-    assert.equal(PathTemplater.match(`/${segment}`, '/x'), undefined);
-    assert.equal(PathTemplater.match('/{a}{b}{c}{d}{e}{f}', '/' + 'x'.repeat(3000) + '/'), undefined);
-    assert.deepEqual(PathTemplater.match('/{a}{b}', '/{a}{b}'), {});
+    assert.equal(EndpointIndex.matchPath(`/${segment}`, '/x'), undefined);
+    assert.equal(EndpointIndex.matchPath('/{a}{b}{c}{d}{e}{f}', '/' + 'x'.repeat(3000) + '/'), undefined);
+    assert.deepEqual(EndpointIndex.matchPath('/{a}{b}', '/{a}{b}'), {});
     assert.ok(Date.now() - started < 500);
   });
 
   test('uses only own properties for names', () => {
-    const values = PathTemplater.match('/{__proto__}', '/x');
+    const values = EndpointIndex.matchPath('/{__proto__}', '/x');
     assert.ok(values && Object.hasOwn(values, '__proto__'));
     assert.equal(Object.getPrototypeOf(values), Object.prototype);
   });

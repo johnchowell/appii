@@ -95,7 +95,7 @@ export class EndpointGrouper {
   static create(options: EndpointGrouperCreateOptions = {}): EndpointGrouper {
     const { redact, ...rest } = options;
     return new EndpointGrouper(
-      { body: new BodyParser(), schemas: new SchemaInferrer(), paths: new PathTemplater(), redactor: new Redactor(redact ?? true) },
+      { body: BodyParser.create(), schemas: SchemaInferrer.create(), paths: new PathTemplater(), redactor: new Redactor(redact ?? true) },
       { ...EndpointGrouper.DEFAULT_OPTIONS, ...rest },
     );
   }
@@ -109,7 +109,7 @@ export class EndpointGrouper {
   isStaticAsset(e: Exchange): boolean {
     if (EndpointGrouper.STATIC_TYPES.has(e.resourceType)) return true;
     if (!Http.isSafeMethod(e.request.method)) return false;
-    const url = Helpers.parseUrl(e.request.url);
+    const url = Http.parseUrl(e.request.url);
     if (url && EndpointGrouper.STATIC_EXTENSIONS.has(EndpointGrouper.extension(url.pathname))) return true;
     const mime = Http.mimeEssence(e.response ? Http.getHeader(e.response.headers, 'content-type') : undefined);
     return mime !== '' && EndpointGrouper.STATIC_MIME_PATTERNS.some((pattern) => pattern.test(mime));

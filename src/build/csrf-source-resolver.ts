@@ -1,8 +1,7 @@
 import type { Capture, Exchange, TokenSource } from '../model/index.js';
-import { HtmlDocument } from '../forms/index.js';
-import type { FormExtractor, TokenDetector } from '../forms/index.js';
+import { FormExtractor, HtmlDocument, TokenDetector } from '../forms/index.js';
 import { Http, Json, isAppiiError } from '../shared/index.js';
-import type { BodyParser } from './body-parser.js';
+import { BodyParser } from './body-parser.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
@@ -85,10 +84,16 @@ export class CsrfSourceResolver {
     });
   }
 
+  static create(capture: Capture): CsrfSourceResolver {
+    const tokens = new TokenDetector();
+    const body = BodyParser.create();
+    return new CsrfSourceResolver(capture, { extractor: new FormExtractor({ tokens }), tokens, body, pages: new HtmlPages({ body }), headers: new HeaderPolicy() });
+  }
+
   resolve(value: string, exchange: Exchange): TokenOrigin {
     if (value.length < CsrfSourceResolver.MIN_TOKEN_LENGTH) return { source: 'unknown' };
     for (const cookie of Http.parseCookieHeader(Http.getHeader(exchange.request.headers, 'cookie'))) {
-      if (cookie.name !== '' && (cookie.value === value || Helpers.decode(cookie.value) === value)) return { source: 'cookie', sourceName: cookie.name };
+      if (cookie.name !== '' && (cookie.value === value || Http.decodeComponent(cookie.value) === value)) return { source: 'cookie', sourceName: cookie.name };
     }
     const meta = CsrfSourceResolver.#pick(this.#metas, value, exchange);
     if (meta) return { source: 'meta', sourceName: meta.name, sourceUrl: meta.url };

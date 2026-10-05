@@ -3,6 +3,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AppiiError, Fs, Json, Text } from '../shared/index.js';
 import type { Capture } from '../model/index.js';
 import { CaptureValidator } from './capture-validator.js';
+import { CookieParser } from './cookie-parser.js';
 import { HarConverter } from './har-converter.js';
 import type { Har } from './har-types.js';
 
@@ -14,6 +15,7 @@ export interface CaptureStoreDeps {
 export class CaptureStore {
   static readonly VERSION = CaptureValidator.VERSION;
   static readonly FILE_MODE = 0o600;
+  static readonly SUMMARY_PROBLEMS = 3;
 
   readonly #har: HarConverter;
   readonly #validator: CaptureValidator;
@@ -23,8 +25,17 @@ export class CaptureStore {
     this.#har = deps.har ?? new HarConverter({ validator: this.#validator });
   }
 
+  static create(): CaptureStore {
+    const validator = new CaptureValidator();
+    return new CaptureStore({ validator, har: new HarConverter({ cookies: new CookieParser(), validator }) });
+  }
+
   static isCapture(value: unknown): value is Capture {
     return new CaptureValidator().isCapture(value);
+  }
+
+  static serialize(capture: Capture): string {
+    return Json.asciiJson(capture) + '\n';
   }
 
   static isHar(value: unknown): value is Har {
@@ -34,9 +45,9 @@ export class CaptureStore {
   async save(path: string, capture: Capture): Promise<void> {
     const problems = this.#validator.validate(capture);
     if (problems.length > 0) {
-      throw new AppiiError('BAD_INPUT', `Refusing to save an invalid capture: ${CaptureStore.#summary(problems)}`, { details: { problems } });
+      throw new AppiiError('BAD_INPUT', `Refusing to save an invalid capture: ${Text.summarize(problems, CaptureStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
-    await Fs.writeFileAtomic(path, Text.toAscii(JSON.stringify(capture, null, 2), 'escape') + '\n', { mode: CaptureStore.FILE_MODE });
+    await Fs.writeFileAtomic(path, CaptureStore.serialize(capture), { mode: CaptureStore.FILE_MODE });
   }
 
   async load(path: string): Promise<Capture> {
@@ -58,7 +69,7 @@ export class CaptureStore {
     }
     const problems = this.#validator.validate(value);
     if (problems.length > 0) {
-      throw new AppiiError('BAD_INPUT', `${path} is not a valid capture or HAR file: ${CaptureStore.#summary(problems)}`, { details: { problems } });
+      throw new AppiiError('BAD_INPUT', `${path} is not a valid capture or HAR file: ${Text.summarize(problems, CaptureStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
     return value as Capture;
   }
@@ -97,10 +108,5 @@ export class CaptureStore {
     } catch {
       return undefined;
     }
-  }
-
-  static #summary(problems: string[]): string {
-    const head = problems.slice(0, 3).join('; ');
-    return problems.length > 3 ? `${head}; and ${problems.length - 3} more` : head;
   }
 }

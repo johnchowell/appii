@@ -45,7 +45,7 @@ export class FormSchemaBuilder {
   }
 
   static create(): FormSchemaBuilder {
-    return new FormSchemaBuilder();
+    return new FormSchemaBuilder({ tokens: new TokenDetector(), slots: EntrySlotFactory.create(), composer: new EntryGroupComposer() });
   }
 
   submitter(form: FormDescriptor, submitter?: FormField): FormField | undefined {

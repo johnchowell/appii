@@ -1,5 +1,5 @@
 import type { ApiModel, CookieRole, Endpoint, JsonSchema } from '../model/index.js';
-import { AppiiError, Samples, Schema, Text } from '../shared/index.js';
+import { AppiiError, Http, Samples, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 
 export interface PathSegment {
@@ -77,15 +77,7 @@ export class Helpers {
     const literals = Helpers.segments(endpoint.path).filter((segment) => !segment.param);
     const meaningful = literals.find((segment) => !Helpers.GROUP_PREFIXES.test(segment.text));
     const chosen = meaningful ?? literals[0];
-    return chosen ? Helpers.decode(chosen.text) : Helpers.ROOT_GROUP;
-  }
-
-  static decode(text: string): string {
-    try {
-      return decodeURIComponent(text);
-    } catch {
-      return text;
-    }
+    return chosen ? Http.decodeComponent(chosen.text) : Helpers.ROOT_GROUP;
   }
 
   static summary(endpoint: Endpoint): string {
@@ -96,20 +88,8 @@ export class Helpers {
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
-  static statuses(endpoint: Endpoint): number[] {
-    return [...new Set(endpoint.responses.map((response) => response.status))].sort((a, b) => a - b);
-  }
-
   static isHttpStatus(status: number): boolean {
     return Number.isInteger(status) && status >= 100 && status <= 599;
-  }
-
-  static json(value: unknown, indent = 2): string {
-    return Text.toAscii(JSON.stringify(value, null, indent) ?? 'null', 'escape');
-  }
-
-  static isRedacted(value: unknown): boolean {
-    return typeof value === 'string' && value.includes(Samples.REDACTED);
   }
 
   static typed(value: string, schema: JsonSchema | undefined): unknown {
@@ -125,7 +105,7 @@ export class Helpers {
   static examples(values: readonly string[], schema: JsonSchema | undefined): unknown[] {
     const out: unknown[] = [];
     for (const value of values) {
-      if (Helpers.isRedacted(value)) continue;
+      if (Samples.isRedacted(value)) continue;
       const typed = Helpers.typed(value, schema);
       if (!out.some((existing) => Object.is(existing, typed))) out.push(typed);
     }

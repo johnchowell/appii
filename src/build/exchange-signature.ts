@@ -1,6 +1,7 @@
 import type { Exchange } from '../model/index.js';
 import { Http } from '../shared/index.js';
-import type { BodyParser, ParsedBody } from './body-parser.js';
+import { BodyParser } from './body-parser.js';
+import type { ParsedBody } from './body-parser.js';
 import { GraphqlDocument } from './graphql-document.js';
 import { Helpers } from './helpers.js';
 
@@ -26,6 +27,10 @@ export class ExchangeSignature {
 
   constructor(deps: ExchangeSignatureDeps) {
     this.#body = deps.body;
+  }
+
+  static create(): ExchangeSignature {
+    return new ExchangeSignature({ body: BodyParser.create() });
   }
 
   of(exchange: Exchange): Signature | undefined {

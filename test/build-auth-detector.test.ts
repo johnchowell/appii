@@ -175,7 +175,7 @@ describe('AuthDetector headers and bearer', () => {
 describe('AuthDetector for endpoints without traffic', () => {
   function formEndpoint(method: string, origin: string, path: string, pageUrl: string): Endpoint {
     const endpoint = EndpointFactory.blank({ method, origin, path, kind: 'form' });
-    endpoint.form = { pageUrl, selector: 'form', enctype: 'application/x-www-form-urlencoded', fields: [], submitters: [], tokenFields: ['csrf_token'] };
+    endpoint.form = { pageUrl, selector: 'form', action: origin + path, method: method === 'GET' ? 'GET' : 'POST', enctype: 'application/x-www-form-urlencoded', fields: [], submitters: [], tokenFields: ['csrf_token'] };
     return endpoint;
   }
 

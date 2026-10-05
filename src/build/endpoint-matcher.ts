@@ -1,8 +1,8 @@
 import type { Endpoint, Exchange } from '../model/index.js';
+import { EndpointIndex } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import { ExchangeSignature } from './exchange-signature.js';
 import { Helpers } from './helpers.js';
-import { PathTemplater } from './path-templater.js';
 
 export interface EndpointMatcherDeps {
   body?: BodyParser;
@@ -25,6 +25,11 @@ export class EndpointMatcher {
     }
   }
 
+  static create(endpoints: readonly Endpoint[]): EndpointMatcher {
+    const body = BodyParser.create();
+    return new EndpointMatcher(endpoints, { body, signatures: new ExchangeSignature({ body }) });
+  }
+
   static paramCount(template: string): number {
     return (template.match(/\{[^{}]+\}/g) ?? []).length;
   }
@@ -35,7 +40,7 @@ export class EndpointMatcher {
     const url = Helpers.httpUrl(exchange.request.url);
     if (!url) return undefined;
     const candidates = (this.#buckets.get(EndpointMatcher.#bucket(exchange.request.method, url.origin)) ?? []).filter(
-      (endpoint) => endpoint.resourceTypes.includes(exchange.resourceType) && PathTemplater.match(endpoint.path, url.pathname) !== undefined,
+      (endpoint) => endpoint.resourceTypes.includes(exchange.resourceType) && EndpointIndex.matchPath(endpoint.path, url.pathname) !== undefined,
     );
     if (candidates.length === 0) return undefined;
     let operation: string | undefined;

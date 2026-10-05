@@ -1,4 +1,4 @@
-import { Text } from '../shared/index.js';
+import { Http, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 
 export type SegmentKind = 'integer' | 'uuid' | 'hex' | 'date' | 'token' | 'literal';
@@ -71,34 +71,6 @@ export class PathTemplater {
     return path.startsWith('/') ? path.slice(1).split('/') : [path];
   }
 
-  static match(template: string, path: string): Record<string, string> | undefined {
-    if (!template.startsWith('/') || !path.startsWith('/')) return template === path ? {} : undefined;
-    const expected = template.split('/');
-    const actual = path.split('/');
-    if (expected.length !== actual.length) return undefined;
-    const values: [string, string][] = [];
-    for (let i = 0; i < expected.length; i++) {
-      const pattern = expected[i]!;
-      const segment = actual[i]!;
-      if (!pattern.includes('{') || pattern.includes('}{') || !/^(?:\{[^{}/]+\}|[^{}])+$/.test(pattern)) {
-        if (pattern !== segment) return undefined;
-        continue;
-      }
-      const names: string[] = [];
-      const source = pattern.replace(/\{([^{}/]+)\}|[^{}]+/g, (part: string, name: string | undefined) => {
-        if (name !== undefined) {
-          names.push(name);
-          return '(.+?)';
-        }
-        return part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      });
-      const m = new RegExp(`^${source}$`).exec(segment);
-      if (!m) return undefined;
-      names.forEach((name, j) => values.push([name, Helpers.decode(m[j + 1] ?? '')]));
-    }
-    return Object.fromEntries(values);
-  }
-
   classify(segment: string): SegmentKind {
     if (segment === '' || PathTemplater.isFixed(segment)) return 'literal';
     return PathTemplater.RULES.find((rule) => rule.test(segment))?.kind ?? 'literal';
@@ -157,10 +129,10 @@ export class PathTemplater {
 
   #eligible(row: Row, position: number): boolean {
     if (position < 1 || row.open[position] || !row.path.startsWith('/')) return false;
-    const segment = Helpers.decode(row.segments[position] ?? '');
+    const segment = Http.decodeComponent(row.segments[position] ?? '');
     if (segment === '' || PathTemplater.isFixed(segment)) return false;
     if (row.open[position - 1]) return false;
-    const parent = Helpers.decode(row.segments[position - 1] ?? '');
+    const parent = Http.decodeComponent(row.segments[position - 1] ?? '');
     if (parent === '' || PathTemplater.isFixed(parent)) return false;
     return Text.singularize(parent).toLowerCase() !== parent.toLowerCase();
   }
@@ -174,7 +146,7 @@ export class PathTemplater {
       if (!first.open[position]) return segment;
       const kind = PathTemplater.#mergeKinds(members.map((member) => member.kinds[position] ?? 'literal'));
       const name = Text.uniqueName(PathTemplater.#paramName(first, position, kind), taken);
-      const examples = Helpers.distinct(members.map((member) => Helpers.decode(member.segments[position] ?? '')));
+      const examples = Helpers.distinct(members.map((member) => Http.decodeComponent(member.segments[position] ?? '')));
       params.push({ name, position, kind, examples });
       return `{${name}}`;
     });
@@ -185,7 +157,7 @@ export class PathTemplater {
     let base = '';
     for (let i = position - 1; i >= 0 && base === ''; i--) {
       if (row.open[i]) continue;
-      const segment = Helpers.decode(row.segments[i] ?? '');
+      const segment = Http.decodeComponent(row.segments[i] ?? '');
       if (segment === '' || PathTemplater.isFixed(segment)) continue;
       base = Text.camelCase(Text.singularize(segment));
     }

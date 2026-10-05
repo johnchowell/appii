@@ -48,7 +48,7 @@ export class AuthDetector {
 
   static create(): AuthDetector {
     const tokens = new TokenDetector();
-    return new AuthDetector({ extractor: new FormExtractor({ tokens }), tokens, body: new BodyParser() });
+    return new AuthDetector({ extractor: new FormExtractor({ tokens }), tokens, body: BodyParser.create() });
   }
 
   detect(endpoints: Endpoint[], capture: Capture): void {
@@ -81,7 +81,7 @@ export class AuthDetector {
       .filter((cookie) => !(Number.isFinite(end) && CookieParser.isExpired(cookie, end)))
       .filter((cookie) => (cookie.hostOnly ? host === cookie.domain : CookieParser.domainMatches(host, cookie.domain)))
       .filter((cookie) => CookieParser.pathMatches(url.pathname, cookie.path))
-      .filter((cookie) => !cookie.secure || Helpers.isPotentiallyTrustworthy(url))
+      .filter((cookie) => !cookie.secure || Http.isPotentiallyTrustworthy(url))
       .filter((cookie) => !crossSite || cookie.sameSite === 'None' || (cookie.sameSite !== 'Strict' && Http.isSafeMethod(endpoint.method)))
       .map((cookie) => cookie.name);
     return Helpers.distinct(names);

@@ -66,6 +66,10 @@ export class EntrySlotFactory {
     this.#sanitizer = deps.sanitizer ?? new ValueSanitizer();
   }
 
+  static create(): EntrySlotFactory {
+    return new EntrySlotFactory({ sanitizer: new ValueSanitizer() });
+  }
+
   static pattern(raw: string | undefined): CompiledPattern {
     if (raw === undefined) return {};
     const anchored = `^(?:${raw})$`;

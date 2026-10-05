@@ -44,7 +44,7 @@ export class BuildCommand extends Command {
   }
 
   static create(): BuildCommand {
-    return new BuildCommand({ store: new CaptureStore(), step: BuildStep.create(), build: new BuildOptionGroup() });
+    return new BuildCommand({ store: CaptureStore.create(), step: BuildStep.create(), build: new BuildOptionGroup() });
   }
 
   static source(out: string, input: string): string {

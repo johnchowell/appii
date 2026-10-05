@@ -1,8 +1,7 @@
-import { Json, isAppiiError } from '../shared/index.js';
+import { Json, Text, isAppiiError } from '../shared/index.js';
 import { TextLayout } from '../present/index.js';
 import type { CliContext } from './cli-context.js';
 import { ExitCode } from './exit-code.js';
-import { Helpers } from './helpers.js';
 import { UsageError } from './usage-error.js';
 
 export interface DetailList {
@@ -20,7 +19,7 @@ export class ErrorReporter {
   ];
 
   report(err: unknown, ctx: CliContext): number {
-    const lines = [ErrorReporter.PREFIX + TextLayout.clean(Helpers.errorMessage(err))];
+    const lines = [ErrorReporter.PREFIX + TextLayout.clean(Text.errorMessage(err))];
     if (isAppiiError(err)) lines.push(...ErrorReporter.details(err.details));
     if (ErrorReporter.debug(ctx) && err instanceof Error && err.stack) lines.push(TextLayout.cleanBlock(err.stack));
     ctx.err(lines.join('\n'));

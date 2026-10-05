@@ -1,6 +1,16 @@
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import { getDomain } from 'tldts';
 import type { BodyData, Header } from '../model/index.js';
+
+export interface BodyDataOptions {
+  maxBytes?: number;
+  contentEncoding?: string | undefined;
+}
+
+export const SECURE_SCHEMES: ReadonlySet<string> = new Set(['https:', 'wss:']);
+export const LOOPBACK_NAMES: ReadonlySet<string> = new Set(['localhost', 'localhost.']);
+export const IDENTITY_ENCODING = 'identity';
 
 export function newId(prefix = ''): string {
   return prefix + randomUUID();
@@ -29,13 +39,13 @@ export function removeHeader(headers: Header[], name: string): Header[] {
 }
 
 export function headersToRecord(headers: Header[]): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out = new Map<string, string>();
   for (const h of headers) {
     const key = h.name.toLowerCase();
-    const prev = out[key];
-    out[key] = prev === undefined ? h.value : prev + (key === 'set-cookie' ? '\n' : ', ') + h.value;
+    const prev = out.get(key);
+    out.set(key, prev === undefined ? h.value : prev + (key === 'set-cookie' ? '\n' : ', ') + h.value);
   }
-  return out;
+  return Object.fromEntries(out);
 }
 
 export function recordToHeaders(record: Record<string, string | string[] | number | undefined> | Header[] | undefined): Header[] {
@@ -84,17 +94,6 @@ export function isTextMime(mime: string): boolean {
   ].includes(m);
 }
 
-function looksLikeUtf8Text(bytes: Uint8Array): boolean {
-  const sample = bytes.subarray(0, 4096);
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(sample.length < bytes.length ? trimPartialUtf8(sample) : sample);
-  } catch {
-    return false;
-  }
-  for (const b of sample) if (b === 0) return false;
-  return true;
-}
-
 function trimPartialUtf8(bytes: Uint8Array): Uint8Array {
   let end = bytes.length;
   for (let i = 1; i <= 3 && end - i >= 0; i++) {
@@ -107,14 +106,41 @@ function trimPartialUtf8(bytes: Uint8Array): Uint8Array {
   return bytes.subarray(0, end);
 }
 
-export function toBodyData(bytes: Uint8Array, contentType: string | undefined | null, maxBytes = Number.POSITIVE_INFINITY): BodyData {
+export function utf8Prefix(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) return text;
+  return new TextDecoder('utf-8', { ignoreBOM: true }).decode(trimPartialUtf8(bytes.subarray(0, Math.max(0, maxBytes))));
+}
+
+export function utf8Text(bytes: Uint8Array): string | undefined {
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+  return text.includes('\u0000') ? undefined : text;
+}
+
+export function isContentEncoded(contentEncoding: string | undefined | null): boolean {
+  if (!contentEncoding) return false;
+  return contentEncoding
+    .split(',')
+    .map((coding) => coding.trim().toLowerCase())
+    .some((coding) => coding !== '' && coding !== IDENTITY_ENCODING);
+}
+
+export function toBodyData(bytes: Uint8Array, contentType: string | undefined | null, options: BodyDataOptions = {}): BodyData {
   const mimeType = contentType ?? '';
+  const maxBytes = options.maxBytes ?? Number.POSITIVE_INFINITY;
   const truncated = bytes.length > maxBytes;
   const kept = truncated ? bytes.subarray(0, maxBytes) : bytes;
-  const text = isTextMime(mimeType) || (!mimeEssence(mimeType) && looksLikeUtf8Text(kept));
-  const body: BodyData = text
-    ? { mimeType, encoding: 'utf8', data: new TextDecoder('utf-8').decode(truncated ? trimPartialUtf8(kept) : kept), size: bytes.length }
-    : { mimeType, encoding: 'base64', data: Buffer.from(kept).toString('base64'), size: bytes.length };
+  const textual = !isContentEncoded(options.contentEncoding) && (isTextMime(mimeType) || !mimeEssence(mimeType));
+  const text = textual ? utf8Text(truncated ? trimPartialUtf8(kept) : kept) : undefined;
+  const body: BodyData =
+    text === undefined
+      ? { mimeType, encoding: 'base64', data: Buffer.from(kept).toString('base64'), size: bytes.length }
+      : { mimeType, encoding: 'utf8', data: text, size: bytes.length };
   if (truncated) body.truncated = true;
   return body;
 }
@@ -142,6 +168,46 @@ export function bodyJson(body: BodyData | undefined): unknown {
 
 export function originOf(url: string): string {
   return new URL(url).origin;
+}
+
+export function parseUrl(value: string | undefined, base?: string | URL): URL | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return new URL(value, base);
+  } catch {
+    return undefined;
+  }
+}
+
+export function decodeComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function bareHost(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+export function isIpAddress(host: string): boolean {
+  return isIP(bareHost(host)) !== 0;
+}
+
+export function isLoopbackHost(host: string): boolean {
+  const h = bareHost(host.toLowerCase());
+  if (LOOPBACK_NAMES.has(h) || h.endsWith('.localhost') || h.endsWith('.localhost.')) return true;
+  const family = isIP(h);
+  if (family === 4) return h.split('.')[0] === '127';
+  if (family === 6) return parseUrl(`http://[${h}]/`)?.hostname === '[::1]';
+  return false;
+}
+
+export function isPotentiallyTrustworthy(url: URL): boolean {
+  if (SECURE_SCHEMES.has(url.protocol)) return true;
+  if (url.protocol !== 'http:' && url.protocol !== 'ws:') return false;
+  return isLoopbackHost(url.hostname);
 }
 
 export function registrableDomain(host: string): string {

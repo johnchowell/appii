@@ -1,10 +1,9 @@
-import { ModelBuilder } from '../build/index.js';
+import { ModelBuilder, ModelStore } from '../build/index.js';
 import type { BuildOptions } from '../build/index.js';
 import { PresenterFactory, TextLayout } from '../present/index.js';
 import { Text } from '../shared/index.js';
 import type { ApiModel, Capture } from '../model/index.js';
 import type { CliContext } from './cli-context.js';
-import { ModelStore } from './model-store.js';
 
 export interface BuildRequest {
   out: string;
@@ -27,7 +26,7 @@ export class BuildStep {
   }
 
   static create(): BuildStep {
-    return new BuildStep({ builder: (options) => ModelBuilder.create(options), models: new ModelStore() });
+    return new BuildStep({ builder: (options) => ModelBuilder.create(options), models: ModelStore.create() });
   }
 
   build(capture: Capture, options: BuildOptions, source?: string): ApiModel {
