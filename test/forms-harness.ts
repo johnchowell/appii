@@ -19,6 +19,8 @@ interface Waiter {
 }
 
 export class PageServer {
+  static readonly CHARSET = 'utf-8';
+
   readonly origin: string;
   readonly #server: Server;
   readonly #pages = new Map<string, string>();
@@ -100,7 +102,7 @@ export class PageServer {
     const url = new URL(req.url ?? '/', this.origin);
     const html = req.method === 'GET' ? this.#pages.get(url.pathname) : undefined;
     if (html !== undefined) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, { 'content-type': `text/html; charset=${PageServer.CHARSET}` });
       res.end(html);
       return;
     }

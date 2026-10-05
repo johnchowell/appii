@@ -22,6 +22,32 @@ describe('YamlWriter writes scalars that every YAML version reads back unchanged
     assert.match(text, /\n {2}"<<":\n/);
   });
 
+  test('the YAML 1.1 value key "=" is quoted for PyYAML, and the quoting probe prints no warnings (EXP2-13)', () => {
+    const value = { options: ['=', '<', '>=', '!tag', '!=', '%x', '%', '{{x}}', '*ref', '&anchor'], '=': 'eq', default: '=' };
+    const warnings: string[] = [];
+    const listener = (warning: Error): void => {
+      warnings.push(warning.message);
+    };
+    process.on('warning', listener);
+    const emit = process.emitWarning;
+    process.emitWarning = ((warning: string | Error) => {
+      warnings.push(String(warning));
+    }) as typeof process.emitWarning;
+    let text: string;
+    try {
+      text = new YamlWriter().stringify(value);
+    } finally {
+      process.emitWarning = emit;
+      process.off('warning', listener);
+    }
+    assert.deepEqual(warnings, []);
+    assert.match(text, /^ {2}- "="$/m);
+    assert.match(text, /^"=": eq$/m);
+    assert.match(text, /^default: "="$/m);
+    assert.deepEqual(parseYaml(text), value);
+    assert.deepEqual(parseYaml(text, { version: '1.1' }), value);
+  });
+
   test('the YAML export is the JSON export of a model with hostile strings', () => {
     const endpoint = ExportModel.endpoint({
       method: 'POST',

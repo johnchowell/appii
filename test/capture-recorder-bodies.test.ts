@@ -99,6 +99,9 @@ before(async () => {
     '/worker.js': (_req, res) =>
       PageServers.send(res, 200, 'application/javascript', `onmessage = () => { fetch('/worker-api').then((r) => r.text()).then(() => postMessage('done')); }; postMessage('started');`),
     '/worker-api': (_req, res) => PageServers.send(res, 200, 'application/json', '{"fromWorker":true}'),
+    '/broken-image-page': (_req, res) =>
+      PageServers.send(res, 200, 'text/html', PageServers.html('Broken', `<img src="/broken.bin"><script>fetch('/broken.bin?again=1').then((r) => r.arrayBuffer()).then(() => { document.title = 'done'; });</script>`)),
+    '/broken.bin': (_req, res) => PageServers.send(res, 200, 'application/octet-stream', BROKEN, { 'content-length': String(BROKEN.length) }),
     '/worker-early-page': (_req, res) =>
       PageServers.send(res, 200, 'text/html', PageServers.html('Worker', `<script>const worker = new Worker('/worker-early.js'); worker.onmessage = () => { document.title = 'done'; };</script>`)),
     '/worker-early.js': (_req, res) => PageServers.send(res, 200, 'application/javascript', `fetch('/worker-early-api').then((r) => r.text()).then((text) => postMessage(text));`),
@@ -120,6 +123,8 @@ after(async () => {
   await server?.close();
   await rm(dir, { recursive: true, force: true });
 });
+
+const BROKEN = Buffer.from(Array.from({ length: 3 * 1024 * 1024 }, (_v, i) => (i * 2654435761) >>> 24));
 
 async function record(options: TrafficRecorderOptions, fn: (context: BrowserContext, recorder: TrafficRecorder) => Promise<void>): Promise<Exchange[]> {
   const context = await browser.newContext();
@@ -316,6 +321,28 @@ describe('TrafficRecorder response bodies and special responses', () => {
     }
   });
 
+  test('a body that the browser keeps only in part is marked incomplete with the size the browser received', async () => {
+    const exchanges = await record({}, async (context, recorder) => {
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/broken-image-page'));
+      await page.waitForFunction(() => document.title === 'done');
+    });
+    const image = exchanges.find((e) => e.resourceType === 'image' && new URL(e.request.url).pathname === '/broken.bin');
+    const fetched = exchanges.find((e) => new URL(e.request.url).search === '?again=1');
+    assert.ok(image?.response?.body && fetched?.response?.body);
+    assert.equal(server.requests.filter((r) => r.path.startsWith('/broken.bin')).length, 2);
+    assert.deepEqual(Buffer.from(Http.bodyBytes(fetched.response.body)), BROKEN);
+    const kept = Buffer.from(Http.bodyBytes(image.response.body));
+    if (image.response.body.truncated) {
+      assert.equal(image.response.body.size, BROKEN.length);
+      assert.ok(kept.length < BROKEN.length);
+      assert.deepEqual(kept, BROKEN.subarray(0, kept.length));
+    } else {
+      assert.deepEqual(kept, BROKEN);
+    }
+  });
+
   test('reads the bodies of requests that a dedicated worker makes through the worker session', async () => {
     const exchanges = await record({}, async (context, recorder) => {
       const page = await context.newPage();
@@ -363,12 +390,12 @@ describe('TrafficRecorder response bodies and special responses', () => {
       await page.evaluate((target) => fetch(target).then((r) => r.arrayBuffer()), url);
       await page.goto(server.url('/blob-page?second'));
       await page.goto(server.url('/one'));
-      const record = tap.claim('GET', url, 0);
+      const record = tap.claim({ method: 'GET', url, startTime: 0 });
       assert.ok(record);
       assert.equal(record.state, 'finished');
       assert.equal(record.dataLength, 3000);
       const body = await tap.responseBody(record);
-      assert.equal(body?.length, 3000);
+      assert.equal(body?.bytes.length, 3000);
       await tap.close();
     } finally {
       await context.close();

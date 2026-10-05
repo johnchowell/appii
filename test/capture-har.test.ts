@@ -924,4 +924,21 @@ describe('HarConverter pages follow navigations', () => {
       ],
     );
   });
+
+  test('imports entries whose time ends after the last representable date as entries of unknown duration (CAP-20)', () => {
+    const entry = (time: unknown, url: string): Record<string, unknown> => ({
+      startedDateTime: '2026-04-01T09:00:00.000Z',
+      time,
+      request: { method: 'GET', url, headers: [] },
+      response: { status: 200, headers: [{ name: 'Content-Type', value: 'text/html' }], content: { mimeType: 'text/html', text: '<title>t</title>' } },
+      timings: { send: 0, wait: 5, receive: 1 },
+      _resourceType: 'document',
+    });
+    const har = { log: { version: '1.2', creator: { name: 'tool', version: '1' }, entries: [entry(1e16, 'https://site.test/a'), entry(1e300, 'https://site.test/b'), entry(12, 'https://site.test/c')] } };
+    const capture = new HarConverter().fromHar(har as unknown as Har);
+    assert.deepEqual(capture.exchanges.map((e) => e.durationMs), [6, 6, 12]);
+    assert.equal(capture.startedAt, '2026-04-01T09:00:00.000Z');
+    assert.equal(capture.endedAt, '2026-04-01T09:00:00.012Z');
+    assert.ok(capture.pages.every((p) => !Number.isNaN(Date.parse(p.capturedAt))));
+  });
 });

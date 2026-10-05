@@ -61,6 +61,16 @@ form.addEventListener('submit', (event) => {
     'Toggle',
     '<form action="/never"><input id="pw" type="password" name="password"><button type="button" id="show" onclick="document.getElementById(\'pw\').type = \'text\'">Show</button><input name="other" id="other"></form>',
   ),
+  '/toggle-replace': PageServers.html(
+    'Toggle replace',
+    `<form action="/never"><input id="pw" type="password" name="password"><button type="button" id="show">Show</button><input name="other" id="other"></form>
+<script>document.getElementById('show').onclick = () => { const old = document.getElementById('pw'); const next = document.createElement('input'); next.id = 'pw'; next.name = 'password'; next.type = 'text'; next.value = old.value; old.replaceWith(next); };</script>`,
+  ),
+  '/toggle-inner': PageServers.html(
+    'Toggle inner',
+    `<form action="/never"><span id="slot"><input id="pw" type="password" name="new_password1" autocomplete="off"></span><button type="button" id="show">Show</button><input name="other" id="other"></form>
+<script>document.getElementById('show').onclick = () => { const value = document.getElementById('pw').value; document.getElementById('slot').innerHTML = '<input id="pw" type="text" name="new_password1">'; document.getElementById('pw').value = value; };</script>`,
+  ),
   '/globals': PageServers.html(
     'Globals',
     `<form id="f" action="/report" method="post"><input name="who" value="x"><input type="hidden" name="globals" id="globals"><button>Send</button></form>
@@ -280,6 +290,26 @@ describe('PageSnapshotter privacy and stealth', () => {
     const pages = capture.pages.filter((p) => p.url === server.url('/toggle'));
     assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), 'a snapshot was taken after typing');
     assert.ok(capture.pages.every((p) => !p.html.includes(SECRET)), 'the typed password is not in any snapshot');
+  });
+
+  test('never writes a typed password when a show-password toggle renders a new text input (CAP-19)', async () => {
+    for (const path of ['/toggle-replace', '/toggle-inner']) {
+      const capture = await CaptureSession.create({
+        url: server.url(path),
+        headless: true,
+        idleMs: 100,
+        script: async (page) => {
+          await page.fill('#pw', SECRET);
+          await page.click('#show');
+          assert.equal(await page.getAttribute('#pw', 'type'), 'text');
+          assert.equal(await page.inputValue('#pw'), SECRET);
+          await page.fill('#other', 'visible-value');
+        },
+      }).run();
+      const pages = capture.pages.filter((p) => p.url === server.url(path));
+      assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), `${path}: a snapshot was taken after typing`);
+      assert.ok(capture.pages.every((p) => !p.html.includes(SECRET)), `${path}: the typed password is not in any snapshot`);
+    }
   });
 
   test('installs no globals that page scripts can see, and still records submit-time snapshots', async () => {

@@ -242,7 +242,7 @@ describe('generated file name and text', () => {
   test('captured control characters appear only as escapes in the generated TypeScript (CLIENT-CTRL)', async () => {
     const value = ['a', 1, 'b', 0x7f, 'c', 0x9b, 'd', 0x2028, 'e', 0x1b, 'f'].map((part) => (typeof part === 'number' ? String.fromCharCode(part) : part)).join('');
     const f = new CaptureFactory();
-    f.snapshot('/form', 'Form', `<form action="/submit" method="post"><input type="hidden" name="h" value="${value}"><input name="q" title="${value}"><button>Go</button></form>`);
+    f.snapshot('/form', 'Form', `<meta charset="utf-8"><form action="/submit" method="post"><input type="hidden" name="h" value="${value}"><input name="q" title="${value}"><button>Go</button></form>`);
     const built = TsClientHarness.build(f);
     const model: ApiModel = { ...built, name: `host${String.fromCharCode(0x1b)}]0;pwned${String.fromCharCode(7)}` };
     const { mod, source, file } = await harness.load(model);

@@ -119,7 +119,7 @@ describe('EndpointNamer', () => {
     assert.equal(first[3]?.[1], 'get123X');
     assert.equal(first[5]?.[1], 'graphqlDelete');
     assert.deepEqual(named([endpoint('POST', '/', 'graphql', 'delete')]), [['post-root-delete', 'deleteEndpoint']]);
-    for (const [, name] of first) assert.ok(!Text.RESERVED_WORDS.has(name), name);
+    for (const [, name] of first) assert.ok(!Text.RESERVED_WORDS.includes(name), name);
   });
 
   test('segment parsing and plural detection', () => {

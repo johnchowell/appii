@@ -1,7 +1,7 @@
-import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo } from '../model/index.js';
+import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo, Exchange } from '../model/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
-import { Json, Schema } from '../shared/index.js';
+import { Json, Schema, Text } from '../shared/index.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { FormCollector } from './form-collector.js';
@@ -58,6 +58,7 @@ export class FormLinker {
     'multipart/form-data': 'multipart',
     'text/plain': 'text',
   };
+  static readonly NAVIGATION = 'document';
   static readonly SECRET_TYPES: ReadonlySet<string> = new Set(['password']);
   static readonly ANNOTATION_KEYS: readonly string[] = ['title', 'description'];
   static readonly ANNOTATION_PREFIX = 'x-html-';
@@ -94,7 +95,7 @@ export class FormLinker {
 
   static fieldNames(form: FormDescriptor): string[] {
     const names = form.fields.filter((field) => !field.disabled && field.name !== '').map((field) => field.name);
-    return [...new Set(names)].sort(Helpers.compare);
+    return [...new Set(names)].sort(Text.compare);
   }
 
   targets(capture: Capture): Map<string, PathEvidence> {
@@ -112,6 +113,28 @@ export class FormLinker {
 
   encodings(capture: Capture): Map<string, string> {
     return this.#collector.encodings(capture);
+  }
+
+  submissionEncoding(capture: Capture): (exchange: Exchange) => string | undefined {
+    const documents = this.encodings(capture);
+    const forms = new Map<string, string>();
+    for (const submission of this.#submissions(this.#collector.collect(capture))) {
+      const key = FormLinker.#submissionKey(submission.form.pageUrl, submission.target.method, submission.url);
+      if (!forms.has(key)) forms.set(key, submission.form.charset);
+    }
+    return (exchange) => {
+      if (exchange.resourceType !== FormLinker.NAVIGATION || exchange.pageUrl === undefined) return undefined;
+      const url = Helpers.httpUrl(exchange.request.url);
+      const form = url ? forms.get(FormLinker.#submissionKey(exchange.pageUrl, exchange.request.method, url)) : undefined;
+      return form ?? documents.get(HtmlPages.documentKey(exchange.pageUrl));
+    };
+  }
+
+  static #submissionKey(pageUrl: string, method: string, url: URL): string {
+    const target = new URL(url.href);
+    target.hash = '';
+    if (method.toUpperCase() === 'GET') target.search = '';
+    return JSON.stringify([HtmlPages.documentKey(pageUrl), method.toUpperCase(), target.href]);
   }
 
   link(endpoints: Endpoint[], capture: Capture): FormLinkResult {
@@ -208,7 +231,7 @@ export class FormLinker {
   }
 
   #mergeQuery(endpoint: Endpoint, schema: JsonSchema, secrets: ReadonlySet<string>): void {
-    const props = Helpers.properties(schema);
+    const props = Object.entries(Schema.properties(schema));
     const required = Schema.requiredSet(schema);
     const existing = new Map(endpoint.queryParams.map((param) => [param.name, param]));
     const names = new Set(props.map(([name]) => name));
@@ -242,8 +265,8 @@ export class FormLinker {
   static #annotate(observed: JsonSchema | undefined, form: JsonSchema): JsonSchema | undefined {
     if (!observed) return undefined;
     const out = Json.clone(observed);
-    const formProps = new Map(Helpers.properties(form));
-    for (const [name, property] of Helpers.properties(out)) {
+    const formProps = new Map(Object.entries(Schema.properties(form)));
+    for (const [name, property] of Object.entries(Schema.properties(out))) {
       const source = formProps.get(name);
       if (!source || Schema.primaryType(source) !== Schema.primaryType(property)) continue;
       for (const [key, value] of Object.entries(source)) {
@@ -253,13 +276,22 @@ export class FormLinker {
     return out;
   }
 
-  static #secretNames(submissions: readonly Submission[]): Set<string> {
+  static secretNames(forms: readonly Pick<FormDescriptor, 'fields' | 'tokenFields'>[]): Set<string> {
     const names = new Set<string>();
-    for (const { form } of submissions) {
+    for (const form of forms) {
       for (const field of form.fields) if (FormLinker.SECRET_TYPES.has(field.type) && field.name !== '') names.add(field.name);
       for (const name of form.tokenFields) names.add(name);
     }
     return names;
+  }
+
+  static endpointSecrets(endpoint: Pick<Endpoint, 'id' | 'form'>, forms: readonly FormDescriptor[]): Set<string> {
+    const linked = forms.filter((form) => form.endpoints?.includes(endpoint.id) === true);
+    return FormLinker.secretNames(endpoint.form ? [...linked, endpoint.form] : linked);
+  }
+
+  static #secretNames(submissions: readonly Submission[]): Set<string> {
+    return FormLinker.secretNames(submissions.map((submission) => submission.form));
   }
 
   static #find(endpoints: readonly Endpoint[], submission: Submission, matcher: EndpointMatcher): Endpoint | undefined {

@@ -1,12 +1,8 @@
-import type { Exchange, JsonSchema } from '../model/index.js';
-import { Http, Json } from '../shared/index.js';
+import type { Exchange } from '../model/index.js';
+import { Http } from '../shared/index.js';
 
 export class Helpers {
   static readonly HTTP_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
-
-  static compare(a: string, b: string): number {
-    return a < b ? -1 : a > b ? 1 : 0;
-  }
 
   static httpUrl(value: string | undefined): URL | undefined {
     const url = Http.parseUrl(value);
@@ -45,11 +41,5 @@ export class Helpers {
 
   static startMs(exchange: Exchange): number {
     return Date.parse(exchange.startedAt);
-  }
-
-  static properties(schema: JsonSchema | undefined): [string, JsonSchema][] {
-    const props = schema?.properties;
-    if (!Json.isPlainObject(props)) return [];
-    return Object.entries(props).filter((entry): entry is [string, JsonSchema] => Json.isPlainObject(entry[1]));
   }
 }

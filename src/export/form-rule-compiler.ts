@@ -62,7 +62,7 @@ export class FormRuleCompiler {
   static readonly CONSTANT_DEFAULT_TYPES: ReadonlySet<string> = new Set(['submit', 'hidden']);
   static readonly DEFAULT_TYPE = 'text';
   static readonly NOVALIDATE = 'x-html-novalidate';
-  static readonly FIELDS = 'x-appii-fields';
+  static readonly FIELDS = Schema.VARIANT_FIELDS;
 
   readonly #patterns: PatternAudit;
 
@@ -90,17 +90,7 @@ export class FormRuleCompiler {
     const condition: FormCondition = { name };
     const values = FormRuleCompiler.#values(Schema.properties(when)[name]);
     if (values !== undefined) condition.values = values;
-    const own = Json.isPlainObject(then.properties) ? then.properties : {};
-    const listed = then[FormRuleCompiler.FIELDS];
-    const names = Array.isArray(listed) ? listed.filter((item): item is string => typeof item === 'string') : Object.keys(top);
-    const entries: [string, JsonSchema][] = [];
-    for (const field of names) {
-      const restated = Object.hasOwn(own, field) ? own[field] : undefined;
-      if (restated === false) continue;
-      const schema = Json.isPlainObject(restated) ? restated : Object.hasOwn(top, field) ? top[field] : undefined;
-      if (schema) entries.push([field, schema]);
-    }
-    return { when: condition, noValidate: then[FormRuleCompiler.NOVALIDATE] === true, ...this.compile(entries) };
+    return { when: condition, noValidate: then[FormRuleCompiler.NOVALIDATE] === true, ...this.compile(Schema.variantFields(top, then)) };
   }
 
   static #values(schema: JsonSchema | undefined): string[] | undefined {

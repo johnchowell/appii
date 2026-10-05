@@ -270,6 +270,22 @@ export function htmlPatternAccepts(schema: JsonSchema, value: unknown): boolean 
   }
 }
 
+export const VARIANT_FIELDS = 'x-appii-fields';
+
+export function variantFields(top: Readonly<Record<string, JsonSchema>>, then: JsonSchema): [string, JsonSchema][] {
+  const own = isPlainObject(then.properties) ? then.properties : {};
+  const listed = then[VARIANT_FIELDS];
+  const names = Array.isArray(listed) ? listed.filter((item): item is string => typeof item === 'string') : Object.keys(top);
+  const entries: [string, JsonSchema][] = [];
+  for (const field of names) {
+    const restated = Object.hasOwn(own, field) ? own[field] : undefined;
+    if (restated === false) continue;
+    const schema = isPlainObject(restated) ? restated : Object.hasOwn(top, field) ? top[field] : undefined;
+    if (schema) entries.push([field, schema]);
+  }
+  return entries;
+}
+
 export function resolveConditions(schema: JsonSchema | undefined, instance: Record<string, unknown>): JsonSchema | undefined {
   if (!schema) return schema;
   let out: JsonSchema = withoutConditions(schema);
@@ -280,10 +296,25 @@ export function resolveConditions(schema: JsonSchema | undefined, instance: Reco
     if (branch === false) return out;
     const next = asSchema(branch);
     if (!next) break;
-    out = mergeBranch(out, withoutConditions(next));
+    out = Array.isArray(next[VARIANT_FIELDS]) ? variantView(out, next) : mergeBranch(out, withoutConditions(next));
     node = next;
   }
   return out;
+}
+
+function variantView(base: JsonSchema, branch: JsonSchema): JsonSchema {
+  const fields = variantFields(properties(base), branch);
+  const names = new Set(fields.map(([name]) => name));
+  const out: JsonSchema = Object.fromEntries(Object.entries(withoutConditions(base)).filter(([key]) => key !== 'properties' && key !== 'required'));
+  out.properties = Object.fromEntries(fields);
+  const required = [...new Set([...requiredSet(base), ...requiredSet(branch)])].filter((name) => names.has(name));
+  if (required.length > 0) out.required = required;
+  for (const [key, item] of Object.entries(branch)) if (key !== 'properties' && key !== 'required' && key !== VARIANT_FIELDS && !isConditionKey(key) && !Object.hasOwn(out, key)) setOwn(out, key, item);
+  return out;
+}
+
+function isConditionKey(key: string): boolean {
+  return key === 'if' || key === 'then' || key === 'else';
 }
 
 function withoutConditions(schema: JsonSchema): JsonSchema {

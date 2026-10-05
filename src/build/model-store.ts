@@ -1,4 +1,4 @@
-import { AppiiError, Fs, Json, Text } from '../shared/index.js';
+import { AppiiError, Fs, Json, Meta, Text } from '../shared/index.js';
 import type { ApiModel } from '../model/index.js';
 import { ModelValidator } from './model-validator.js';
 
@@ -40,7 +40,7 @@ export class ModelStore {
 
   parse(value: unknown, path: string): ApiModel {
     if (Json.isPlainObject(value) && typeof value.version === 'number' && value.version !== ModelStore.VERSION && Array.isArray(value.endpoints)) {
-      throw new AppiiError('BAD_INPUT', `${path} has unsupported API model version ${value.version}; this appii reads version ${ModelStore.VERSION}`);
+      throw new AppiiError('BAD_INPUT', `${path} has unsupported API model version ${value.version}; this appii reads version ${ModelStore.VERSION}. Run '${Meta.APP_NAME} build' on the capture again to write a current api.json`, { details: { version: value.version, supported: ModelStore.VERSION } });
     }
     const problems = this.#validator.validate(value);
     if (problems.length > 0) {

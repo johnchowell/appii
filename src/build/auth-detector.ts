@@ -2,7 +2,7 @@ import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
 import type { Capture, CookieRole, CsrfToken, Endpoint, Exchange } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, TokenDetector } from '../forms/index.js';
-import { Http, Json } from '../shared/index.js';
+import { Http, Json, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
 import { CsrfSourceResolver } from './csrf-source-resolver.js';
@@ -90,8 +90,8 @@ export class AuthDetector {
       this.#formTokens(state, endpoint);
       if (exchanges.length === 0) for (const name of AuthDetector.predictCookies(endpoint, capture)) state.cookies.add(name);
       endpoint.auth = {
-        cookies: [...state.cookies].sort(Helpers.compare),
-        headers: [...state.headers].sort(Helpers.compare),
+        cookies: [...state.cookies].sort(Text.compare),
+        headers: [...state.headers].sort(Text.compare),
         bearer: state.bearer,
         csrf: [...state.csrf.values()],
         ...(exchanges.some((exchange) => this.isAnonymous(exchange)) ? { anonymous: true } : {}),

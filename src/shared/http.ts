@@ -2,14 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { getDomain } from 'tldts';
 import type { BodyData, Exchange, Header } from '../model/index.js';
+import { CharsetEncoder } from './charset.js';
 
 export interface BodyDataOptions {
   maxBytes?: number;
   contentEncoding?: string | undefined;
+  text?: boolean;
 }
 
-export const SECURE_SCHEMES: ReadonlySet<string> = new Set(['https:', 'wss:']);
-export const LOOPBACK_NAMES: ReadonlySet<string> = new Set(['localhost', 'localhost.']);
+export const ASCII_MAX = 0x7f;
+export const SECURE_SCHEMES: readonly string[] = Object.freeze(['https:', 'wss:']);
+export const LOOPBACK_NAMES: readonly string[] = Object.freeze(['localhost', 'localhost.']);
 export const IDENTITY_ENCODING = 'identity';
 
 export function newId(prefix = ''): string {
@@ -136,13 +139,24 @@ export function toBodyData(bytes: Uint8Array, contentType: string | undefined | 
   const truncated = bytes.length > maxBytes;
   const kept = truncated ? bytes.subarray(0, maxBytes) : bytes;
   const textual = !isContentEncoded(options.contentEncoding) && (isTextMime(mimeType) || !mimeEssence(mimeType));
-  const text = textual ? utf8Text(truncated ? trimPartialUtf8(kept) : kept) : undefined;
+  const legacy = options.text !== true && isLegacyCharset(charsetOf(mimeType)) && !isAsciiBytes(kept);
+  const text = textual && !legacy ? utf8Text(truncated ? trimPartialUtf8(kept) : kept) : undefined;
   const body: BodyData =
     text === undefined
       ? { mimeType, encoding: 'base64', data: Buffer.from(kept).toString('base64'), size: bytes.length }
       : { mimeType, encoding: 'utf8', data: text, size: bytes.length };
   if (truncated) body.truncated = true;
   return body;
+}
+
+export function isLegacyCharset(charset: string | undefined): boolean {
+  const name = charset === undefined ? undefined : CharsetEncoder.canonical(charset);
+  return name !== undefined && name !== CharsetEncoder.UTF8;
+}
+
+export function isAsciiBytes(bytes: Uint8Array): boolean {
+  for (const byte of bytes) if (byte > ASCII_MAX) return false;
+  return true;
 }
 
 export function bodyBytes(body: BodyData | undefined): Uint8Array {
@@ -197,7 +211,7 @@ export function isIpAddress(host: string): boolean {
 
 export function isLoopbackHost(host: string): boolean {
   const h = bareHost(host.toLowerCase());
-  if (LOOPBACK_NAMES.has(h) || h.endsWith('.localhost') || h.endsWith('.localhost.')) return true;
+  if (LOOPBACK_NAMES.includes(h) || h.endsWith('.localhost') || h.endsWith('.localhost.')) return true;
   const family = isIP(h);
   if (family === 4) return h.split('.')[0] === '127';
   if (family === 6) return parseUrl(`http://[${h}]/`)?.hostname === '[::1]';
@@ -205,7 +219,7 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 export function isPotentiallyTrustworthy(url: URL): boolean {
-  if (SECURE_SCHEMES.has(url.protocol)) return true;
+  if (SECURE_SCHEMES.includes(url.protocol)) return true;
   if (url.protocol !== 'http:' && url.protocol !== 'ws:') return false;
   return isLoopbackHost(url.hostname);
 }
@@ -221,7 +235,7 @@ export function isSameSite(a: string, b: string): boolean {
   return ua.protocol === ub.protocol && registrableDomain(ua.hostname) === registrableDomain(ub.hostname);
 }
 
-const STATUS_TEXT: Record<number, string> = {
+const STATUS_TEXT: Readonly<Record<number, string>> = Object.freeze({
   100: 'Continue',
   101: 'Switching Protocols',
   200: 'OK',
@@ -273,7 +287,7 @@ const STATUS_TEXT: Record<number, string> = {
   503: 'Service Unavailable',
   504: 'Gateway Timeout',
   505: 'HTTP Version Not Supported',
-};
+});
 
 export function reasonPhrase(status: number): string {
   const known = STATUS_TEXT[status];
@@ -315,7 +329,7 @@ export function isWorkerResponse(exchange: Pick<Exchange, 'servedBy'>): boolean 
   return exchange.servedBy === 'service-worker';
 }
 
-export const SAFE_METHODS: readonly string[] = ['GET', 'HEAD', 'OPTIONS', 'TRACE'];
+export const SAFE_METHODS: readonly string[] = Object.freeze(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 export function isSafeMethod(method: string): boolean {
   return SAFE_METHODS.includes(method.toUpperCase());

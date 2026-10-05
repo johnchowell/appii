@@ -1,6 +1,7 @@
 import type { ApiModel, CsrfToken, Endpoint } from '../model/index.js';
 import { AppiiError } from './errors.js';
 import { decodeComponent, parseUrl } from './http.js';
+import { closest } from './text.js';
 
 export class EndpointIndex {
   static readonly TEMPLATE_SEGMENT: RegExp = /^(?:\{[^{}/]+\}|[^{}])+$/;
@@ -103,10 +104,10 @@ export class EndpointIndex {
     const found = this.get(ref);
     if (found) return found;
     const lower = String(ref).toLowerCase();
-    const suggestions = this.endpoints
-      .filter((e) => e.name.toLowerCase().includes(lower) || e.path.toLowerCase().includes(lower))
-      .slice(0, 5)
-      .map((e) => `${this.numberOf(e)} ${e.name}`);
+    const guess = closest(String(ref).trim(), this.endpoints.map((e) => e.name));
+    const similar = this.endpoints.filter((e) => e.name === guess);
+    const matching = this.endpoints.filter((e) => e.name !== guess && (e.name.toLowerCase().includes(lower) || e.path.toLowerCase().includes(lower)));
+    const suggestions = [...similar, ...matching].slice(0, 5).map((e) => `${this.numberOf(e)} ${e.name}`);
     throw new AppiiError('NOT_FOUND', `No endpoint matches '${ref}' (use a list number, id, or name)`, {
       details: { suggestions, count: this.endpoints.length },
     });

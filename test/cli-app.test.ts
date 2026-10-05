@@ -28,7 +28,7 @@ import {
 import type { CommandSpec, OptionValues, RecordingSession } from '../src/cli/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, Capture, Exchange } from '../src/model/index.js';
-import { Ansi, AppiiError, Fs, Meta } from '../src/shared/index.js';
+import { Ansi, AppiiError, Fs, Meta, Text } from '../src/shared/index.js';
 import { ModelBuilder, ModelStore } from '../src/build/index.js';
 import { CaptureSummaryPresenter } from '../src/present/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
@@ -813,14 +813,14 @@ describe('Cli services', () => {
 
   test('Helpers through the commands: suggestions use an edit distance with transpositions', async () => {
     const { Helpers } = await import('../src/cli/helpers.js');
-    assert.equal(Helpers.distance('lsit', 'list'), 1);
-    assert.equal(Helpers.distance('', 'abc'), 3);
-    assert.equal(Helpers.distance('kitten', 'sitting'), 3);
-    assert.equal(Helpers.closest('exp', ['export', 'build']), 'export');
-    assert.equal(Helpers.closest('LIST', ['list']), 'list');
-    assert.equal(Helpers.closest('xyz', ['list', 'build']), undefined);
-    assert.equal(Helpers.closest('', ['list']), undefined);
-    assert.equal(Helpers.closest('b', ['build', 'boom']), undefined);
+    assert.equal(Text.editDistance('lsit', 'list'), 1);
+    assert.equal(Text.editDistance('', 'abc'), 3);
+    assert.equal(Text.editDistance('kitten', 'sitting'), 3);
+    assert.equal(Text.closest('exp', ['export', 'build']), 'export');
+    assert.equal(Text.closest('LIST', ['list']), 'list');
+    assert.equal(Text.closest('xyz', ['list', 'build']), undefined);
+    assert.equal(Text.closest('', ['list']), undefined);
+    assert.equal(Text.closest('b', ['build', 'boom']), undefined);
     assert.deepEqual(Helpers.splitList(['a, b', ',c,,']), ['a', 'b', 'c']);
     assert.equal(await Helpers.isDirectory(dir), true);
     assert.equal(await Helpers.isDirectory(join(dir, 'nope')), false);

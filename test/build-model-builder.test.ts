@@ -17,6 +17,7 @@ import {
 import { CaptureSession, CookieParser, HarConverter } from '../src/capture/index.js';
 import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
 import type { ApiModel, Capture, Endpoint, JsonSchema } from '../src/model/index.js';
+import { MODEL_VERSION } from '../src/model/index.js';
 import { AppiiError, EndpointIndex, Samples, Schema } from '../src/shared/index.js';
 import { FIXTURE_USER, startFixtureSite } from './fixtures/site.js';
 import type { FixtureSite } from './fixtures/site.js';
@@ -58,7 +59,7 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
   const model = ModelBuilder.create({ now: NOW }).build(capture);
 
   test('model header, origins and source', () => {
-    assert.equal(model.version, 1);
+    assert.equal(model.version, MODEL_VERSION);
     assert.equal(model.name, 'shop.example.com');
     assert.equal(model.generatedAt, NOW.toISOString());
     assert.equal(model.primaryOrigin, ORIGIN);
@@ -193,7 +194,7 @@ describe('ModelBuilder options', () => {
     assert.deepEqual(
       { ...model, generatedAt: '' },
       {
-        version: 1,
+        version: MODEL_VERSION,
         name: 'api',
         generatedAt: '',
         source: { exchanges: 0, capturedFrom: capture.startedAt, capturedTo: capture.endedAt },

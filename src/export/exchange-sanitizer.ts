@@ -1,45 +1,42 @@
-import { parse } from 'parse5';
-import type { BodyData, CapturedRequest, Exchange, Header } from '../model/index.js';
+import type { BodyData, CapturedRequest, Exchange, FormEnctype, Header } from '../model/index.js';
 import { BodyParser, MultipartParser, Redactor } from '../build/index.js';
-import type { MultipartPart } from '../build/index.js';
-import { TokenDetector } from '../forms/index.js';
-import { Http, Json, Samples, Text } from '../shared/index.js';
+import type { MultipartPart, PlainTextMode } from '../build/index.js';
+import { HtmlTagScanner, TokenDetector } from '../forms/index.js';
+import type { ScannedTag } from '../forms/index.js';
+import { CharsetEncoder, Http, Json, Samples, Text } from '../shared/index.js';
 
 export interface ExchangeSanitizerDeps {
   redactor?: Redactor;
   body?: BodyParser;
   tokens?: TokenDetector;
   multipart?: MultipartParser;
+  scanner?: HtmlTagScanner;
 }
 
 export interface ExchangeSanitizerOptions {
   redact?: boolean;
 }
 
-interface HtmlLocation {
-  startOffset: number;
-  endOffset: number;
+export interface SanitizeContext {
+  secrets?: ReadonlySet<string>;
+  formEnctype?: FormEnctype;
+  formCharset?: string;
 }
 
-interface HtmlNode {
-  nodeName: string;
-  tagName?: string;
-  attrs?: { name: string; value: string }[];
-  childNodes?: HtmlNode[];
-  content?: HtmlNode;
-  sourceCodeLocation?: (HtmlLocation & { startTag?: HtmlLocation & { attrs?: Record<string, HtmlLocation> }; endTag?: HtmlLocation }) | null;
-}
-
-interface Replacement {
-  start: number;
-  end: number;
-  text: string;
+export interface BodyScope {
+  secrets?: ReadonlySet<string>;
+  textMode?: PlainTextMode;
+  formCharset?: string;
 }
 
 export class ExchangeSanitizer {
   static readonly URL_HEADERS: ReadonlySet<string> = new Set(['location', 'referer', 'content-location']);
-  static readonly CODING_HEADERS: ReadonlySet<string> = new Set(['content-encoding', 'content-length']);
+  static readonly CONTENT_ENCODING = 'content-encoding';
+  static readonly CONTENT_LENGTH = 'content-length';
+  static readonly TEXT_FORM: FormEnctype = 'text/plain';
+  static readonly NAVIGATION = 'document';
   static readonly HTML_TARGETS: Readonly<Record<string, string>> = Object.freeze({ input: 'value', meta: 'content' });
+  static readonly HTML_TAGS: readonly string[] = Object.freeze(Object.keys(ExchangeSanitizer.HTML_TARGETS));
   static readonly SECRET_INPUT_TYPES: ReadonlySet<string> = new Set(['password']);
   static readonly LINE_BREAK: RegExp = /\r\n|\r|\n/;
   static readonly LAST_LINE_BREAK: RegExp = /(?:\r\n|\r|\n)(?![\s\S]*[\r\n])/;
@@ -49,9 +46,16 @@ export class ExchangeSanitizer {
   readonly #body: BodyParser;
   readonly #tokens: TokenDetector;
   readonly #multipart: MultipartParser;
+  readonly #scanner: HtmlTagScanner;
 
   static create(options: ExchangeSanitizerOptions = {}): ExchangeSanitizer {
-    return new ExchangeSanitizer({ redactor: Redactor.create({ redact: options.redact ?? true }), body: BodyParser.create(), tokens: new TokenDetector(), multipart: new MultipartParser() });
+    return new ExchangeSanitizer({
+      redactor: Redactor.create({ redact: options.redact ?? true }),
+      body: BodyParser.create(),
+      tokens: new TokenDetector(),
+      multipart: new MultipartParser(),
+      scanner: new HtmlTagScanner(),
+    });
   }
 
   constructor(deps: ExchangeSanitizerDeps = {}) {
@@ -59,6 +63,7 @@ export class ExchangeSanitizer {
     this.#body = deps.body ?? new BodyParser();
     this.#tokens = deps.tokens ?? new TokenDetector();
     this.#multipart = deps.multipart ?? new MultipartParser();
+    this.#scanner = deps.scanner ?? new HtmlTagScanner();
   }
 
   static withheld(body: BodyData): BodyData {
@@ -79,77 +84,78 @@ export class ExchangeSanitizer {
     return { ...out, size: body.truncated ? body.size : bytes.byteLength, ...(body.truncated ? { truncated: true } : {}) };
   }
 
-  sanitize(exchange: Exchange): Exchange {
+  sanitize(exchange: Exchange, context: SanitizeContext = {}): Exchange {
     const out = Json.clone(exchange);
     if (!this.#redactor.enabled) return out;
-    out.request.url = this.#redactor.url(out.request.url);
+    const secrets = context.secrets ?? Redactor.NO_NAMES;
+    out.request.url = this.#redactor.url(out.request.url, secrets);
     if (out.pageUrl !== undefined) out.pageUrl = this.#redactor.url(out.pageUrl);
     out.request.headers = this.#headers(out.request.headers);
-    if (out.request.body) this.#request(out.request, out.request.body);
+    if (out.request.body) {
+      const textMode = Redactor.plainTextMode(Http.getHeader(out.request.headers, 'content-type') ?? out.request.body.mimeType);
+      const form = context.formEnctype === ExchangeSanitizer.TEXT_FORM || (out.resourceType === ExchangeSanitizer.NAVIGATION && textMode === 'pairs');
+      this.#request(out.request, out.request.body, { secrets, textMode: form ? 'form' : textMode, ...(context.formCharset === undefined ? {} : { formCharset: context.formCharset }) });
+    }
     if (out.response) {
       out.response.headers = this.#headers(out.response.headers);
-      if (out.response.body) out.response.body = this.body(out.response.body, Http.getHeader(out.response.headers, 'content-type'));
+      const body = out.response.body;
+      if (body) {
+        const redacted = this.body(body, Http.getHeader(out.response.headers, 'content-type'));
+        if (redacted !== body && !Http.isContentEncoded(Http.getHeader(out.response.headers, ExchangeSanitizer.CONTENT_ENCODING))) {
+          out.response.headers = ExchangeSanitizer.#lengthHeaders(out.response.headers, redacted);
+        }
+        out.response.body = redacted;
+      }
     }
     return out;
   }
 
-  body(body: BodyData, contentType: string | undefined): BodyData {
+  body(body: BodyData, contentType: string | undefined, scope: BodyScope = {}): BodyData {
     if (body.data === '') return body;
+    const secrets = scope.secrets ?? Redactor.NO_NAMES;
+    const textMode = scope.textMode ?? Redactor.plainTextMode(contentType ?? body.mimeType);
     const parsed = this.#body.parse(body, contentType);
     switch (parsed.kind) {
       case 'form':
-        return this.#urlencoded(body);
+        return this.#urlencoded(body, secrets);
       case 'json':
       case 'graphql':
         return this.#json(body);
       case 'multipart':
-        return this.#multipartBody(body, contentType);
+        return this.#multipartBody(body, contentType, secrets, scope.formCharset);
       case 'html':
         return this.#htmlBody(body);
       case 'text':
-        return this.#plain(body);
+        return this.#plain(body, secrets, textMode);
       default:
         return body;
     }
   }
 
-  html(source: string): string {
-    const doc = parse(source, { sourceCodeLocationInfo: true, scriptingEnabled: false }) as unknown as HtmlNode;
-    const replacements: Replacement[] = [];
-    for (const element of ExchangeSanitizer.#elements(doc)) {
-      const tag = element.tagName ?? '';
-      const target = ExchangeSanitizer.HTML_TARGETS[tag];
-      const location = target === undefined ? undefined : element.sourceCodeLocation?.startTag?.attrs?.[target];
-      if (target === undefined || location === undefined || !this.#secretElement(tag, element, target)) continue;
-      replacements.push({ start: location.startOffset, end: location.endOffset, text: `${target}="${Text.escapeHtml(Samples.REDACTED)}"` });
+  html(source: string, truncated = false): string {
+    const scan = this.#scanner.scan(source, ExchangeSanitizer.HTML_TAGS);
+    const kept = truncated ? scan.complete : source.length;
+    const chunks: string[] = [];
+    let position = 0;
+    for (const tag of scan.tags) {
+      const target = ExchangeSanitizer.HTML_TARGETS[tag.name];
+      const location = target === undefined ? undefined : tag.attrs.find((attr) => attr.name === target);
+      if (target === undefined || location === undefined || location.end > kept || !this.#secretElement(tag, target)) continue;
+      chunks.push(source.slice(position, location.start), `${target}="${Text.escapeHtml(Samples.REDACTED)}"`);
+      position = location.end;
     }
-    let out = source;
-    for (const replacement of replacements.sort((a, b) => b.start - a.start)) out = out.slice(0, replacement.start) + replacement.text + out.slice(replacement.end);
-    return out;
+    chunks.push(source.slice(position, kept));
+    return chunks.join('');
   }
 
-  static completeHtml(source: string): string {
-    const doc = parse(source, { sourceCodeLocationInfo: true, scriptingEnabled: false }) as unknown as HtmlNode;
-    let end = 0;
-    const visit = (node: HtmlNode): void => {
-      const location = node.sourceCodeLocation;
-      if (location) {
-        if (node.tagName === undefined) end = Math.max(end, location.endOffset);
-        if (location.startTag) end = Math.max(end, location.startTag.endOffset);
-        if (location.endTag) end = Math.max(end, location.endTag.endOffset);
-      }
-      for (const child of node.childNodes ?? []) visit(child);
-      if (node.content) visit(node.content);
-    };
-    visit(doc);
-    return source.slice(0, end);
-  }
-
-  #request(request: CapturedRequest, body: BodyData): void {
+  #request(request: CapturedRequest, body: BodyData, scope: BodyScope): void {
     const contentType = Http.getHeader(request.headers, 'content-type');
-    const coding = Http.getHeader(request.headers, 'content-encoding');
+    const coding = Http.getHeader(request.headers, ExchangeSanitizer.CONTENT_ENCODING);
     if (!Http.isContentEncoded(coding)) {
-      request.body = this.body(body, contentType);
+      const redacted = this.body(body, contentType, scope);
+      if (redacted === body) return;
+      request.body = redacted;
+      request.headers = ExchangeSanitizer.#lengthHeaders(request.headers, redacted);
       return;
     }
     const decoded = BodyParser.decodeContent(body, coding ?? '');
@@ -157,10 +163,18 @@ export class ExchangeSanitizer {
       request.body = ExchangeSanitizer.withheld(body);
       return;
     }
-    const redacted = this.body(decoded, contentType);
+    const redacted = this.body(decoded, contentType, scope);
     if (redacted === decoded) return;
     request.body = redacted;
-    request.headers = request.headers.filter((header) => !ExchangeSanitizer.CODING_HEADERS.has(header.name.toLowerCase()));
+    const decodedHeaders = request.headers.filter((header) => header.name.toLowerCase() !== ExchangeSanitizer.CONTENT_ENCODING);
+    request.headers = ExchangeSanitizer.#lengthHeaders(decodedHeaders, redacted);
+  }
+
+  static #lengthHeaders(headers: Header[], body: BodyData): Header[] {
+    return headers.flatMap((header) => {
+      if (header.name.toLowerCase() !== ExchangeSanitizer.CONTENT_LENGTH) return [header];
+      return body.truncated ? [] : [{ name: header.name, value: String(body.size) }];
+    });
   }
 
   #headers(headers: Header[]): Header[] {
@@ -170,19 +184,19 @@ export class ExchangeSanitizer {
     });
   }
 
-  #urlencoded(body: BodyData): BodyData {
+  #urlencoded(body: BodyData, secrets: ReadonlySet<string>): BodyData {
     const text = Http.bodyText(body);
     const complete = body.truncated ? text.slice(0, Math.max(0, text.lastIndexOf('&'))) : text;
-    const out = complete === '' ? '' : complete.split('&').map((part) => this.#pair(part)).join('&');
+    const out = complete === '' ? '' : complete.split('&').map((part) => this.#pair(part, secrets)).join('&');
     return out === text ? body : ExchangeSanitizer.textBody(body, out);
   }
 
-  #pair(part: string): string {
+  #pair(part: string, secrets: ReadonlySet<string>): string {
     const eq = part.indexOf('=');
     const rawName = eq < 0 ? part : part.slice(0, eq);
     const name = Http.decodeComponent(rawName.replace(/\+/g, ' '));
     const value = eq < 0 ? '' : Http.decodeComponent(part.slice(eq + 1).replace(/\+/g, ' '));
-    if (this.#secretField(name) || this.#redactor.isSecretValue(value)) return `${rawName}=${encodeURIComponent(Samples.REDACTED)}`;
+    if (secrets.has(name) || this.#secretField(name) || this.#redactor.isSecretValue(value)) return `${rawName}=${encodeURIComponent(Samples.REDACTED)}`;
     const inner = String(this.#redactor.deep(value));
     return inner === value ? part : `${rawName}=${encodeURIComponent(inner)}`;
   }
@@ -200,77 +214,66 @@ export class ExchangeSanitizer {
       .map((line, i) => {
         if (i % 2 === 1 || line.trim() === '') return line;
         const parsed = Json.safeParse(line);
-        return parsed.ok ? JSON.stringify(this.#redactor.deep(parsed.value)) : this.#redactor.plainText(line);
+        return parsed.ok ? JSON.stringify(this.#redactor.deep(parsed.value)) : this.#redactor.plainText(line, Redactor.NO_NAMES, 'values');
       })
       .join('');
     return out === text ? body : ExchangeSanitizer.textBody(body, out);
   }
 
-  #plain(body: BodyData): BodyData {
+  #plain(body: BodyData, secrets: ReadonlySet<string>, textMode: PlainTextMode): BodyData {
     const text = ExchangeSanitizer.byteText(body);
     const last = body.truncated ? ExchangeSanitizer.LAST_LINE_BREAK.exec(text) : null;
     const complete = body.truncated ? (last ? text.slice(0, last.index + last[0].length) : '') : text;
-    const out = this.#redactor.plainText(complete);
+    const out = this.#redactor.plainText(complete, secrets, textMode);
     return out === text ? body : ExchangeSanitizer.bytesBody(body, new Uint8Array(Buffer.from(out, 'latin1')));
   }
 
   #htmlBody(body: BodyData): BodyData {
     const text = ExchangeSanitizer.byteText(body);
-    const out = this.html(body.truncated ? ExchangeSanitizer.completeHtml(text) : text);
+    const out = this.html(text, body.truncated === true);
     return out === text ? body : ExchangeSanitizer.bytesBody(body, new Uint8Array(Buffer.from(out, 'latin1')));
   }
 
-  #multipartBody(body: BodyData, contentType: string | undefined): BodyData {
+  #multipartBody(body: BodyData, contentType: string | undefined, secrets: ReadonlySet<string>, formCharset: string | undefined): BodyData {
     const bytes = Http.bodyBytes(body);
     const boundary = MultipartParser.boundary(contentType) ?? MultipartParser.boundary(body.mimeType) ?? MultipartParser.sniffBoundary(bytes);
     if (!boundary) return ExchangeSanitizer.withheld(body);
-    const parts = this.#multipart.parse(bytes, boundary);
+    const probe = this.#multipart.parse(bytes, boundary);
+    const charset = BodyParser.multipartCharset(probe, formCharset);
+    const encoder = CharsetEncoder.for(charset);
+    const parts = Http.isLegacyCharset(charset) ? this.#multipart.parse(bytes, boundary, charset) : probe;
     if (!body.truncated && (parts.length === 0 || parts.some((part) => !part.complete))) return ExchangeSanitizer.withheld(body);
     const kept = parts.filter((part) => part.complete || part.filename !== undefined);
-    const values = kept.map((part) => this.#partData(part));
+    const values = kept.map((part) => this.#partData(part, secrets, charset, encoder));
     if (!body.truncated && values.every((value, i) => value === kept[i]?.data)) return body;
-    const encoder = new TextEncoder();
     const chunks: Uint8Array[] = [];
     kept.forEach((part, i) => {
       const head = [`--${boundary}`, ...part.headers.map((header) => `${header.name}: ${header.value}`), '', ''].join(ExchangeSanitizer.CRLF);
-      chunks.push(new Uint8Array(Buffer.from(head, 'latin1')), values[i] ?? new Uint8Array());
+      chunks.push(encoder.encode(head), values[i] ?? new Uint8Array());
       if (part.complete) chunks.push(encoder.encode(ExchangeSanitizer.CRLF));
     });
     if (!body.truncated) chunks.push(encoder.encode(`--${boundary}--${ExchangeSanitizer.CRLF}`));
     return ExchangeSanitizer.bytesBody(body, new Uint8Array(Buffer.concat(chunks)));
   }
 
-  #partData(part: MultipartPart): Uint8Array {
+  #partData(part: MultipartPart, secrets: ReadonlySet<string>, charset: string, encoder: CharsetEncoder): Uint8Array {
     if (part.filename !== undefined || part.name === undefined) return part.data;
-    const text = new TextDecoder().decode(part.data);
-    const redacted = this.#secretField(part.name) ? Samples.REDACTED : String(this.#redactor.field(part.name, text));
-    return redacted === text ? part.data : new TextEncoder().encode(redacted);
+    const text = CharsetEncoder.decode(part.data, charset);
+    const redacted = secrets.has(part.name) || this.#secretField(part.name) ? Samples.REDACTED : String(this.#redactor.field(part.name, text));
+    return redacted === text ? part.data : encoder.encode(redacted);
   }
 
-  #secretElement(tag: string, element: HtmlNode, target: string): boolean {
-    const attrs = new Map((element.attrs ?? []).map((attr) => [attr.name, attr.value]));
+  #secretElement(tag: ScannedTag, target: string): boolean {
+    const attrs = new Map(tag.attrs.map((attr) => [attr.name, attr.value]));
     const name = attrs.get('name') ?? '';
     const value = attrs.get(target) ?? '';
     if (this.#redactor.isSecretValue(value)) return true;
-    if (tag === 'meta') return name !== '' && (this.#tokens.isTokenMeta(name) || this.#secretField(name));
+    if (tag.name === 'meta') return name !== '' && (this.#tokens.isTokenMeta(name) || this.#secretField(name));
     if (ExchangeSanitizer.SECRET_INPUT_TYPES.has((attrs.get('type') ?? '').toLowerCase())) return value !== '';
     return name !== '' && (this.#tokens.isTokenField(name) || this.#secretField(name));
   }
 
   #secretField(name: string): boolean {
     return this.#redactor.isSecretField(name);
-  }
-
-  static #elements(root: HtmlNode): HtmlNode[] {
-    const out: HtmlNode[] = [];
-    const stack: HtmlNode[] = [root];
-    while (stack.length > 0) {
-      const node = stack.pop();
-      if (!node) continue;
-      if (node.tagName !== undefined) out.push(node);
-      if (node.content) stack.push(node.content);
-      for (const child of node.childNodes ?? []) stack.push(child);
-    }
-    return out;
   }
 }

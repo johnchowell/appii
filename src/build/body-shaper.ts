@@ -48,7 +48,7 @@ export class BodyShaper {
       mimeType,
       kind,
       ...(schema ? { schema } : {}),
-      examples: this.#examples(kind, values, compact),
+      examples: this.#examples(kind, values, compact, mimeType),
     };
   }
 
@@ -94,12 +94,13 @@ export class BodyShaper {
     return schema;
   }
 
-  #examples(kind: BodyKind, values: readonly unknown[], compact: boolean): unknown[] {
+  #examples(kind: BodyKind, values: readonly unknown[], compact: boolean, mimeType: string): unknown[] {
     if (!BodyShaper.EXAMPLE_KINDS.has(kind) || this.#maxExamples <= 0) return [];
     const out: unknown[] = [];
     const seen = new Set<string>();
+    const mode = Redactor.plainTextMode(mimeType);
     for (const value of values) {
-      let example = kind === 'text' && typeof value === 'string' ? this.#redactor.plainText(value) : this.#redactor.deep(value);
+      let example = kind === 'text' && typeof value === 'string' ? this.#redactor.plainText(value, new Set(), mode) : this.#redactor.deep(value);
       if (kind === 'text' && typeof example === 'string') example = Text.truncate(example, BodyShaper.TEXT_EXAMPLE_LENGTH);
       else if (compact) example = BodyShaper.#compact(example);
       const key = Json.stableStringify(example, 0);

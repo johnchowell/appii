@@ -2,12 +2,16 @@ import type { BrowserContext, Download, Page, Request, Response, WebSocket } fro
 import { AppiiError, Http } from '../shared/index.js';
 import type { BodyData, CapturedRequest, CapturedResponse, Exchange, Header, ResourceType, WebSocketCapture, WebSocketMessage } from '../model/index.js';
 import { BodyBudget } from './body-budget.js';
+import type { BodyBudgetOptions } from './body-budget.js';
 import { Helpers } from './helpers.js';
 import { NetworkIdleMonitor } from './network-idle-monitor.js';
 import { PageNetworkTap } from './page-network-tap.js';
-import type { PageNetworkTapOptions, TapRecord, TapTarget } from './page-network-tap.js';
+import type { PageNetworkTapOptions, TapBody, TapQuery, TapRecord, TapTarget } from './page-network-tap.js';
 import { ResourceTypeMapper } from './resource-type-mapper.js';
+import { PageTargetWatcher } from './page-target-watcher.js';
 import { ServiceWorkerRecorder } from './service-worker-recorder.js';
+import type { ServiceWorkerRecorderOptions } from './service-worker-recorder.js';
+import type { TargetChannel } from './target-channel.js';
 
 export interface TrafficRecorderOptions {
   captureBodies?: boolean;
@@ -16,7 +20,19 @@ export interface TrafficRecorderOptions {
   maxExchanges?: number;
   readTimeoutMs?: number;
   serviceWorkers?: boolean;
-  tap?: (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
+}
+
+export type WorkerSetup = (channel: TargetChannel) => Promise<unknown>;
+
+export type TapOpener = (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
+
+export type TargetWatcherStarter = (context: BrowserContext, options: PageNetworkTapOptions) => Promise<PageTargetWatcher | undefined>;
+
+export interface TrafficRecorderDeps {
+  budget?: (options: BodyBudgetOptions) => BodyBudget;
+  workers?: (options: ServiceWorkerRecorderOptions) => ServiceWorkerRecorder;
+  tap?: TapOpener;
+  watcher?: TargetWatcherStarter;
 }
 
 interface ResponseReads {
@@ -84,29 +100,32 @@ export class TrafficRecorder {
   readonly #budget: BodyBudget;
   readonly #tapOptions: PageNetworkTapOptions;
   readonly #workers: ServiceWorkerRecorder;
-  readonly #openTap: (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
+  readonly #openTap: TapOpener;
+  readonly #startWatcher: TargetWatcherStarter;
   readonly #pending = new Map<Request, PendingRequest>();
   readonly #building = new Set<PendingRequest>();
   readonly #ids = new WeakMap<Request, string>();
   readonly #builds = new Set<Promise<void>>();
   readonly #loading = new Set<Promise<void>>();
   readonly #listeners = new Set<(e: Exchange) => void>();
+  readonly #workerSetups = new Set<WorkerSetup>();
   readonly #pages = new Map<Page, TrackedPage>();
   readonly #downloads = new Map<string, Download[]>();
   readonly #downloadWaiters = new Map<string, ((download: Download) => void)[]>();
   #context: BrowserContext | undefined;
+  #watcher: Promise<PageTargetWatcher | undefined> = Promise.resolve(undefined);
   #generation = 0;
 
-  constructor(options: TrafficRecorderOptions = {}) {
+  constructor(options: TrafficRecorderOptions = {}, deps: TrafficRecorderDeps = {}) {
     this.#captureBodies = options.captureBodies ?? true;
     this.#maxBodyBytes = TrafficRecorder.#positive(options.maxBodyBytes, TrafficRecorder.DEFAULT_MAX_BODY_BYTES, 'maxBodyBytes', true);
     const maxTotalBodyBytes = TrafficRecorder.#positive(options.maxTotalBodyBytes, TrafficRecorder.DEFAULT_MAX_TOTAL_BODY_BYTES, 'maxTotalBodyBytes', true);
     this.#maxExchanges = TrafficRecorder.#positive(options.maxExchanges, TrafficRecorder.DEFAULT_MAX_EXCHANGES, 'maxExchanges', false);
     this.#readTimeoutMs = TrafficRecorder.#positive(options.readTimeoutMs, TrafficRecorder.READ_TIMEOUT_MS, 'readTimeoutMs', false);
-    this.#budget = new BodyBudget({ maxBodyBytes: this.#maxBodyBytes, maxTotalBodyBytes });
+    this.#budget = (deps.budget ?? TrafficRecorder.budget)({ maxBodyBytes: this.#maxBodyBytes, maxTotalBodyBytes });
     const bufferBytes = Math.max(maxTotalBodyBytes, this.#maxBodyBytes, 1);
     const resourceBufferBytes = Math.max(this.#maxBodyBytes, TrafficRecorder.MIN_RESOURCE_BUFFER_BYTES);
-    this.#workers = new ServiceWorkerRecorder({
+    this.#workers = (deps.workers ?? TrafficRecorder.workers)({
       budget: this.#budget,
       captureBodies: this.#captureBodies,
       readTimeoutMs: this.#readTimeoutMs,
@@ -119,15 +138,30 @@ export class TrafficRecorder {
     this.#tapOptions = {
       bufferBytes,
       resourceBufferBytes,
-      ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#workers.attach(channel) }),
+      bodies: this.#captureBodies,
+      ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#onWorker(channel) }),
     };
-    this.#openTap = options.tap ?? ((context, page, tapOptions) => PageNetworkTap.open(context, page, tapOptions));
+    this.#openTap = deps.tap ?? PageNetworkTap.open;
+    this.#startWatcher = deps.watcher ?? PageTargetWatcher.start;
+  }
+
+  static create(options: TrafficRecorderOptions = {}): TrafficRecorder {
+    return new TrafficRecorder(options, { budget: TrafficRecorder.budget, workers: TrafficRecorder.workers, tap: PageNetworkTap.open, watcher: PageTargetWatcher.start });
+  }
+
+  static budget(options: BodyBudgetOptions): BodyBudget {
+    return new BodyBudget(options);
+  }
+
+  static workers(options: ServiceWorkerRecorderOptions): ServiceWorkerRecorder {
+    return ServiceWorkerRecorder.create(options);
   }
 
   attach(context: BrowserContext): void {
     if (this.#context === context) return;
     if (this.#context) throw new AppiiError('CAPTURE', 'TrafficRecorder is already attached to another browser context; call detach() first');
     this.#context = context;
+    this.#watcher = this.#startWatcher(context, this.#tapOptions).catch(() => undefined);
     context.on('request', this.#onRequest);
     context.on('response', this.#onResponse);
     context.on('requestfinished', this.#onFinished);
@@ -159,7 +193,8 @@ export class TrafficRecorder {
     const taps = [...this.#pages.values()].map((tracked) => tracked.tap);
     this.#pages.clear();
     this.#downloads.clear();
-    this.#closeTaps(taps);
+    this.#closeTaps(taps, this.#watcher);
+    this.#watcher = Promise.resolve(undefined);
   }
 
   prepare(page: Page): Promise<boolean> {
@@ -171,6 +206,18 @@ export class TrafficRecorder {
     const taps = await Promise.all([...this.#pages.values()].map((tracked) => tracked.tap));
     const targets = await Promise.all(taps.map((tap) => (tap ? tap.ready() : Promise.resolve([]))));
     return targets.flat();
+  }
+
+  onServiceWorker(setup: WorkerSetup): () => void {
+    this.#workerSetups.add(setup);
+    return () => {
+      this.#workerSetups.delete(setup);
+    };
+  }
+
+  async #onWorker(channel: TargetChannel): Promise<void> {
+    await Promise.allSettled([...this.#workerSetups].map((setup) => setup(channel)));
+    await this.#workers.attach(channel);
   }
 
   onExchange(listener: (e: Exchange) => void): () => void {
@@ -256,7 +303,7 @@ export class TrafficRecorder {
     const tracked: TrackedPage = {
       onWebSocket: (ws: WebSocket): void => this.#onWebSocket(page, ws),
       onDownload: (download: Download): void => this.#onDownload(download),
-      tap: this.#openTap(context, page, this.#tapOptions).catch(() => undefined),
+      tap: this.#tapFor(context, page).catch(() => undefined),
     };
     this.#pages.set(page, tracked);
     page.on('websocket', tracked.onWebSocket);
@@ -270,8 +317,17 @@ export class TrafficRecorder {
     });
   };
 
-  #closeTaps(taps: Promise<PageNetworkTap | undefined>[]): void {
-    void Promise.allSettled([...this.#builds]).then(() => Promise.allSettled(taps.map((tap) => tap.then((opened) => opened?.close()))));
+  async #tapFor(context: BrowserContext, page: Page): Promise<PageNetworkTap | undefined> {
+    const watcher = await this.#watcher;
+    const targetId = watcher ? await PageTargetWatcher.targetId(context, page) : undefined;
+    const early = watcher && targetId !== undefined ? await watcher.take(targetId) : undefined;
+    return early ?? this.#openTap(context, page, this.#tapOptions);
+  }
+
+  #closeTaps(taps: Promise<PageNetworkTap | undefined>[], watcher?: Promise<PageTargetWatcher | undefined>): void {
+    void Promise.allSettled([...this.#builds])
+      .then(() => Promise.allSettled(taps.map((tap) => tap.then((opened) => opened?.close()))))
+      .then(() => watcher?.then((opened) => opened?.close()));
   }
 
   #complete(request: Request, outcome: Outcome): void {
@@ -373,7 +429,7 @@ export class TrafficRecorder {
     this.#push(exchange);
   }
 
-  async #passThrough(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number, pageBody: Buffer | undefined): Promise<boolean> {
+  async #passThrough(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number, pageBody: TapBody | undefined): Promise<boolean> {
     const startMs = TrafficRecorder.#startTime(request) || entry.wallStart;
     const worker = this.#workers.claim(entry.method, entry.url, startMs, Math.max(endedAt, startMs));
     if (!worker) return false;
@@ -382,8 +438,8 @@ export class TrafficRecorder {
     this.#workers.alias(network.id, entry.id);
     let response = network.response;
     const unread = response !== undefined && (response.body === undefined || (response.body.truncated === true && response.body.data === ''));
-    if (response && unread && pageBody && pageBody.length > 0) {
-      const body = this.#budget.of(pageBody, Http.getHeader(response.headers, 'content-type'), undefined);
+    if (response && unread && pageBody && pageBody.bytes.length > 0) {
+      const body = this.#budget.of(pageBody.bytes, Http.getHeader(response.headers, 'content-type'), undefined, pageBody.text);
       if (body) response = { ...response, body };
     }
     this.#push({
@@ -403,19 +459,21 @@ export class TrafficRecorder {
     return true;
   }
 
-  async #responseBytes(request: Request, response: Response | undefined, tapped: Tapped | undefined, outcome: Outcome): Promise<Buffer | undefined> {
-    if (outcome.kind === 'downloaded') return outcome.body?.bytes;
-    if (!response || !tapped || outcome.kind !== 'finished' || !this.#captureBodies) return undefined;
+  async #responseBytes(request: Request, response: Response | undefined, tapped: Tapped | undefined, outcome: Outcome): Promise<TapBody | undefined> {
+    if (outcome.kind === 'downloaded') return outcome.body ? { bytes: outcome.body.bytes, text: false } : undefined;
+    if (!response || outcome.kind !== 'finished' || !this.#captureBodies) return undefined;
     if (request.method().toUpperCase() === 'HEAD' || TrafficRecorder.REDIRECT_STATUSES.has(response.status())) return undefined;
+    if (!tapped) return this.#documentBytes(request);
     return Helpers.settle(tapped.tap.responseBody(tapped.record), this.#readTimeoutMs);
   }
 
-  #responseBody(request: Request, response: Response, headers: Header[], bytes: Buffer | undefined, tapped: Tapped | undefined, outcome: Outcome): BodyData | undefined {
+  #responseBody(request: Request, response: Response, headers: Header[], read: TapBody | undefined, tapped: Tapped | undefined, outcome: Outcome): BodyData | undefined {
     const contentType = Http.getHeader(headers, 'content-type');
-    if (bytes && bytes.length > 0) {
-      const body = this.#budget.of(bytes, contentType, undefined);
-      if (body && outcome.kind === 'downloaded' && outcome.body && outcome.body.size > body.size) {
-        body.size = outcome.body.size;
+    if (read && read.bytes.length > 0) {
+      const body = this.#budget.of(read.bytes, contentType, undefined, read.text);
+      const total = outcome.kind === 'downloaded' && outcome.body ? outcome.body.size : Helpers.fullBodySize(headers, tapped?.record.dataLength ?? 0);
+      if (body && total > body.size) {
+        body.size = total;
         body.truncated = true;
       }
       return body;
@@ -427,8 +485,7 @@ export class TrafficRecorder {
       !TrafficRecorder.REDIRECT_STATUSES.has(response.status()) &&
       !TrafficRecorder.NO_BODY_STATUSES.has(response.status());
     if (!expectsBody) return undefined;
-    const received = tapped?.record.dataLength ?? 0;
-    const size = received > 0 ? received : (Helpers.contentLength(headers) ?? 0);
+    const size = Helpers.fullBodySize(headers, tapped?.record.dataLength ?? 0);
     if (size > 0 || Helpers.isChunked(headers)) return BodyBudget.unread(contentType ?? '', size);
     return undefined;
   }
@@ -454,17 +511,54 @@ export class TrafficRecorder {
   }
 
   async #claim(request: Request): Promise<Tapped | undefined> {
-    let page: Page | undefined;
-    try {
-      if (!request.serviceWorker()) page = request.frame().page();
-    } catch {
-      page = undefined;
-    }
+    const page = TrafficRecorder.#pageOf(request);
     const tracked = page ? this.#pages.get(page) : undefined;
     const tap = tracked ? await tracked.tap : undefined;
     if (!tap) return undefined;
-    const record = tap.claim(request.method(), request.url(), TrafficRecorder.#startTime(request));
+    const record = tap.claim(TrafficRecorder.#query(request));
     return record ? { tap, record } : undefined;
+  }
+
+  async #documentBytes(request: Request): Promise<TapBody | undefined> {
+    const page = TrafficRecorder.#pageOf(request);
+    if (!page || !request.isNavigationRequest() || request.frame() !== page.mainFrame()) return undefined;
+    const tap = await this.#pages.get(page)?.tap;
+    return tap ? Helpers.settle(tap.documentBody(request.url()), this.#readTimeoutMs) : undefined;
+  }
+
+  static #pageOf(request: Request): Page | undefined {
+    try {
+      return request.serviceWorker() ? undefined : request.frame().page();
+    } catch {
+      return undefined;
+    }
+  }
+
+  static #query(request: Request): TapQuery {
+    let startTime = 0;
+    let timing: string | undefined;
+    try {
+      const value = request.timing();
+      startTime = value.startTime;
+      timing = PageNetworkTap.timingKey({
+        dnsStart: value.domainLookupStart,
+        dnsEnd: value.domainLookupEnd,
+        connectStart: value.connectStart,
+        sslStart: value.secureConnectionStart,
+        connectEnd: value.connectEnd,
+        sendStart: value.requestStart,
+        receiveHeadersEnd: value.responseStart,
+      });
+    } catch {
+      timing = undefined;
+    }
+    return {
+      method: request.method(),
+      url: request.url(),
+      startTime,
+      signature: PageNetworkTap.signature(request.headers(), request.postDataBuffer()),
+      ...(timing === undefined ? {} : { timing }),
+    };
   }
 
   #onDownload(download: Download): void {

@@ -5,6 +5,7 @@ import type { ApiModel, Endpoint } from '../src/model/index.js';
 import { TsClientHarness } from './fixtures/export-ts-harness.js';
 import type { Module } from './fixtures/export-ts-harness.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
+import { PatternAudit } from '../src/shared/index.js';
 
 function find(model: ApiModel, method: string, path: string): Endpoint {
   const found = model.endpoints.find((endpoint) => endpoint.method === method && endpoint.path === path);
@@ -183,7 +184,7 @@ describe('site patterns with super-linear backtracking (EXP2-19)', () => {
   before(async () => {
     harness = await TsClientHarness.open();
     const f = new CaptureFactory('https://re.example.com');
-    f.snapshot('/f', 'F', '<form action="/s" method="post"><input name="slow" pattern="(a+)+b"><input name="code" pattern="[a-z]+"><button>Go</button></form>');
+    f.snapshot('/f', 'F', '<form action="/s" method="post"><input name="slow" pattern="(a+)+b"><input name="code" pattern="[a-z]+"><input name="dots" pattern="(.*a){25}"><input name="commas" pattern="(.*,){12}x"><button>Go</button></form>');
     model = TsClientHarness.build(f);
     mod = (await harness.load(model)).mod;
   });
@@ -200,5 +201,17 @@ describe('site patterns with super-linear backtracking (EXP2-19)', () => {
     assert.deepEqual(codes(validate({ code: 'ABC' })), [['code', 'patternMismatch', 'Please match the requested format.']]);
     assert.deepEqual(codes(validate({ slow: 'aaa!' }, { unsafePatterns: true })), [['slow', 'patternMismatch', 'Please match the requested format.']]);
     assert.deepEqual(validate({ slow: 'aaab' }, { unsafePatterns: true }), []);
+  });
+
+  test('a bounded repeat whose iterations can split one input in many ways is skipped by default, so validation ends quickly', () => {
+    const validate = TsClientHarness.validator(mod, validatorName(find(model, 'POST', '/s')));
+    const started = performance.now();
+    assert.deepEqual(validate({ dots: 'a'.repeat(40) + '!', commas: ','.repeat(30) }), []);
+    assert.ok(performance.now() - started < 500, 'validation took too long');
+    const audit = new PatternAudit();
+    for (const pattern of ['(.*a){25}', '(.*,){12}x', '(.*a){2}', '(a.*){3}', '(x[a-z]*y){4}']) assert.equal(audit.unsafe(pattern), true, pattern);
+    for (const pattern of ['(\\d{1,3}\\.){3}\\d{1,3}', '([a-z]+,){3}', '(\\/[\\w-]+)+', '(\\S+\\s+){2}', '([^,]*,){3}', '([0-9]{2}-){2}[0-9]{2}']) {
+      assert.equal(audit.unsafe(pattern), false, pattern);
+    }
   });
 });

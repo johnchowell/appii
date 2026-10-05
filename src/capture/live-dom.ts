@@ -1,10 +1,13 @@
 import type { Page } from 'playwright';
 import type { PageSnapshot } from '../model/index.js';
+import { SecretNames } from '../shared/index.js';
+import type { SecretNameRules } from '../shared/index.js';
 
 export interface SerializeRules {
   valueTypes: readonly string[];
   sensitiveAutocomplete: readonly string[];
   listedControls: readonly string[];
+  secretNames: SecretNameRules;
   formIndex: string;
   formOwner: string;
   selector: string;
@@ -20,6 +23,7 @@ interface SerializedDocument {
   url: string;
   title: string;
   html: string;
+  characterSet: string;
 }
 
 export class LiveDom {
@@ -59,7 +63,7 @@ export class LiveDom {
   static readonly PAGE_FUNCTION = `function (rules) {
   var doc = document;
   var live = doc.documentElement;
-  if (!live) return { url: doc.URL, title: doc.title, html: '' };
+  if (!live) return { url: doc.URL, title: doc.title, html: '', characterSet: doc.characterSet };
   var HTML_NS = 'http://www.w3.org/1999/xhtml';
   var BACKSLASH = String.fromCharCode(92);
   var inert = doc.implementation.createHTMLDocument('');
@@ -187,8 +191,15 @@ export class LiveDom {
     }
     return steps.join(' > ');
   }
+  var isSecretName = ${SecretNames.PAGE_FUNCTION};
+  function secretName(el) {
+    var name = el.getAttribute('name');
+    var id = el.getAttribute('id');
+    return Boolean((name && isSecretName(rules.secretNames, name)) || (id && isSecretName(rules.secretNames, id)));
+  }
   function sensitive(el) {
     if (marks && marks.has(el)) return true;
+    if (secretName(el)) return true;
     var tokens = (el.getAttribute('autocomplete') || '').toLowerCase().split(/[\\t\\n\\f\\r ]+/);
     for (var t = 0; t < tokens.length; t++) if (rules.sensitiveAutocomplete.indexOf(tokens[t]) >= 0) return true;
     return false;
@@ -259,7 +270,7 @@ export class LiveDom {
   }
   for (var r = 0; r < templates.length; r++) templates[r][0].insertBefore(templates[r][1], templates[r][0].firstChild);
   var doctype = doc.doctype ? '<!DOCTYPE ' + doc.doctype.name + '>' : '';
-  return { url: doc.URL, title: doc.title, html: doctype + copy.outerHTML };
+  return { url: doc.URL, title: doc.title, html: doctype + copy.outerHTML, characterSet: doc.characterSet };
 }`;
 
   readonly #page: Page;
@@ -277,6 +288,7 @@ export class LiveDom {
       valueTypes: LiveDom.VALUE_MODE_TYPES,
       sensitiveAutocomplete: LiveDom.SENSITIVE_AUTOCOMPLETE,
       listedControls: LiveDom.LISTED_CONTROLS,
+      secretNames: SecretNames.rules(),
       formIndex: LiveDom.FORM_INDEX_ATTRIBUTE,
       formOwner: LiveDom.FORM_OWNER_ATTRIBUTE,
       selector: LiveDom.SELECTOR_ATTRIBUTE,
@@ -294,7 +306,7 @@ export class LiveDom {
 
   async snapshot(): Promise<PageSnapshot> {
     const doc = await this.#capture();
-    return { url: doc.url, title: doc.title, capturedAt: new Date().toISOString(), html: doc.html };
+    return { url: doc.url, title: doc.title, capturedAt: new Date().toISOString(), html: doc.html, ...(doc.characterSet === '' ? {} : { characterSet: doc.characterSet }) };
   }
 
   async #capture(): Promise<SerializedDocument> {
@@ -304,6 +316,7 @@ export class LiveDom {
       url: typeof doc.url === 'string' ? doc.url : this.#page.url(),
       title: typeof doc.title === 'string' ? doc.title : '',
       html: typeof doc.html === 'string' ? doc.html : '',
+      characterSet: typeof doc.characterSet === 'string' ? doc.characterSet : '',
     };
   }
 }

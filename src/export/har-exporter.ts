@@ -1,8 +1,10 @@
-import type { ApiModel, Endpoint, Exchange } from '../model/index.js';
+import type { ApiModel, Endpoint, Exchange, FormDescriptor } from '../model/index.js';
 import { HarConverter } from '../capture/index.js';
+import { FormLinker } from '../build/index.js';
 import type { Har } from '../capture/index.js';
 import { AppiiError, Json } from '../shared/index.js';
 import { ExchangeSanitizer } from './exchange-sanitizer.js';
+import type { SanitizeContext } from './exchange-sanitizer.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 
@@ -30,22 +32,35 @@ export class HarExporter extends BaseExporter {
     this.#sanitizer = deps.sanitizer ?? ((redact: boolean) => ExchangeSanitizer.create({ redact }));
   }
 
-  exchanges(endpoints: readonly Endpoint[], options: ExportOptions): Exchange[] {
+  exchanges(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Exchange[] {
     const capture = options.capture;
     if (!capture) {
       throw new AppiiError('BAD_INPUT', 'The har export needs the capture (capture.json or a HAR file), not only api.json');
     }
-    const wanted = new Set(endpoints.flatMap((endpoint) => endpoint.samples.map((sample) => sample.exchangeId)));
+    const owners = new Map<string, Endpoint>();
+    for (const endpoint of endpoints) for (const sample of endpoint.samples) if (!owners.has(sample.exchangeId)) owners.set(sample.exchangeId, endpoint);
     const sanitizer = this.#sanitizer(options.redact ?? true);
-    return capture.exchanges.filter((exchange) => wanted.has(exchange.id)).map((exchange) => sanitizer.sanitize(exchange));
+    const contexts = new Map<Endpoint, SanitizeContext>();
+    const context = (endpoint: Endpoint): SanitizeContext => {
+      let found = contexts.get(endpoint);
+      if (!found) {
+        found = { secrets: FormLinker.endpointSecrets(endpoint, forms), ...(endpoint.form ? { formEnctype: endpoint.form.enctype, formCharset: endpoint.form.charset } : {}) };
+        contexts.set(endpoint, found);
+      }
+      return found;
+    };
+    return capture.exchanges.flatMap((exchange) => {
+      const owner = owners.get(exchange.id);
+      return owner ? [sanitizer.sanitize(exchange, context(owner))] : [];
+    });
   }
 
-  archive(endpoints: readonly Endpoint[], options: ExportOptions): Har {
-    return this.#har.toHar(this.exchanges(endpoints, options));
+  archive(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Har {
+    return this.#har.toHar(this.exchanges(endpoints, options, forms));
   }
 
-  protected render(_model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {
-    return Json.asciiJson(this.archive(endpoints, options)) + '\n';
+  protected render(model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {
+    return Json.asciiJson(this.archive(endpoints, options, model.forms)) + '\n';
   }
 
   protected override filename(_model: ApiModel): string {

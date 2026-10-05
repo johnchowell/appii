@@ -1,5 +1,5 @@
 import type { Header } from '../model/index.js';
-import { Http } from '../shared/index.js';
+import { CharsetEncoder, Http } from '../shared/index.js';
 
 export interface MultipartPart {
   headers: Header[];
@@ -20,6 +20,7 @@ export class MultipartParser {
   static readonly HEADER_END: Buffer = Buffer.from('\r\n\r\n', 'latin1');
   static readonly NAME_ESCAPES: Readonly<Record<string, string>> = { '%0A': '\n', '%0D': '\r', '%22': '"' };
   static readonly MAX_BOUNDARY_LENGTH = 200;
+  static readonly HEADER_CHARSET = 'utf-8';
 
   static boundary(contentType: string | undefined): string | undefined {
     if (!contentType) return undefined;
@@ -91,7 +92,7 @@ export class MultipartParser {
     return value.replace(/%0A|%0D|%22/g, (escape) => MultipartParser.NAME_ESCAPES[escape] ?? escape);
   }
 
-  parse(bytes: Uint8Array, boundary: string): MultipartPart[] {
+  parse(bytes: Uint8Array, boundary: string, charset: string = MultipartParser.HEADER_CHARSET): MultipartPart[] {
     const data = MultipartParser.#buffer(bytes);
     const delimiter = Buffer.from('--' + boundary, 'utf8');
     const separator = Buffer.concat([MultipartParser.CRLF, delimiter]);
@@ -105,7 +106,7 @@ export class MultipartParser {
       else if (data[cursor] === 0x0a) cursor += 1;
       else break;
       const next = data.indexOf(separator, cursor);
-      const part = MultipartParser.#part(data.subarray(cursor, next < 0 ? data.length : next), next >= 0);
+      const part = MultipartParser.#part(data.subarray(cursor, next < 0 ? data.length : next), next >= 0, charset);
       if (part) parts.push(part);
       position = next < 0 ? -1 : next + 2;
     }
@@ -124,7 +125,7 @@ export class MultipartParser {
     return position;
   }
 
-  static #part(bytes: Buffer, complete: boolean): MultipartPart | undefined {
+  static #part(bytes: Buffer, complete: boolean, charset: string): MultipartPart | undefined {
     let headerText: string;
     let body: Buffer;
     if (bytes[0] === 0x0d && bytes[1] === 0x0a) {
@@ -133,7 +134,7 @@ export class MultipartParser {
     } else {
       const end = bytes.indexOf(MultipartParser.HEADER_END);
       if (end < 0) return undefined;
-      headerText = new TextDecoder('utf-8').decode(bytes.subarray(0, end));
+      headerText = CharsetEncoder.decode(bytes.subarray(0, end), charset);
       body = bytes.subarray(end + 4);
     }
     const headers = MultipartParser.#headers(headerText);

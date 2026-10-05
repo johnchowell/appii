@@ -61,6 +61,7 @@ export class ControlRules {
   static readonly DEFAULT_CHECKABLE_VALUE = 'on';
   static readonly CHARSET_FIELD = '_charset_';
   static readonly CHARSET = 'UTF-8';
+  static readonly UNLABELED_ENCODING = 'windows-1252';
   static readonly ENCODING_NAMES: ReadonlyMap<string, string> = new Map([
     ['utf-8', 'UTF-8'],
     ['ibm866', 'IBM866'],

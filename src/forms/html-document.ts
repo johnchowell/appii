@@ -81,7 +81,7 @@ export class HtmlDocument {
     }
     this.#ids = ids;
     this.baseUrl = this.#frozenBaseUrl();
-    this.encoding = (encoding === undefined ? undefined : ControlRules.encodingName(encoding)) ?? this.#metaEncoding() ?? ControlRules.CHARSET;
+    this.encoding = (encoding === undefined ? undefined : ControlRules.encodingName(encoding)) ?? this.#metaEncoding() ?? ControlRules.UNLABELED_ENCODING;
   }
 
   static parse(html: string, pageUrl: string, options: { encoding?: string | undefined } = {}): HtmlDocument {

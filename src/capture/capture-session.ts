@@ -52,6 +52,8 @@ interface CaptureRun {
   readonly identity: UserAgentOverride | undefined;
   attached: boolean;
   contextClosed: boolean;
+  browserLost: boolean;
+  closing: boolean;
 }
 
 interface FinalState {
@@ -66,6 +68,7 @@ export class CaptureSession {
   static readonly FINALIZE_TIMEOUT_MS = 15000;
   static readonly PREPARE_TIMEOUT_MS = 5000;
   static readonly DOWNLOAD_STARTING = 'Download is starting';
+  static readonly BROWSER_LOST = 'The browser closed before the capture finished, most likely because it crashed';
   static readonly START_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'file:']);
 
   readonly recorder: TrafficRecorder;
@@ -153,9 +156,17 @@ export class CaptureSession {
       identity: identity ? this.#factories.identity(identity) : undefined,
       attached: false,
       contextClosed: false,
+      browserLost: false,
+      closing: false,
     };
+    const onLost = (): void => {
+      if (!this.#stopped && !run.closing) run.browserLost = true;
+    };
+    browser.on('disconnected', onLost);
+    context.on('close', onLost);
     const onExchange = this.#options.onExchange;
     const unsubscribe = onExchange ? this.recorder.onExchange(onExchange) : undefined;
+    const workerIdentity = identity ? this.recorder.onServiceWorker((channel) => identity.applyToWorker(channel)) : undefined;
     let failure: unknown;
     try {
       run.identity?.attach(context);
@@ -169,8 +180,12 @@ export class CaptureSession {
       failure = err;
     }
     const final = await this.#finalize(run);
+    browser.off('disconnected', onLost);
+    context.off('close', onLost);
     unsubscribe?.();
+    workerIdentity?.();
     const capture = this.#assemble(startedAt, final);
+    if (failure === undefined && run.browserLost) failure = new AppiiError('BROWSER', CaptureSession.BROWSER_LOST);
     if (failure !== undefined) throw CaptureSession.#failure(failure, capture);
     return capture;
   }
@@ -278,6 +293,7 @@ export class CaptureSession {
     run.state.stop();
     await Helpers.settle(this.recorder.settled(), timeout);
     await Helpers.settle(run.snapshots.settled(), timeout);
+    run.closing = true;
     await Helpers.settle(run.browser.close(), timeout);
     const cookies = cookiesFresh ? run.state.cookies : this.#replayCookies(run.state);
     return { cookies, storage: run.state.storage, pages: run.snapshots.snapshots };

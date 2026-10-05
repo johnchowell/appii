@@ -89,18 +89,12 @@ export class WorkerNetworkLog {
 
   async start(): Promise<boolean> {
     this.#unsubscribe = this.#channel.on(this.#onEvent);
-    const buffers = { maxTotalBufferSize: this.#options.bufferBytes, maxResourceBufferSize: this.#options.resourceBufferBytes, enableDurableMessages: true };
     try {
-      await this.#channel.send('Network.enable', buffers);
+      await PageNetworkTap.enable(this.#channel, { bufferBytes: this.#options.bufferBytes, resourceBufferBytes: this.#options.resourceBufferBytes });
       return true;
     } catch {
-      try {
-        await this.#channel.send('Network.enable');
-        return true;
-      } catch {
-        this.#unsubscribe();
-        return false;
-      }
+      this.#unsubscribe();
+      return false;
     }
   }
 
@@ -355,7 +349,7 @@ export class WorkerNetworkLog {
     const contentType = Http.getHeader(headers, 'content-type');
     const read = await Helpers.settle(this.#channel.send<CdpResponseBody>('Network.getResponseBody', { requestId: hop.event.requestId }), this.#options.readTimeoutMs);
     const bytes = read ? Buffer.from(read.body, read.base64Encoded ? 'base64' : 'utf8') : undefined;
-    if (bytes && bytes.length > 0) return this.#options.budget.of(bytes, contentType, undefined);
+    if (bytes && bytes.length > 0) return this.#options.budget.of(bytes, contentType, undefined, read?.base64Encoded === false);
     const size = hop.dataLength > 0 ? hop.dataLength : (Helpers.contentLength(headers) ?? 0);
     return size > 0 || Helpers.isChunked(headers) ? BodyBudget.unread(contentType ?? '', size) : undefined;
   }

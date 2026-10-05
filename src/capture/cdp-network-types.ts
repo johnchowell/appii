@@ -2,6 +2,12 @@ export type CdpHeaders = Record<string, string>;
 
 export interface CdpTiming {
   requestTime: number;
+  dnsStart?: number;
+  dnsEnd?: number;
+  connectStart?: number;
+  sslStart?: number;
+  connectEnd?: number;
+  sendStart?: number;
   receiveHeadersEnd?: number;
 }
 
@@ -95,4 +101,22 @@ export interface CdpTargetInfo {
   targetId: string;
   type: string;
   url: string;
+}
+
+export interface CdpFrameTree {
+  frameTree: { frame: { id: string; url: string; urlFragment?: string } };
+}
+
+export interface CdpResourceContent {
+  content: string;
+  base64Encoded: boolean;
+}
+
+export interface CdpScriptParsed {
+  scriptId: string;
+  url: string;
+}
+
+export interface CdpScriptSource {
+  scriptSource: string;
 }

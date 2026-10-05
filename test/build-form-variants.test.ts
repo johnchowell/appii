@@ -134,6 +134,28 @@ describe('distinct actions under a plural parent (FB-15)', () => {
     assert.deepEqual(Schema.requiredSet(endpoint(model, 'POST', '/accounts/logout/').requestBody?.schema), new Set());
   });
 
+  test('JSON actions next to a numeric id stay literal endpoints, the id becomes a parameter', () => {
+    for (const register of [{ email: 'a@example.com', name: 'A' }, { email: 'a@example.com', password: 'pw-secret-1', name: 'A' }]) {
+      const f = new CaptureFactory();
+      const json = { requestHeaders: { 'content-type': 'application/json' } };
+      f.json('POST', '/api/users/login', 200, { ok: true }, { ...json, requestBody: { json: { email: 'a@example.com', password: 'pw-secret-1' } } });
+      f.json('POST', '/api/users/logout', 200, { ok: true }, { ...json, requestBody: { json: {} } });
+      f.json('POST', '/api/users/register', 201, { id: 7 }, { ...json, requestBody: { json: register } });
+      f.json('POST', '/api/users/42', 200, { id: 42 }, { ...json, requestBody: { json: {} } });
+      const paths = build(f).endpoints.map((e) => `${e.method} ${e.path}`).sort();
+      assert.deepEqual(paths, ['POST /api/users/login', 'POST /api/users/logout', 'POST /api/users/register', 'POST /api/users/{userId}'], JSON.stringify(register));
+    }
+  });
+
+  test('partial updates with disjoint fields on slug resources stay one templated endpoint', () => {
+    const f = new CaptureFactory();
+    const json = { requestHeaders: { 'content-type': 'application/json' } };
+    f.json('PATCH', '/api/users/alice', 200, { ok: true }, { ...json, requestBody: { json: { bio: 'x' } } });
+    f.json('PATCH', '/api/users/bob', 200, { ok: true }, { ...json, requestBody: { json: { avatar: 'y' } } });
+    f.json('PATCH', '/api/users/carol', 200, { ok: true }, { ...json, requestBody: { json: { email: 'c@example.com' } } });
+    assert.deepEqual(build(f).endpoints.map((e) => `${e.method} ${e.path} ${e.count}`), ['PATCH /api/users/{user} 3']);
+  });
+
   test('profile pages without conflicting evidence still become one templated endpoint', () => {
     const f = new CaptureFactory();
     for (const user of ['alice', 'bob', 'carol']) f.document(`/users/${user}`, CaptureFactory.page(user, `<h1>${user}</h1>`));

@@ -204,9 +204,9 @@ export class PageSnapshotter {
     if (this.#context !== context) return;
     const parsed = Json.safeParse(payload);
     if (!parsed.ok || !Json.isPlainObject(parsed.value)) return;
-    const { url, title, html } = parsed.value;
+    const { url, title, html, characterSet } = parsed.value;
     if (typeof url !== 'string' || typeof title !== 'string' || typeof html !== 'string') return;
-    this.#add({ url, title, capturedAt: new Date().toISOString(), html });
+    this.#add({ url, title, capturedAt: new Date().toISOString(), html, ...(typeof characterSet === 'string' && characterSet !== '' ? { characterSet } : {}) });
   }
 
   #onLoad(page: Page, tracked: TrackedPage): void {

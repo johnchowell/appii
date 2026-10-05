@@ -162,11 +162,11 @@ export class CookieInventory {
 
   static #compare(a: Cookie, b: Cookie): number {
     return (
-      Helpers.compare(a.domain, b.domain) ||
-      Helpers.compare(a.name, b.name) ||
-      Helpers.compare(a.path, b.path) ||
+      Text.compare(a.domain, b.domain) ||
+      Text.compare(a.name, b.name) ||
+      Text.compare(a.path, b.path) ||
       Number(a.hostOnly) - Number(b.hostOnly) ||
-      Helpers.compare(a.partitionKey ?? '', b.partitionKey ?? '')
+      Text.compare(a.partitionKey ?? '', b.partitionKey ?? '')
     );
   }
 

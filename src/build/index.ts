@@ -11,6 +11,7 @@ export type { MapKeyRule, SchemaInferrerDeps, SchemaInferrerOptions } from './sc
 export { PathTemplater } from './path-templater.js';
 export type { PathEvidence, PathParam, PathTemplate, SegmentKind, SegmentRule } from './path-templater.js';
 export { Redactor } from './redactor.js';
+export type { PlainTextMode } from './redactor.js';
 export { HeaderPolicy } from './header-policy.js';
 export { ExchangeSignature } from './exchange-signature.js';
 export type { ExchangeSignatureDeps, Signature } from './exchange-signature.js';

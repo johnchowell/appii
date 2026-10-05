@@ -25,3 +25,5 @@ export { EntryGroupComposer } from './entry-group-composer.js';
 export type { ComposedProperty } from './entry-group-composer.js';
 export { HtmlTreeBuilder } from './html-tree-builder.js';
 export type { HtmlTree } from './html-tree-builder.js';
+export { HtmlTagScanner } from './html-tag-scanner.js';
+export type { HtmlScan, ScannedAttribute, ScannedTag } from './html-tag-scanner.js';

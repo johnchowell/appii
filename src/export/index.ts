@@ -21,7 +21,7 @@ export { JsonExporter } from './json-exporter.js';
 export { HarExporter } from './har-exporter.js';
 export type { HarExporterDeps } from './har-exporter.js';
 export { ExchangeSanitizer } from './exchange-sanitizer.js';
-export type { ExchangeSanitizerDeps, ExchangeSanitizerOptions } from './exchange-sanitizer.js';
+export type { BodyScope, ExchangeSanitizerDeps, ExchangeSanitizerOptions, SanitizeContext } from './exchange-sanitizer.js';
 export { PostmanExporter } from './postman-exporter.js';
 export type { PostmanExporterDeps } from './postman-exporter.js';
 export { PostmanRequestBuilder } from './postman-request-builder.js';

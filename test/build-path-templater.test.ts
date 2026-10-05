@@ -129,9 +129,8 @@ describe('PathTemplater.template', () => {
   test('params carry kinds and distinct decoded examples; mixed kinds merge', () => {
     const template = only(['/files/1', '/files/2', '/files/1'], '/files/1');
     assert.deepEqual(template.params, [{ name: 'fileId', position: 1, kind: 'integer', examples: ['1', '2'] }]);
-    const mixed = only(['/users/123', '/users/alice', '/users/bob', '/users/carol'], '/users/123');
-    assert.equal(mixed.template, '/users/{user}');
-    assert.equal(mixed.params[0]?.kind, 'literal');
+    const mixed = templates(['/users/123', '/users/featured', '/users/trending', '/users/blocked']);
+    assert.deepEqual(mixed, { '/users/123': '/users/{userId}', '/users/featured': '/users/featured', '/users/trending': '/users/trending', '/users/blocked': '/users/blocked' });
     const ids = only(['/x/123', '/x/507f1f77bcf86cd799439011'], '/x/123');
     assert.equal(ids.params[0]?.kind, 'token');
     const encoded = only(['/tags/caf%C3%A9', '/tags/b', '/tags/c'], '/tags/b');

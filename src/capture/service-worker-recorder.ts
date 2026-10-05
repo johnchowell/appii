@@ -3,7 +3,7 @@ import type { BodyBudget } from './body-budget.js';
 import { Helpers } from './helpers.js';
 import type { TargetChannel } from './target-channel.js';
 import { WorkerNetworkLog } from './worker-network-log.js';
-import type { WorkerRequest } from './worker-network-log.js';
+import type { WorkerNetworkLogOptions, WorkerRequest } from './worker-network-log.js';
 
 export interface ServiceWorkerRecorderOptions {
   budget: BodyBudget;
@@ -16,6 +16,12 @@ export interface ServiceWorkerRecorderOptions {
   hasPageRequest: (method: string, url: string, startMs: number) => boolean;
 }
 
+export type WorkerNetworkLogFactory = (channel: TargetChannel, options: WorkerNetworkLogOptions) => WorkerNetworkLog;
+
+export interface ServiceWorkerRecorderDeps {
+  logs?: WorkerNetworkLogFactory;
+}
+
 interface WorkerTarget {
   active: WorkerNetworkLog | undefined;
   standby: TargetChannel[];
@@ -25,13 +31,23 @@ export class ServiceWorkerRecorder {
   static readonly MATCH_TOLERANCE_MS = 1000;
 
   readonly #options: ServiceWorkerRecorderOptions;
+  readonly #logFactory: WorkerNetworkLogFactory;
   readonly #targets = new Map<string, WorkerTarget>();
   readonly #requests: WorkerRequest[] = [];
   readonly #aliases = new Map<string, string>();
   readonly #logs = new Set<WorkerNetworkLog>();
 
-  constructor(options: ServiceWorkerRecorderOptions) {
+  constructor(options: ServiceWorkerRecorderOptions, deps: ServiceWorkerRecorderDeps = {}) {
     this.#options = options;
+    this.#logFactory = deps.logs ?? ServiceWorkerRecorder.log;
+  }
+
+  static create(options: ServiceWorkerRecorderOptions): ServiceWorkerRecorder {
+    return new ServiceWorkerRecorder(options, { logs: ServiceWorkerRecorder.log });
+  }
+
+  static log(channel: TargetChannel, options: WorkerNetworkLogOptions): WorkerNetworkLog {
+    return new WorkerNetworkLog(channel, options);
   }
 
   async attach(channel: TargetChannel): Promise<void> {
@@ -100,7 +116,7 @@ export class ServiceWorkerRecorder {
 
   async #activate(target: WorkerTarget, channel: TargetChannel): Promise<void> {
     const options = this.#options;
-    const log = new WorkerNetworkLog(channel, {
+    const log = this.#logFactory(channel, {
       budget: options.budget,
       captureBodies: options.captureBodies,
       readTimeoutMs: options.readTimeoutMs,

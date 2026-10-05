@@ -66,12 +66,9 @@ export class CurlExporter extends BaseExporter {
   }
 
   defaultCookie(model: ApiModel, endpoints: readonly Endpoint[]): string {
-    const ids = new Set(endpoints.map((endpoint) => endpoint.id));
-    const used = new Set(endpoints.flatMap((endpoint) => endpoint.auth.cookies));
     const pairs = new Map<string, string>();
-    for (const cookie of model.cookies) {
+    for (const cookie of EndpointIndex.subset(model, endpoints).cookies) {
       if (pairs.has(cookie.name) || cookie.name === '') continue;
-      if (!used.has(cookie.name) && !cookie.usedBy.some((id) => ids.has(id))) continue;
       if (CurlExporter.REDACTED_VALUE.test(cookie.valueExample) || Samples.isRedacted(cookie.valueExample)) continue;
       pairs.set(cookie.name, cookie.valueExample);
     }

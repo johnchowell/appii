@@ -5,11 +5,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { CaptureStore, HarConverter } from '../src/capture/index.js';
+import { CaptureSession, CaptureStore, HarConverter } from '../src/capture/index.js';
 import { CaptureCommand, CaptureRunner, CaptureSaver, CommandRegistry, RunCommand } from '../src/cli/index.js';
 import { ModelStore } from '../src/build/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, CookieInfo, Endpoint } from '../src/model/index.js';
+import { MODEL_VERSION } from '../src/model/index.js';
 import { AppiiError, Meta } from '../src/shared/index.js';
 import { startFixtureSite } from './fixtures/site.js';
 import type { FixtureSite } from './fixtures/site.js';
@@ -72,6 +73,9 @@ describe('cli commands', () => {
       const seen = site.requests.slice(before);
       assert.ok(seen.length > 0);
       assert.ok(seen.every((request) => request.headers['user-agent'] === agent), JSON.stringify(seen.map((request) => request.headers['user-agent'])));
+      const hints = seen.map((request) => String(request.headers['sec-ch-ua'] ?? ''));
+      assert.ok(hints.some((hint) => hint.includes('"Chromium"')), JSON.stringify(hints));
+      assert.ok(hints.every((hint) => !hint.includes('HeadlessChrome')), JSON.stringify(hints));
       const capture = await CaptureStore.create().load(join(dir, 'options.json'));
       const bodies = capture.exchanges.flatMap((exchange) => (exchange.response?.body ? [exchange.response.body] : []));
       assert.ok(bodies.length > 0);
@@ -125,6 +129,30 @@ describe('cli commands', () => {
       assert.ok(runMatch, run.stderr);
       assert.equal(await readFile(runMatch[1]!, 'utf8'), CaptureStore.serialize(capture));
       assert.deepEqual(recorded, ['https://example.com/', 'https://example.com/']);
+    });
+
+    test('a browser that dies during the recording fails the command and keeps the requests recorded until then (REG-1)', async () => {
+      const capture = CaptureFactory.fixture().capture;
+      const runner = new CaptureRunner({
+        sessions: (options) => ({
+          run: async () => {
+            options.onReady?.();
+            throw new AppiiError('BROWSER', CaptureSession.BROWSER_LOST, { details: { capture } });
+          },
+          stop: () => undefined,
+        }),
+      });
+      const saver = new CaptureSaver();
+      const registry = new CommandRegistry().register(new CaptureCommand({ runner, saver })).register(new RunCommand({ runner, saver }));
+      const failed = await cli.run(['capture', 'https://example.com/', '--headless', '-o', 'crashed.json'], { registry });
+      assert.equal(failed.code, 1);
+      assert.match(failed.stderr, new RegExp(`\\nerror: ${CaptureSession.BROWSER_LOST}\\. The ${capture.exchanges.length} requests recorded until then were saved to crashed\\.json\\n$`));
+      assert.equal(failed.stdout, '');
+      assert.equal((await CaptureStore.create().load(join(dir, 'crashed.json'))).exchanges.length, capture.exchanges.length);
+      const run = await cli.run(['run', 'https://example.com/', '--headless', '--out-dir', 'crashed-run'], { registry });
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /were saved to crashed-run\/capture\.json\n$/);
+      assert.equal((await CaptureStore.create().load(join(dir, 'crashed-run', 'capture.json'))).exchanges.length, capture.exchanges.length);
     });
 
     test('an output location that cannot be written fails before the recording starts', async () => {
@@ -396,12 +424,15 @@ describe('cli commands', () => {
       const suggested = await cli.run(['list', 'api.json', '--show', 'items']);
       assert.equal(suggested.code, 1);
       assert.match(suggested.stderr, /^error: No endpoint matches 'items' .*\nDid you mean:\n  3 listItems\n  4 createItem\n  5 getItem\n$/);
+      const typo = await cli.run(['list', 'api.json', '--show', 'postLogn']);
+      assert.equal(typo.code, 1);
+      assert.equal(typo.stderr, "error: No endpoint matches 'postLogn' (use a list number, id, or name)\nDid you mean:\n  9 postLogin\n");
       const outOfRange = await cli.run(['list', 'api.json', '--show', '99']);
       assert.equal(outOfRange.code, 1);
       const missing = await cli.run(['list', 'missing.json']);
       assert.equal(missing.code, 1);
       assert.match(missing.stderr, /^error: File not found: .*missing\.json\n$/);
-      await writeFile(join(dir, 'broken.json'), JSON.stringify({ version: 1, endpoints: [{ id: 1 }] }));
+      await writeFile(join(dir, 'broken.json'), JSON.stringify({ version: MODEL_VERSION, endpoints: [{ id: 1 }] }));
       const broken = await cli.run(['list', 'broken.json']);
       assert.equal(broken.code, 1);
       assert.match(broken.stderr, /^error: .*broken\.json is not a valid API model \(api\.json\): .*\nProblems:\n  name: expected a string\n/);

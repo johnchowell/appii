@@ -2,7 +2,7 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Browser, Page } from 'playwright';
 import type { FormDescriptor, FormField, JsonSchema } from '../src/model/index.js';
-import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
+import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, HtmlDocument, TokenDetector } from '../src/forms/index.js';
 import { AppiiError, Schema } from '../src/shared/index.js';
 import { startFixtureSite } from './fixtures/site.js';
 import { SchemaCheck } from './fixtures/build-schema-check.js';
@@ -512,7 +512,7 @@ describe('FormSchemaBuilder entry-list semantics', () => {
       'return', '_CHARSET_', 'nonce', 'authenticity_token', 'q', 'q.dir', 'msg', 'msg.dir', 'ro', 'pw', 'req_hidden',
     ]);
     assert.deepEqual(prop(schema, 'return'), { type: 'string', 'x-html-type': 'hidden', default: '' });
-    assert.deepEqual(prop(schema, '_CHARSET_'), { type: 'string', const: 'UTF-8', 'x-html-type': 'hidden' });
+    assert.deepEqual(prop(schema, '_CHARSET_'), { type: 'string', const: 'windows-1252', 'x-html-type': 'hidden' });
     assert.deepEqual(prop(schema, 'nonce'), { type: 'string', readOnly: true, 'x-appii-token': true, 'x-appii-token-example': 'n1', 'x-html-type': 'hidden' });
     assert.deepEqual(prop(schema, 'authenticity_token'), { type: 'string', readOnly: true, 'x-appii-token': true, 'x-html-type': 'hidden' });
     assert.deepEqual(result.tokenFields, ['nonce', 'authenticity_token']);
@@ -714,7 +714,8 @@ describe('FormSchemaBuilder matches what Chromium submits', () => {
     assert.ok(browser && server);
     const srv = server;
     const url = srv.page(path, html);
-    const descriptor = form(html, formIndex, url);
+    const descriptor = extractor.extractDocument(HtmlDocument.parse(html, url, { encoding: PageServer.CHARSET }))[formIndex];
+    assert.ok(descriptor, `form ${formIndex}`);
     const active = pick === undefined ? undefined : submitter(descriptor, pick[0], pick[1]);
     const built = builder.build(descriptor, active);
     const page = await browser.newPage();

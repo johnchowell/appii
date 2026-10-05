@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Fs, Http, Meta, Text } from '../shared/index.js';
+import { Fs, Http, Meta, NamedReferences, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -82,7 +82,7 @@ export class TypeScriptExporter extends BaseExporter {
       if (host === '' || Http.isIpAddress(host) || out.some(([known]) => known === host)) continue;
       out.push([host, Http.registrableDomain(host)]);
     }
-    return Object.fromEntries(out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+    return Object.fromEntries(out.sort(([a], [b]) => Text.compare(a, b)));
   }
 
   static indexes(endpoints: readonly Endpoint[]): Record<string, string> {
@@ -91,7 +91,7 @@ export class TypeScriptExporter extends BaseExporter {
       const index = endpoint.form === undefined ? undefined : TsEndpointWriter.index(endpoint.form.charset);
       if (index !== undefined) out.set(index[0], index[1]);
     }
-    return Object.fromEntries([...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+    return Object.fromEntries([...out].sort(([a], [b]) => Text.compare(a, b)));
   }
 
   source(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
@@ -112,6 +112,7 @@ export class TypeScriptExporter extends BaseExporter {
         `const DEFAULT_BASE_URL = ${Text.jsString(base)};`,
         `const REGISTRABLE_DOMAINS: Record<string, string> = ${this.#literals.write(TypeScriptExporter.sites(model, endpoints, opts))};`,
         `const SINGLE_BYTE_INDEXES: Record<string, string> = ${this.#literals.write(TypeScriptExporter.indexes(endpoints))};`,
+        `const NAMED_REFERENCES: readonly string[] = ${this.#literals.write(NamedReferences.DATA)};`,
       ].join('\n'),
       ...codes.flatMap((code) => code.declarations),
       ...codes.map((code) => code.spec),

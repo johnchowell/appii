@@ -173,6 +173,7 @@ export class CaptureValidator {
     CaptureValidator.#string(value.title, `${path}.title`, problems);
     CaptureValidator.#date(value.capturedAt, `${path}.capturedAt`, problems);
     CaptureValidator.#string(value.html, `${path}.html`, problems);
+    if (value.characterSet !== undefined) CaptureValidator.#string(value.characterSet, `${path}.characterSet`, problems);
   }
 
   static #headers(value: unknown, path: string, problems: string[]): void {

@@ -8,6 +8,7 @@ import type {
   FIELD_KINDS,
   FORM_ENCTYPES,
   FORM_METHODS,
+  MODEL_VERSION,
   PARAM_LOCATIONS,
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
@@ -109,6 +110,7 @@ export interface PageSnapshot {
   title: string;
   capturedAt: string;
   html: string;
+  characterSet?: string;
 }
 
 export interface Capture {
@@ -300,7 +302,7 @@ export interface CookieInfo {
 }
 
 export interface ApiModel {
-  version: 1;
+  version: typeof MODEL_VERSION;
   name: string;
   generatedAt: string;
   source: {

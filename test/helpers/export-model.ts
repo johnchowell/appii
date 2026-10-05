@@ -2,6 +2,7 @@ import type { Page } from 'playwright';
 import { ModelBuilder, EndpointFactory } from '../../src/build/index.js';
 import { CaptureSession } from '../../src/capture/index.js';
 import type { ApiModel, Capture, Endpoint, EndpointKind } from '../../src/model/index.js';
+import { MODEL_VERSION } from '../../src/model/index.js';
 import { FIXTURE_USER, startFixtureSite } from '../fixtures/site.js';
 import type { FixtureSite } from '../fixtures/site.js';
 
@@ -68,7 +69,7 @@ export class ExportModel {
   static model(endpoints: Endpoint[], extra: Partial<ApiModel> = {}): ApiModel {
     const origins = [...new Set(endpoints.map((endpoint) => endpoint.origin))].sort();
     return {
-      version: 1,
+      version: MODEL_VERSION,
       name: 'shop.example.com',
       generatedAt: ExportModel.NOW.toISOString(),
       source: { startUrl: ExportModel.ORIGIN + '/', exchanges: endpoints.reduce((sum, endpoint) => sum + endpoint.count, 0) },

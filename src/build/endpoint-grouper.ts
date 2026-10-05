@@ -1,7 +1,7 @@
 import type { Endpoint, EndpointKind, EndpointResponse, EndpointSample, Exchange, Header, ResourceType } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { TokenDetector } from '../forms/index.js';
-import { Http, Json } from '../shared/index.js';
+import { Http, Json, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
@@ -40,12 +40,13 @@ export interface EndpointGrouperDeps {
 
 export interface GroupContext {
   forms?: ReadonlyMap<string, PathEvidence>;
-  encodings?: ReadonlyMap<string, string>;
+  encoding?: (exchange: Exchange) => string | undefined;
 }
 
 interface Member {
   readonly exchange: Exchange;
   readonly signature: Signature;
+  readonly encoding: string | undefined;
 }
 
 interface Bucket {
@@ -77,6 +78,7 @@ export class EndpointGrouper {
   static readonly KIND_PRIORITY: readonly EndpointKind[] = ['graphql', 'form', 'json', 'document', 'other'];
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
   static readonly FIELD_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
+  static readonly OPERATION_METHODS: ReadonlySet<string> = new Set(['POST']);
 
   readonly #body: BodyParser;
   readonly #paths: PathTemplater;
@@ -146,8 +148,9 @@ export class EndpointGrouper {
     const members: Member[] = [];
     for (const exchange of exchanges) {
       if (!this.#include(exchange)) continue;
-      const signature = this.#signatures.of(exchange, EndpointGrouper.#formEncoding(exchange, context.encodings));
-      if (signature) members.push({ exchange, signature });
+      const encoding = context.encoding?.(exchange);
+      const signature = this.#signatures.of(exchange, encoding);
+      if (signature) members.push({ exchange, signature, encoding });
     }
     const templates = this.#templates(members, context.forms ?? new Map());
     const buckets = new Map<string, Bucket>();
@@ -163,10 +166,6 @@ export class EndpointGrouper {
     return [...buckets.values()].map((bucket) => this.#endpoint(bucket));
   }
 
-  static #formEncoding(exchange: Exchange, encodings: ReadonlyMap<string, string> | undefined): string | undefined {
-    if (!encodings || exchange.resourceType !== 'document' || exchange.pageUrl === undefined) return undefined;
-    return encodings.get(HtmlPages.documentKey(exchange.pageUrl));
-  }
 
   #include(e: Exchange): boolean {
     if (!Helpers.httpUrl(e.request.url) || Http.isWorkerResponse(e)) return false;
@@ -190,7 +189,7 @@ export class EndpointGrouper {
       if (list) list.push(signature.path);
       else paths.set(signature.origin, [signature.path]);
       const body = signature.request;
-      if (Http.isSafeMethod(signature.method) || !EndpointGrouper.FIELD_BODY_KINDS.has(body.kind) || !Json.isPlainObject(body.value)) continue;
+      if (!EndpointGrouper.OPERATION_METHODS.has(signature.method) || !EndpointGrouper.FIELD_BODY_KINDS.has(body.kind) || !Json.isPlainObject(body.value)) continue;
       const names = entry(signature.origin, signature.path).names;
       for (const name of Object.keys(body.value)) names.add(name);
     }
@@ -218,7 +217,10 @@ export class EndpointGrouper {
     });
     const served = members.filter((member) => Http.reachedServer(member.exchange));
     endpoint.pathParams = this.#params.path(template, members.map((member) => member.signature.path));
-    endpoint.queryParams = this.#params.query(members.map((member) => member.signature.url));
+    endpoint.queryParams = this.#params.query(
+      members.map((member) => member.signature.url),
+      members.map((member) => member.encoding),
+    );
     endpoint.headerParams = this.#params.headers(served.map((member) => member.exchange.request.headers));
     const requestBody = this.#shaper.shape(members.map((member) => member.signature.request));
     if (requestBody) endpoint.requestBody = requestBody;
@@ -275,7 +277,7 @@ export class EndpointGrouper {
       .sort(([a], [b]) => a - b)
       .map(([status, entry]) => {
         const body = this.#shaper.shape(entry.bodies, true);
-        return { status, count: entry.count, ...(body ? { body } : {}), headers: [...entry.headers].sort(Helpers.compare) };
+        return { status, count: entry.count, ...(body ? { body } : {}), headers: [...entry.headers].sort(Text.compare) };
       });
   }
 

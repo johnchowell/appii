@@ -219,3 +219,20 @@ describe('CurlExporter request variables agree with the other renderers', () => 
     assert.ok(!text.includes('X_CSRF_TOKEN'));
   });
 });
+
+describe('the default cookie of the curl script follows the shared cookie selection (ARCH-3)', () => {
+  test('two cookies with the same name on different sites: each endpoint gets the cookie of its own site', () => {
+    const auth = { cookies: ['sid'], bearer: false, headers: [], csrf: [] };
+    const a = ExportModel.endpoint({ method: 'GET', path: '/a', origin: 'https://a.example.com', auth });
+    const b = ExportModel.endpoint({ method: 'GET', path: '/b', origin: 'https://b.example.org', auth });
+    const cookie = (domain: string, value: string, usedBy: string[]): ApiModel['cookies'][number] => ({
+      name: 'sid', domain, path: '/', valueExample: value, httpOnly: true, secure: true, sameSite: 'Lax', session: true, expires: null, role: 'session', setBy: [], usedBy,
+    });
+    const model = ExportModel.model([a, b], { cookies: [cookie('a.example.com', 'A-VALUE', [a.id]), cookie('b.example.org', 'B-VALUE', [b.id])], origins: ['https://a.example.com', 'https://b.example.org'] });
+    const curl = new CurlExporter();
+    assert.equal(curl.defaultCookie(model, [b]), 'sid=B-VALUE');
+    assert.equal(curl.defaultCookie(model, [a]), 'sid=A-VALUE');
+    assert.ok(curl.export(model, { endpoints: [b.id] }).content.includes("sid=B-VALUE"));
+    assert.ok(!curl.export(model, { endpoints: [b.id] }).content.includes('A-VALUE'));
+  });
+});

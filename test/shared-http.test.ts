@@ -77,3 +77,31 @@ test('safe URL parsing and percent decoding', () => {
   assert.equal(decodeComponent('caf%C3%A9'), 'caf\u00e9');
   assert.equal(decodeComponent('%E0%A4%A'), '%E0%A4%A');
 });
+
+test('raw bytes with a declared legacy charset stay bytes even when they happen to be valid UTF-8 (legacy charset residual d)', async () => {
+  const { BodyParser } = await import('../src/build/index.js');
+  const bytes = new Uint8Array([0x63, 0x61, 0x66, 0xc3, 0xa9]);
+  const raw = toBodyData(bytes, 'text/plain; charset=windows-1252');
+  assert.equal(raw.encoding, 'base64');
+  assert.deepEqual([...bodyBytes(raw)], [...bytes]);
+  assert.equal(BodyParser.create().parse(raw).value, 'caf\u00c3\u00a9');
+  const decoded = toBodyData(bytes, 'text/plain; charset=windows-1252', { text: true });
+  assert.equal(decoded.encoding, 'utf8');
+  assert.equal(decoded.data, 'caf\u00e9');
+  assert.equal(toBodyData(new TextEncoder().encode('plain ascii'), 'text/plain; charset=windows-1252').encoding, 'utf8');
+  assert.equal(toBodyData(bytes, 'text/plain; charset=utf-8').data, 'caf\u00e9');
+});
+
+test('Shared constants cannot be changed by other code (ARCH-5b)', async () => {
+  const { Http, Samples, Text, METHOD_COLORS } = await import('../src/shared/index.js');
+  const lists: unknown[] = [Http.SAFE_METHODS, Http.SECURE_SCHEMES, Http.LOOPBACK_NAMES, Samples.BODYLESS_METHODS, Samples.FORM_BODY_KINDS, Text.RESERVED_WORDS, METHOD_COLORS];
+  for (const list of lists) assert.ok(Object.isFrozen(list), JSON.stringify(list).slice(0, 40));
+  assert.throws(() => (Http.SAFE_METHODS as string[]).push('POST'), TypeError);
+  assert.throws(() => (Http.SECURE_SCHEMES as string[]).push('http:'), TypeError);
+  assert.throws(() => {
+    (METHOD_COLORS as Record<string, string>).GET = 'red';
+  }, TypeError);
+  assert.equal(Http.isSafeMethod('POST'), false);
+  assert.equal(isPotentiallyTrustworthy(new URL('http://evil.example/')), false);
+  assert.equal(Text.singularize('people'), 'person');
+});

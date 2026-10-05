@@ -66,12 +66,13 @@ describe('form submission encoding (FB-21)', () => {
     assert.equal(ControlRules.submissionEncoding(undefined, 'not-an-encoding'), 'UTF-8');
   });
 
-  test('the document encoding comes from the transport, then the meta prescan, then UTF-8', () => {
+  test('the document encoding comes from the transport, then the meta prescan, then windows-1252 as in Chromium', () => {
     assert.equal(HtmlDocument.parse('<meta charset="iso-8859-1"><p>x', PAGE).encoding, 'windows-1252');
     assert.equal(HtmlDocument.parse('<meta http-equiv="Content-Type" content="text/html; charset=\'euc-jp\'">', PAGE).encoding, 'EUC-JP');
     assert.equal(HtmlDocument.parse('<meta charset="utf-16le">', PAGE).encoding, 'UTF-8');
     assert.equal(HtmlDocument.parse('<meta charset="windows-1251">', PAGE, { encoding: 'utf-8' }).encoding, 'UTF-8');
-    assert.equal(HtmlDocument.parse('<p>x', PAGE).encoding, 'UTF-8');
+    assert.equal(HtmlDocument.parse('<p>x', PAGE).encoding, 'windows-1252');
+    assert.equal(HtmlDocument.parse('<p>caf\u00e9', PAGE).encoding, 'windows-1252');
   });
 
   test('the _charset_ field holds the name of the submission encoding', () => {
@@ -81,7 +82,8 @@ describe('form submission encoding (FB-21)', () => {
     const built = builder.build(form(page), undefined, { documentEncoding: HtmlDocument.parse(page, PAGE).encoding });
     assert.equal(built.charset, 'windows-1252');
     assert.equal(prop(built.schema, '_charset_').const, 'windows-1252');
-    assert.equal(prop(builder.build(form('<form method="post"><input type="hidden" name="_charset_"></form>')).schema, '_charset_').const, 'UTF-8');
+    assert.equal(prop(builder.build(form('<form method="post"><input type="hidden" name="_charset_"></form>')).schema, '_charset_').const, 'windows-1252');
+    assert.equal(prop(builder.build(form('<meta charset="utf-8"><form method="post"><input type="hidden" name="_charset_"></form>')).schema, '_charset_').const, 'UTF-8');
   });
 
   test('the form descriptor carries the submission encoding and the schema builder uses it by default', () => {
@@ -90,7 +92,7 @@ describe('form submission encoding (FB-21)', () => {
     assert.equal(descriptor.charset, 'windows-1252');
     assert.equal(form('<form accept-charset="ISO-8859-1"></form>').charset, 'windows-1252');
     assert.equal(form('<meta charset="shift_jis"><form accept-charset="utf-16"></form>').charset, 'UTF-8');
-    assert.equal(form('<form></form>').charset, 'UTF-8');
+    assert.equal(form('<form></form>').charset, 'windows-1252');
     assert.equal(extractor.extractDocument(HtmlDocument.parse('<form></form>', PAGE, { encoding: 'koi8-r' }))[0]?.charset, 'KOI8-R');
     const built = builder.build(descriptor);
     assert.equal(built.charset, 'windows-1252');

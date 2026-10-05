@@ -1,7 +1,6 @@
 import type { FormDescriptor, FormField, JsonSchema } from '../model/index.js';
 import { TokenDetector } from '../forms/index.js';
-import { Http, Json, Samples, Text } from '../shared/index.js';
-import { Helpers } from './helpers.js';
+import { Http, Json, Samples, Schema, SecretNames, Text } from '../shared/index.js';
 
 export interface RedactorDeps {
   tokens?: TokenDetector;
@@ -11,9 +10,12 @@ export interface RedactorOptions {
   redact?: boolean;
 }
 
+export type PlainTextMode = 'form' | 'pairs' | 'values';
+
 interface PairContext {
   readonly path: string;
   readonly names: ReadonlySet<string>;
+  readonly secrets: ReadonlySet<string>;
 }
 
 export class Redactor {
@@ -42,50 +44,6 @@ export class Redactor {
     'x-functions-key',
     'private-token',
   ]);
-  static readonly SECRET_WORDS: ReadonlySet<string> = new Set([
-    'pass',
-    'passwd',
-    'password',
-    'passphrase',
-    'passcode',
-    'pw',
-    'pwd',
-    'pin',
-    'secret',
-    'token',
-    'auth',
-    'authorization',
-    'credential',
-    'credentials',
-    'session',
-    'sessionid',
-    'sid',
-    'otp',
-    'totp',
-    'ssn',
-    'cvv',
-    'cvc',
-    'jwt',
-    'bearer',
-    'signature',
-    'apikey',
-    'csrf',
-    'xsrf',
-  ]);
-  static readonly SECRET_STEMS: readonly string[] = ['password', 'passwd', 'passphrase'];
-  static readonly SECRET_SUFFIXES: readonly string[] = ['token', 'secret', 'apikey', 'passcode', 'sessionid'];
-  static readonly SECRET_KEY_QUALIFIERS: readonly string[] = [
-    'api', 'access', 'secret', 'private', 'app', 'rp', 'reset', 'activation', 'recovery', 'confirmation', 'verification',
-    'license', 'session', 'encryption', 'signing', 'master', 'subscription', 'sas', 'shared',
-  ];
-  static readonly SECRET_CODE_QUALIFIERS: readonly string[] = [
-    'reset', 'verification', 'confirmation', 'activation', 'recovery', 'backup', 'security', 'mfa', 'sms', 'login', 'factor', 'invite', 'magic',
-  ];
-  static readonly SECRET_PHRASES: readonly (readonly string[])[] = [
-    ...Redactor.SECRET_KEY_QUALIFIERS.map((qualifier) => [qualifier, 'key']),
-    ...Redactor.SECRET_CODE_QUALIFIERS.map((qualifier) => [qualifier, 'code']),
-    ['card', 'number'],
-  ];
   static readonly QUERY_SECRET_NAMES: ReadonlySet<string> = new Set([
     'key',
     'appid',
@@ -121,6 +79,18 @@ export class Redactor {
   static readonly SCHEMA_CHILDREN: readonly string[] = ['items', 'if', 'then', 'else', 'not'];
   static readonly JSON_STARTS: readonly string[] = ['{', '['];
   static readonly LINE_BREAK: RegExp = /(\r\n|\n|\r)/;
+  static readonly PAIR_NAME: RegExp = /^[^\s=]+$/;
+  static readonly PAIR_TEXT_MIME = 'text/plain';
+  static readonly NO_NAMES: ReadonlySet<string> = new Set();
+  static readonly SECRET_CONTEXT_WORDS: ReadonlySet<string> = new Set([
+    'reset', 'key', 'token', 'magic', 'verify', 'verification', 'confirm', 'confirmation', 'activate', 'activation', 'invite', 'invitation', 'login', 'password', 'unlock', 'recover', 'recovery',
+  ]);
+  static readonly HEX_VALUE: RegExp = /^(?:[0-9a-f]{16,}|[0-9A-F]{16,})$/;
+  static readonly TOKEN_CHARACTERS: RegExp = /^[A-Za-z0-9_-]+$/;
+  static readonly LONG_TOKEN_LENGTH = 16;
+  static readonly LONG_TOKEN_TRANSITIONS = 3;
+  static readonly MIXED_TOKEN_LENGTH = 10;
+  static readonly MIXED_TOKEN_TRANSITIONS = 2;
   static readonly RECORD_SEPARATOR = '\u001e';
   static readonly SOCKET_IO_FRAME: RegExp = /^([0-9]+-?(?:\/[^,]*,)?[0-9]*)([[{][\s\S]*)$/;
   static readonly STOMP_HEAD: RegExp = /^([A-Z]+)\r?\n/;
@@ -165,16 +135,12 @@ export class Redactor {
   }
 
   isSecretField(name: string): boolean {
-    const words = Text.letterWords(name);
-    if (words.length === 0) return false;
-    if (words.some((word) => Redactor.#secretWord(word))) return true;
-    if (Redactor.SECRET_PHRASES.some((phrase) => Redactor.#hasPhrase(words, phrase))) return true;
-    return this.#tokens.isHiddenTokenField(name);
+    return SecretNames.isSecret(name) || this.#tokens.isHiddenTokenField(name);
   }
 
   isSecretQueryParam(name: string, url?: URL): boolean {
     const names = new Set(url ? [...url.searchParams.keys()] : []);
-    return this.#secretPair(name, { path: url?.pathname ?? '', names });
+    return this.#secretPair(name, { path: url?.pathname ?? '', names, secrets: Redactor.NO_NAMES });
   }
 
   isSecretHeader(name: string): boolean {
@@ -229,19 +195,19 @@ export class Redactor {
   examples(examples: readonly unknown[], names: ReadonlySet<string>): unknown[] {
     if (!this.#enabled || names.size === 0) return [...examples];
     return examples.map((example) => {
-      if (typeof example === 'string') return this.plainText(example, names);
+      if (typeof example === 'string') return this.plainText(example, names, 'form');
       if (!Json.isPlainObject(example)) return example;
       return Object.fromEntries(Object.entries(example).map(([key, item]) => [key, this.named(key, item, names)]));
     });
   }
 
-  plainText(text: string, names: ReadonlySet<string> = new Set()): string {
+  plainText(text: string, names: ReadonlySet<string> = new Set(), mode: PlainTextMode = 'pairs'): string {
     if (!this.#enabled) return text;
     return text
       .split(Redactor.LINE_BREAK)
       .map((line, i) => {
         if (i % 2 === 1) return line;
-        const eq = line.indexOf('=');
+        const eq = Redactor.#pairEnd(line, mode);
         if (eq < 0) return String(this.deep(line));
         const name = line.slice(0, eq);
         const value = line.slice(eq + 1);
@@ -269,7 +235,7 @@ export class Redactor {
     return String(this.deep(data));
   }
 
-  url(url: string): string {
+  url(url: string, names: ReadonlySet<string> = Redactor.NO_NAMES): string {
     if (!this.#enabled) return url;
     const parsed = Http.parseUrl(url);
     if (!parsed) return url;
@@ -285,14 +251,14 @@ export class Redactor {
     }
     if (parsed.search.length > 1) {
       const search = parsed.search.slice(1);
-      const query = this.#pairs(search, { path: parsed.pathname, names: Redactor.#pairNames(search) });
+      const query = this.#pairs(search, { path: parsed.pathname, names: Redactor.#pairNames(search), secrets: names });
       if (query !== undefined) {
         parsed.search = '?' + query;
         changed = true;
       }
     }
     if (parsed.hash.length > 1) {
-      const hash = this.#fragment(parsed.hash.slice(1), parsed.pathname);
+      const hash = this.#fragment(parsed.hash.slice(1), parsed.pathname, names);
       if (hash !== undefined) {
         parsed.hash = '#' + hash;
         changed = true;
@@ -330,7 +296,7 @@ export class Redactor {
   }
 
   #secretPair(name: string, context: PairContext): boolean {
-    if (this.isSecretField(name)) return true;
+    if (context.secrets.has(name) || this.isSecretField(name)) return true;
     const lower = name.toLowerCase();
     if (Redactor.QUERY_SECRET_NAMES.has(lower)) return true;
     if (!Redactor.CALLBACK_SECRET_NAMES.has(lower)) return false;
@@ -356,25 +322,70 @@ export class Redactor {
     return changed ? parts.join('&') : undefined;
   }
 
-  #fragment(text: string, path: string): string | undefined {
+  #fragment(text: string, path: string, secrets: ReadonlySet<string>): string | undefined {
     const question = text.indexOf('?');
     const pairsOnly = question < 0 && text.includes('=');
     const route = question >= 0 ? text.slice(0, question) : pairsOnly ? '' : text;
     const query = question >= 0 ? text.slice(question + 1) : pairsOnly ? text : undefined;
     const routed = route === '' ? undefined : this.#segments(route);
-    const paired = query === undefined ? undefined : this.#pairs(query, { path, names: Redactor.#pairNames(query) });
+    const paired = query === undefined ? undefined : this.#pairs(query, { path, names: Redactor.#pairNames(query), secrets });
     if (routed === undefined && paired === undefined) return undefined;
     return (routed ?? route) + (question >= 0 ? '?' : '') + (paired ?? query ?? '');
   }
 
   #segments(path: string): string | undefined {
     let changed = false;
-    const segments = path.split('/').map((segment) => {
-      if (!this.isSecretValue(Http.decodeComponent(segment))) return segment;
+    const raw = path.split('/');
+    const segments = raw.map((segment, position) => {
+      if (!Redactor.isSecretSegment(raw, position)) return segment;
       changed = true;
       return encodeURIComponent(Samples.REDACTED);
     });
     return changed ? segments.join('/') : undefined;
+  }
+
+  pathValue(segments: readonly string[], position: number, name: string, value: string): string {
+    if (!this.#enabled) return value;
+    return Redactor.isSecretSegment(segments, position) ? Samples.REDACTED : String(this.field(name, value));
+  }
+
+  static isOpaqueValue(segment: string): boolean {
+    return Redactor.isHexValue(segment) || Redactor.isOpaqueToken(segment);
+  }
+
+  static isHexValue(segment: string): boolean {
+    return Redactor.HEX_VALUE.test(segment) && /[0-9]/.test(segment) && /[a-fA-F]/.test(segment);
+  }
+
+  static isOpaqueToken(segment: string): boolean {
+    if (!Redactor.TOKEN_CHARACTERS.test(segment) || !/[0-9]/.test(segment) || !/[A-Za-z]/.test(segment)) return false;
+    const transitions = Redactor.#transitions(segment);
+    if (segment.length >= Redactor.LONG_TOKEN_LENGTH && transitions >= Redactor.LONG_TOKEN_TRANSITIONS) return true;
+    return segment.length >= Redactor.MIXED_TOKEN_LENGTH && /[a-z]/.test(segment) && /[A-Z]/.test(segment) && transitions >= Redactor.MIXED_TOKEN_TRANSITIONS;
+  }
+
+  static isSecretSegment(segments: readonly string[], position: number): boolean {
+    const segment = Http.decodeComponent(segments[position] ?? '');
+    if (segment === '') return false;
+    if (Redactor.looksSecret(segment)) return true;
+    if (!Redactor.isOpaqueValue(segment)) return false;
+    return segments.slice(0, position).some((earlier) => {
+      const literal = Http.decodeComponent(earlier);
+      if (literal === '' || Redactor.isOpaqueValue(literal) || /^[0-9]+$/.test(literal)) return false;
+      return Text.letterWords(literal).some((word) => Redactor.SECRET_CONTEXT_WORDS.has(word));
+    });
+  }
+
+  static #transitions(segment: string): number {
+    let count = 0;
+    for (let i = 1; i < segment.length; i++) {
+      const prevDigit = /[0-9]/.test(segment.charAt(i - 1));
+      const curDigit = /[0-9]/.test(segment.charAt(i));
+      const prevLetter = /[A-Za-z]/.test(segment.charAt(i - 1));
+      const curLetter = /[A-Za-z]/.test(segment.charAt(i));
+      if ((prevDigit && curLetter) || (prevLetter && curDigit)) count++;
+    }
+    return count;
   }
 
   #jsonString(value: string): string {
@@ -418,7 +429,7 @@ export class Redactor {
   #schemaNode(node: JsonSchema, secret: boolean): void {
     if (Object.hasOwn(node, Redactor.TOKEN_EXAMPLE)) node[Redactor.TOKEN_EXAMPLE] = Samples.REDACTED;
     if (secret && Object.hasOwn(node, 'default')) node.default = Redactor.#all(node.default);
-    for (const [name, child] of Helpers.properties(node)) this.#schemaNode(child, this.isSecretField(name) || child['x-appii-token'] === true);
+    for (const [name, child] of Object.entries(Schema.properties(node))) this.#schemaNode(child, this.isSecretField(name) || child['x-appii-token'] === true);
     for (const key of Redactor.SCHEMA_CHILDREN) {
       const child = node[key];
       if (Json.isPlainObject(child)) this.#schemaNode(child, secret);
@@ -429,19 +440,14 @@ export class Redactor {
     }
   }
 
-  static #secretWord(word: string): boolean {
-    return (
-      Redactor.SECRET_WORDS.has(word) ||
-      Redactor.SECRET_STEMS.some((stem) => word.includes(stem)) ||
-      Redactor.SECRET_SUFFIXES.some((suffix) => word.endsWith(suffix))
-    );
+  static plainTextMode(mimeType: string | undefined): PlainTextMode {
+    return Http.mimeEssence(mimeType ?? '') === Redactor.PAIR_TEXT_MIME ? 'pairs' : 'values';
   }
 
-  static #hasPhrase(words: readonly string[], phrase: readonly string[]): boolean {
-    for (let i = 0; i + phrase.length <= words.length; i++) {
-      if (phrase.every((part, j) => words[i + j] === part)) return true;
-    }
-    return false;
+  static #pairEnd(line: string, mode: PlainTextMode): number {
+    if (mode === 'values') return -1;
+    const eq = line.indexOf('=');
+    return mode === 'form' || Redactor.PAIR_NAME.test(line.slice(0, eq)) ? eq : -1;
   }
 
   static #pairNames(text: string): Set<string> {

@@ -1,6 +1,6 @@
 import * as zlib from 'node:zlib';
 import type { BodyData, BodyKind, CapturedRequest, CapturedResponse } from '../model/index.js';
-import { CharsetEncoder, Http, Json, Text } from '../shared/index.js';
+import { CharsetEncoder, HtmlEncodingSniffer, Http, Json, Text } from '../shared/index.js';
 import { GraphqlDocument } from './graphql-document.js';
 import { MultipartParser } from './multipart-parser.js';
 import type { MultipartPart } from './multipart-parser.js';
@@ -28,6 +28,7 @@ export interface BodyParseOptions {
 }
 
 export class BodyParser {
+  static readonly TEXT_FORM = 'text/plain';
   static readonly URLENCODED = 'application/x-www-form-urlencoded';
   static readonly MULTIPART = 'multipart/form-data';
   static readonly HTML_MIMES: ReadonlySet<string> = new Set(['text/html', 'application/xhtml+xml']);
@@ -135,7 +136,7 @@ export class BodyParser {
       return this.parse(decoded, declared, { formEncoding: options.formEncoding });
     }
     if (mime === BodyParser.MULTIPART) return this.#multipartBody(body, declared, mime, options.formEncoding);
-    const text = BodyParser.#text(body, declared);
+    const text = BodyParser.HTML_MIMES.has(mime) ? BodyParser.#html(body, declared) : BodyParser.#text(body, declared, mime === BodyParser.TEXT_FORM ? options.formEncoding : undefined);
     if (text === undefined) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
     if (BodyParser.GRAPHQL_MIMES.has(mime)) return BodyParser.#graphqlDocument(text, mime);
     if (BodyParser.LINE_JSON_MIMES.has(mime)) return BodyParser.#lines(text, mime, body.truncated === true);
@@ -153,13 +154,8 @@ export class BodyParser {
   }
 
   static urlencoded(text: string, encoding: string = BodyParser.DEFAULT_FORM_ENCODING): Record<string, string | string[]> {
-    const label = CharsetEncoder.canonical(encoding) ?? BodyParser.DEFAULT_FORM_ENCODING;
     const fields = new Map<string, string[]>();
-    for (const sequence of text.split('&')) {
-      if (sequence === '') continue;
-      const eq = sequence.indexOf('=');
-      const name = BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq), label);
-      const value = BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1), label);
+    for (const [name, value] of BodyParser.urlencodedPairs(text, encoding)) {
       const list = fields.get(name);
       if (list) list.push(value);
       else fields.set(name, [value]);
@@ -167,13 +163,25 @@ export class BodyParser {
     return Object.fromEntries([...fields].map(([name, values]) => [name, values.length === 1 ? (values[0] ?? '') : values]));
   }
 
+  static urlencodedPairs(text: string, encoding: string = BodyParser.DEFAULT_FORM_ENCODING): [string, string][] {
+    const label = CharsetEncoder.canonical(encoding) ?? BodyParser.DEFAULT_FORM_ENCODING;
+    const pairs: [string, string][] = [];
+    for (const sequence of text.split('&')) {
+      if (sequence === '') continue;
+      const eq = sequence.indexOf('=');
+      pairs.push([BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq), label), BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1), label)]);
+    }
+    return pairs;
+  }
+
   #multipartBody(body: BodyData, declared: string, mime: string, formEncoding: string | undefined): ParsedBody {
     const bytes = Http.bodyBytes(body);
     const boundary = MultipartParser.boundary(declared) ?? MultipartParser.boundary(body.mimeType) ?? MultipartParser.sniffBoundary(bytes);
     if (!boundary) return { kind: 'multipart', mimeType: mime };
     const fields = new Map<string, unknown[]>();
-    const parts = this.#multipart.parse(bytes, boundary);
-    const charset = BodyParser.#multipartCharset(parts, formEncoding);
+    const probe = this.#multipart.parse(bytes, boundary);
+    const charset = BodyParser.multipartCharset(probe, formEncoding);
+    const parts = Http.isLegacyCharset(charset) ? this.#multipart.parse(bytes, boundary, charset) : probe;
     for (const part of parts) {
       if (part.name === undefined) continue;
       const value: unknown =
@@ -230,18 +238,25 @@ export class BodyParser {
     return Json.isPlainObject(parsed.value) || Array.isArray(parsed.value) ? parsed.value : undefined;
   }
 
-  static #text(body: BodyData, declared: string): string | undefined {
+  static #html(body: BodyData, declared: string): string | undefined {
     if (body.encoding === 'utf8') return body.data;
     const bytes = Http.bodyBytes(body);
-    const charset = Http.charsetOf(declared);
-    const labels = charset && charset !== 'utf-8' && charset !== 'utf8' ? [charset, 'utf-8'] : ['utf-8'];
+    const text = CharsetEncoder.decode(bytes, HtmlEncodingSniffer.sniff(bytes, Http.charsetOf(declared)), { stream: body.truncated === true });
+    return text.includes('\u0000') ? undefined : text;
+  }
+
+  static #text(body: BodyData, declared: string, formEncoding: string | undefined): string | undefined {
+    if (body.encoding === 'utf8') return body.data;
+    const bytes = Http.bodyBytes(body);
+    const charset = Http.charsetOf(declared) ?? formEncoding;
+    const labels = Http.isLegacyCharset(charset) && charset !== undefined ? [charset, CharsetEncoder.UTF8] : [CharsetEncoder.UTF8];
     for (const label of labels) {
       if (CharsetEncoder.canonical(label) === undefined) continue;
       try {
         const text = CharsetEncoder.decode(bytes, label, { fatal: true, stream: body.truncated === true });
         return text.includes('\u0000') ? undefined : text;
       } catch {
-        return undefined;
+        continue;
       }
     }
     return undefined;
@@ -257,7 +272,7 @@ export class BodyParser {
     return BodyParser.DEFAULT_FORM_ENCODING;
   }
 
-  static #multipartCharset(parts: readonly MultipartPart[], formEncoding: string | undefined): string {
+  static multipartCharset(parts: readonly MultipartPart[], formEncoding: string | undefined): string {
     const field = parts.find((part) => part.name === BodyParser.CHARSET_FIELD && part.filename === undefined);
     const named = field === undefined ? undefined : CharsetEncoder.decode(field.data, BodyParser.DEFAULT_FORM_ENCODING).trim();
     if (named !== undefined && BodyParser.#known(named)) return named;

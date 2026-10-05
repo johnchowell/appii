@@ -85,6 +85,19 @@ export class UserAgentIdentity {
     }
   }
 
+  async applyToWorker(connection: { send<T>(method: string, params?: Record<string, unknown>): Promise<T> }): Promise<boolean> {
+    try {
+      await connection.send('Network.setUserAgentOverride', { userAgent: this.userAgent, userAgentMetadata: this.metadata });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  withUserAgent(userAgent: string): UserAgentIdentity {
+    return new UserAgentIdentity(userAgent, this.metadata);
+  }
+
   static #headedBrands(list: readonly BrandVersion[], major: number): BrandVersion[] {
     const kept = list.filter((entry) => entry.brand !== UserAgentIdentity.HEADLESS_BRAND);
     const chromium = kept.find((entry) => entry.brand === UserAgentIdentity.CHROMIUM_BRAND);

@@ -32,6 +32,8 @@ export class TsClientRuntime {
     'ScannedInput',
     'HtmlScan',
     'HtmlTag',
+    'HtmlFrame',
+    'HtmlFieldset',
     'FetchedDocument',
     'StoredDocument',
     'TokenState',
@@ -45,6 +47,7 @@ export class TsClientRuntime {
     'DEFAULT_BASE_URL',
     'REGISTRABLE_DOMAINS',
     'SINGLE_BYTE_INDEXES',
+    'NAMED_REFERENCES',
   ];
 
   static readonly CLIENT_MEMBERS: readonly string[] = ['constructor', 'cookies', 'base', 'resolve', 'clearTokens', 'refreshTokens', 'send'];
@@ -269,6 +272,17 @@ interface ScannedInput {
   ownerId?: string;
 }
 
+interface HtmlFrame {
+  name: string;
+  space: 'svg' | 'math';
+  integration: boolean;
+}
+
+interface HtmlFieldset {
+  disabled: boolean;
+  legend: 'none' | 'open' | 'closed';
+}
+
 interface HtmlScan {
   forms: ScannedForm[];
   inputs: ScannedInput[];
@@ -279,6 +293,7 @@ interface HtmlTag {
   name: string;
   attributes: Map<string, string>;
   end: number;
+  selfClosing: boolean;
 }
 
 interface FetchedDocument {
@@ -911,19 +926,35 @@ export class CookieJar {
 }
 
 class AppiiHtml {
-  static readonly RAW_TEXT = new Set(['script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'textarea', 'title']);
-  static readonly ENTITIES: Record<string, string> = { amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'", nbsp: '\u00a0' };
-  static readonly LEGACY_ENTITIES = new Set(['amp', 'AMP', 'lt', 'LT', 'gt', 'GT', 'quot', 'QUOT', 'nbsp']);
+  static readonly RAW_TEXT = new Set(['style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'textarea', 'title']);
+  static readonly SCRIPT = 'script';
+  static readonly BREAKOUT = new Set([
+    'b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt', 'em', 'embed', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'head', 'hr', 'i', 'img', 'li', 'listing', 'menu', 'meta', 'nobr', 'ol', 'p', 'pre', 'ruby', 's', 'small', 'span', 'strong', 'strike',
+    'sub', 'sup', 'table', 'tt', 'u', 'ul', 'var',
+  ]);
+  static readonly BREAKOUT_END = new Set(['br', 'p']);
+  static readonly FONT_BREAKOUT = ['color', 'face', 'size'];
+  static readonly SVG_INTEGRATION = new Set(['foreignobject', 'desc', 'title']);
+  static readonly MATH_TEXT_INTEGRATION = new Set(['mi', 'mo', 'mn', 'ms', 'mtext']);
+  static readonly HTML_ANNOTATIONS = new Set(['text/html', 'application/xhtml+xml']);
+  static readonly UNSENT_TYPES = new Set(['submit', 'image', 'reset', 'button', 'file']);
+  static readonly CHECKABLE_TYPES = new Set(['checkbox', 'radio']);
+  static readonly LONGEST_REFERENCE = 32;
   static readonly C1 = [
     0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f,
     0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178,
   ];
+  static #references: Map<string, string> | undefined;
 
-  static scan(html: string): HtmlScan {
+  static scan(source: string): HtmlScan {
+    const html = source.replace(/\r\n?/g, '\n');
     const forms: ScannedForm[] = [];
     const inputs: ScannedInput[] = [];
     const metas: [string, string][] = [];
     const ids = new Map<string, number>();
+    const frames: HtmlFrame[] = [];
+    const fieldsets: HtmlFieldset[] = [];
     let pointer = -1;
     let template = 0;
     let i = 0;
@@ -947,9 +978,13 @@ class AppiiHtml {
         }
         const closing = AppiiHtml.#tag(html, open + 2);
         if (closing === undefined) break;
-        if (closing.name === 'form' && template === 0) pointer = -1;
-        else if (closing.name === 'template' && template > 0) template--;
         i = closing.end;
+        if (AppiiHtml.#closeForeign(frames, closing.name)) continue;
+        if (closing.name === 'template' && template > 0) template--;
+        else if (template > 0) continue;
+        else if (closing.name === 'form') pointer = -1;
+        else if (closing.name === 'fieldset') fieldsets.pop();
+        else if (closing.name === 'legend') AppiiHtml.#legend(fieldsets, 'closed');
         continue;
       }
       if (!AppiiHtml.#letter(next)) {
@@ -960,6 +995,14 @@ class AppiiHtml {
       if (tag === undefined) break;
       i = tag.end;
       const attributes = tag.attributes;
+      if (AppiiHtml.#foreign(frames)) {
+        if (!AppiiHtml.#breaksOut(tag)) {
+          if (template === 0) AppiiHtml.#identify(ids, attributes, -1);
+          if (!tag.selfClosing) frames.push(AppiiHtml.#frame(frames, tag));
+          continue;
+        }
+        while (AppiiHtml.#foreign(frames)) frames.pop();
+      }
       if (template === 0 && tag.name === 'form') {
         if (pointer < 0) {
           pointer = forms.length;
@@ -973,21 +1016,20 @@ class AppiiHtml {
         }
       } else if (template === 0) {
         AppiiHtml.#identify(ids, attributes, -1);
-        if (tag.name === 'input') {
-          const input: ScannedInput = { name: attributes.get('name') ?? '', owner: pointer };
-          const value = attributes.get('value');
-          const owner = attributes.get('form');
-          if (value !== undefined) input.value = value;
-          if (owner !== undefined) input.ownerId = owner;
-          inputs.push(input);
-        } else if (tag.name === 'meta') {
+        if (tag.name === 'input') inputs.push(AppiiHtml.#input(attributes, pointer, fieldsets));
+        else if (tag.name === 'fieldset') fieldsets.push({ disabled: attributes.has('disabled'), legend: 'none' });
+        else if (tag.name === 'legend') AppiiHtml.#legend(fieldsets, 'open');
+        else if (tag.name === 'meta') {
           const name = attributes.get('name');
           const content = attributes.get('content');
           if (name !== undefined && content !== undefined) metas.push([name, content]);
         }
       }
-      if (tag.name === 'template') template++;
+      if (tag.name === 'svg' || tag.name === 'math') {
+        if (!tag.selfClosing) frames.push({ name: tag.name, space: tag.name, integration: false });
+      } else if (tag.name === 'template') template++;
       else if (tag.name === 'plaintext') break;
+      else if (tag.name === AppiiHtml.SCRIPT) i = AppiiHtml.#scriptData(html, i);
       else if (AppiiHtml.RAW_TEXT.has(tag.name)) i = AppiiHtml.#rawText(html, i, tag.name);
     }
     for (const input of inputs) if (input.ownerId !== undefined) input.owner = ids.get(input.ownerId) ?? -1;
@@ -1003,13 +1045,13 @@ class AppiiHtml {
     return identity.index === undefined ? undefined : scan.forms[identity.index];
   }
 
-  static input(scan: HtmlScan, name: string, identity: FormIdentity | undefined): string | undefined {
+  static input(scan: HtmlScan, name: string, identity: FormIdentity | undefined): string | string[] | undefined {
     const form = identity === undefined ? undefined : AppiiHtml.form(scan, identity);
     if (form !== undefined) {
-      const owned = scan.inputs.find((input) => input.owner === form.index && input.name === name);
-      return owned === undefined ? undefined : (owned.value ?? '');
+      const owned = scan.inputs.filter((input) => input.owner === form.index && input.name === name && input.value !== undefined).map((input) => input.value ?? '');
+      return owned.length === 0 ? undefined : owned.length === 1 ? owned[0] : owned;
     }
-    return scan.inputs.find((input) => input.name === name && input.value !== undefined)?.value;
+    return scan.inputs.find((input) => input.name === name && input.value !== undefined && input.value !== '')?.value;
   }
 
   static meta(scan: HtmlScan, name: string): string | undefined {
@@ -1018,24 +1060,129 @@ class AppiiHtml {
   }
 
   static decode(value: string): string {
-    if (!value.includes('&')) return value;
-    return value.replace(
-      /&(?:#[xX]([0-9a-fA-F]+);?|#([0-9]+);?|([A-Za-z][A-Za-z0-9]*)(;?))/g,
-      (whole: string, hex: string | undefined, decimal: string | undefined, named: string | undefined, semicolon: string | undefined, offset: number, source: string) => {
-        if (hex !== undefined) return AppiiHtml.#numeric(parseInt(hex, 16));
-        if (decimal !== undefined) return AppiiHtml.#numeric(parseInt(decimal, 10));
-        if (named === undefined || !Object.hasOwn(AppiiHtml.ENTITIES, named)) return whole;
-        const replacement = AppiiHtml.ENTITIES[named] ?? whole;
-        if (semicolon === ';') return replacement;
-        return AppiiHtml.LEGACY_ENTITIES.has(named) && source.charAt(offset + whole.length) !== '=' ? replacement : whole;
-      },
-    );
+    const text = value.replace(/\0/g, '\ufffd');
+    if (!text.includes('&')) return text;
+    let out = '';
+    let i = 0;
+    for (;;) {
+      const amp = text.indexOf('&', i);
+      if (amp < 0) return out + text.slice(i);
+      out += text.slice(i, amp);
+      const [replacement, next] = AppiiHtml.#reference(text, amp + 1);
+      out += replacement;
+      i = next;
+    }
+  }
+
+  static #reference(text: string, at: number): [string, number] {
+    if (text.charAt(at) === '#') {
+      const hex = text.charAt(at + 1) === 'x' || text.charAt(at + 1) === 'X';
+      const start = hex ? at + 2 : at + 1;
+      let end = start;
+      while (end < text.length && (hex ? /[0-9A-Fa-f]/ : /[0-9]/).test(text.charAt(end))) end++;
+      if (end === start) return ['&', at];
+      const digits = text.slice(start, end).replace(/^0+/, '');
+      const code = digits.length > 8 ? 0x110000 : parseInt(digits === '' ? '0' : digits, hex ? 16 : 10);
+      return [AppiiHtml.#numeric(code), text.charAt(end) === ';' ? end + 1 : end];
+    }
+    let run = at;
+    while (run < text.length && run - at < AppiiHtml.LONGEST_REFERENCE && /[0-9A-Za-z]/.test(text.charAt(run))) run++;
+    if (run === at) return ['&', at];
+    const table = AppiiHtml.#named();
+    for (let end = run; end > at; end--) {
+      const name = text.slice(at, end);
+      const terminated = text.charAt(end) === ';' ? table.get(name + ';') : undefined;
+      if (terminated !== undefined) return [terminated, end + 1];
+      const legacy = table.get(name);
+      if (legacy === undefined) continue;
+      const after = text.charAt(end);
+      return after === '=' || /[0-9A-Za-z]/.test(after) ? ['&', at] : [legacy, end];
+    }
+    return ['&', at];
+  }
+
+  static #named(): Map<string, string> {
+    if (AppiiHtml.#references !== undefined) return AppiiHtml.#references;
+    const table = new Map<string, string>();
+    for (const line of NAMED_REFERENCES) {
+      for (const entry of line.split(' ')) {
+        const colon = entry.indexOf(':');
+        const head = entry.slice(0, colon);
+        const legacy = head.endsWith('!');
+        const name = legacy ? head.slice(0, -1) : head;
+        const text = String.fromCodePoint(...entry.slice(colon + 1).split('.').map((hex) => parseInt(hex, 16)));
+        table.set(name + ';', text);
+        if (legacy) table.set(name, text);
+      }
+    }
+    AppiiHtml.#references = table;
+    return table;
   }
 
   static #numeric(code: number): string {
     if (!Number.isFinite(code) || code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '\ufffd';
     if (code >= 0x80 && code <= 0x9f) return String.fromCodePoint(AppiiHtml.C1[code - 0x80] ?? code);
     return String.fromCodePoint(code);
+  }
+
+  static #input(attributes: Map<string, string>, pointer: number, fieldsets: readonly HtmlFieldset[]): ScannedInput {
+    const input: ScannedInput = { name: attributes.get('name') ?? '', owner: pointer };
+    const owner = attributes.get('form');
+    if (owner !== undefined) input.ownerId = owner;
+    const type = AppiiHtml.#lower(attributes.get('type') ?? '');
+    const disabled = attributes.has('disabled') || fieldsets.some((fieldset) => fieldset.disabled && fieldset.legend !== 'open');
+    const checkable = AppiiHtml.CHECKABLE_TYPES.has(type);
+    if (disabled || AppiiHtml.UNSENT_TYPES.has(type) || (checkable && !attributes.has('checked'))) return input;
+    input.value = attributes.get('value') ?? (checkable ? 'on' : '');
+    return input;
+  }
+
+  static #legend(fieldsets: HtmlFieldset[], state: 'open' | 'closed'): void {
+    const top = fieldsets[fieldsets.length - 1];
+    if (top === undefined) return;
+    if (state === 'open' && top.legend === 'none') top.legend = 'open';
+    else if (state === 'closed' && top.legend === 'open') top.legend = 'closed';
+  }
+
+  static #foreign(frames: readonly HtmlFrame[]): boolean {
+    const top = frames[frames.length - 1];
+    return top !== undefined && !top.integration;
+  }
+
+  static #breaksOut(tag: HtmlTag): boolean {
+    if (AppiiHtml.BREAKOUT.has(tag.name)) return true;
+    return tag.name === 'font' && AppiiHtml.FONT_BREAKOUT.some((name) => tag.attributes.has(name));
+  }
+
+  static #frame(frames: readonly HtmlFrame[], tag: HtmlTag): HtmlFrame {
+    const parent = frames[frames.length - 1];
+    const space = parent?.space === 'math' && parent.name === 'annotation-xml' && tag.name === 'svg' ? 'svg' : (parent?.space ?? 'svg');
+    let integration = false;
+    if (space === 'svg') integration = AppiiHtml.SVG_INTEGRATION.has(tag.name);
+    else if (AppiiHtml.MATH_TEXT_INTEGRATION.has(tag.name)) integration = true;
+    else if (tag.name === 'annotation-xml') integration = AppiiHtml.HTML_ANNOTATIONS.has(AppiiHtml.#lower(tag.attributes.get('encoding') ?? ''));
+    return { name: tag.name, space, integration };
+  }
+
+  static #closeForeign(frames: HtmlFrame[], name: string): boolean {
+    const top = frames[frames.length - 1];
+    if (top === undefined) return false;
+    if (top.integration) {
+      if (top.name !== name) return false;
+      frames.pop();
+      return true;
+    }
+    if (AppiiHtml.BREAKOUT_END.has(name)) {
+      while (AppiiHtml.#foreign(frames)) frames.pop();
+      return false;
+    }
+    for (let at = frames.length - 1; at >= 0; at--) {
+      if (frames[at]?.name === name) {
+        frames.length = at;
+        return true;
+      }
+    }
+    return false;
   }
 
   static #identify(ids: Map<string, number>, attributes: Map<string, string>, index: number): void {
@@ -1063,13 +1210,69 @@ class AppiiHtml {
     for (;;) {
       const close = html.indexOf('</', at);
       if (close < 0) return html.length;
-      const after = html.charAt(close + 2 + name.length);
-      if (AppiiHtml.#lower(html.slice(close + 2, close + 2 + name.length)) === name && (AppiiHtml.#space(after) || after === '/' || after === '>')) {
+      if (AppiiHtml.#nameAt(html, close + 2, name)) {
         const tag = AppiiHtml.#tag(html, close + 2);
         return tag === undefined ? html.length : tag.end;
       }
       at = close + 2;
     }
+  }
+
+  static #scriptData(html: string, from: number): number {
+    const length = html.length;
+    let state: 'data' | 'escaped' | 'dash' | 'dashDash' | 'double' | 'doubleDash' | 'doubleDashDash' = 'data';
+    let i = from;
+    while (i < length) {
+      const ch = html.charAt(i);
+      if (state === 'data') {
+        if (ch === '<' && html.charAt(i + 1) === '/' && AppiiHtml.#nameAt(html, i + 2, AppiiHtml.SCRIPT)) return AppiiHtml.#endTag(html, i + 2);
+        if (ch === '<' && html.startsWith('<!--', i)) {
+          state = 'dashDash';
+          i += 4;
+          continue;
+        }
+        i++;
+        continue;
+      }
+      if (state === 'double' || state === 'doubleDash' || state === 'doubleDashDash') {
+        if (ch === '-') state = state === 'double' ? 'doubleDash' : 'doubleDashDash';
+        else if (ch === '>' && state === 'doubleDashDash') state = 'data';
+        else if (ch === '<') {
+          state = 'double';
+          if (html.charAt(i + 1) === '/' && AppiiHtml.#nameAt(html, i + 2, AppiiHtml.SCRIPT)) {
+            state = 'escaped';
+            i += 2 + AppiiHtml.SCRIPT.length;
+            continue;
+          }
+        } else state = 'double';
+        i++;
+        continue;
+      }
+      if (ch === '-') state = state === 'escaped' ? 'dash' : 'dashDash';
+      else if (ch === '>' && state === 'dashDash') state = 'data';
+      else if (ch === '<') {
+        state = 'escaped';
+        if (html.charAt(i + 1) === '/' && AppiiHtml.#nameAt(html, i + 2, AppiiHtml.SCRIPT)) return AppiiHtml.#endTag(html, i + 2);
+        if (AppiiHtml.#nameAt(html, i + 1, AppiiHtml.SCRIPT)) {
+          state = 'double';
+          i += 1 + AppiiHtml.SCRIPT.length;
+          continue;
+        }
+      } else state = 'escaped';
+      i++;
+    }
+    return length;
+  }
+
+  static #nameAt(html: string, at: number, name: string): boolean {
+    if (AppiiHtml.#lower(html.slice(at, at + name.length)) !== name) return false;
+    const after = html.charAt(at + name.length);
+    return AppiiHtml.#space(after) || after === '/' || after === '>';
+  }
+
+  static #endTag(html: string, at: number): number {
+    const tag = AppiiHtml.#tag(html, at);
+    return tag === undefined ? html.length : tag.end;
   }
 
   static #tag(html: string, start: number): HtmlTag | undefined {
@@ -1078,10 +1281,15 @@ class AppiiHtml {
     while (i < length && !AppiiHtml.#space(html.charAt(i)) && html.charAt(i) !== '/' && html.charAt(i) !== '>') i++;
     const name = AppiiHtml.#lower(html.slice(start, i));
     const attributes = new Map<string, string>();
+    let selfClosing = false;
     for (;;) {
-      while (i < length && (AppiiHtml.#space(html.charAt(i)) || html.charAt(i) === '/')) i++;
+      while (i < length && (AppiiHtml.#space(html.charAt(i)) || html.charAt(i) === '/')) {
+        selfClosing = html.charAt(i) === '/' && html.charAt(i + 1) === '>';
+        i++;
+      }
       if (i >= length) return undefined;
-      if (html.charAt(i) === '>') return { name, attributes, end: i + 1 };
+      if (html.charAt(i) === '>') return { name, attributes, end: i + 1, selfClosing };
+      selfClosing = false;
       const keyStart = i;
       i++;
       while (i < length && !AppiiHtml.#space(html.charAt(i)) && html.charAt(i) !== '/' && html.charAt(i) !== '>' && html.charAt(i) !== '=') i++;
@@ -1709,7 +1917,10 @@ class AppiiHtml {
       data: AppiiRuntime.data(bytes, type),
     };
     if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
-    if (state.cached.length > 0 && BaseApiClient.STALE_STATUSES.includes(status)) response.staleTokens = BaseApiClient.#stale(status, state.cached);
+    if (state.cached.length > 0 && BaseApiClient.STALE_STATUSES.includes(status)) {
+      response.staleTokens = BaseApiClient.#stale(status, state.cached);
+      for (const stale of response.staleTokens.pages) this.#documents.delete(stale);
+    }
     return response;
   }
 
@@ -1721,7 +1932,7 @@ class AppiiHtml {
       'The server rejected the request with status ' + status + '.',
       'The client took ' + (one ? 'the token ' : 'the tokens ') + tokens.join(', ') + ' from ' + pages.join(', ') + ', which it loaded for an earlier request.',
       (one ? 'This token' : 'These tokens') + ' can be stale.',
-      'Call refreshTokens() to load the page again for the next request.',
+      'The client forgot ' + (pages.length === 1 ? 'this page' : 'these pages') + ' and loads ' + (pages.length === 1 ? 'it' : 'them') + ' again for the next request, as a browser would after a reload.',
       'Send this request again only if the server can safely receive it two times.',
     ].join(' ');
     return { tokens, pages, message };
@@ -1795,12 +2006,12 @@ class AppiiHtml {
     if (token.location === 'body' && (!AppiiRuntime.isRecord(body) || !AppiiRuntime.blank(body[token.name]))) return;
     const value = await this.#token(token, url, form, state);
     if (value === undefined) return;
-    if (token.location === 'header') headers[token.name.toLowerCase()] = value;
+    if (token.location === 'header') headers[token.name.toLowerCase()] = Array.isArray(value) ? (value[0] ?? '') : value;
     else if (token.location === 'query') query[token.name] = value;
     else if (AppiiRuntime.isRecord(body)) body[token.name] = value;
   }
 
-  async #token(token: CsrfSpec, url: string, form: FormSpec | undefined, state: TokenState): Promise<string | undefined> {
+  async #token(token: CsrfSpec, url: string, form: FormSpec | undefined, state: TokenState): Promise<string | string[] | undefined> {
     const name = token.sourceName ?? token.name;
     if (token.source === 'cookie') {
       let value = this.cookies.get(name, url);
@@ -1827,7 +2038,7 @@ class AppiiHtml {
     return value;
   }
 
-  static #extract(document: FetchedDocument, token: CsrfSpec, name: string, identity: FormIdentity | undefined): string | undefined {
+  static #extract(document: FetchedDocument, token: CsrfSpec, name: string, identity: FormIdentity | undefined): string | string[] | undefined {
     if (token.source === 'hidden-field') return AppiiHtml.input(BaseApiClient.#scan(document), name, identity);
     if (token.source === 'meta') return AppiiHtml.meta(BaseApiClient.#scan(document), name);
     if (token.source !== 'response') return undefined;

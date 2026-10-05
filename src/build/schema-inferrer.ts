@@ -1,7 +1,6 @@
 import type { JsonSchema } from '../model/index.js';
 import { Json, Schema } from '../shared/index.js';
 import { FormatDetector } from './format-detector.js';
-import { Helpers } from './helpers.js';
 
 export interface SchemaInferrerOptions {
   maxEnum?: number;
@@ -200,7 +199,7 @@ export class SchemaInferrer {
     if (aMap || bMap) {
       const map = aMap ? a : b;
       const regular = aMap ? b : a;
-      const props = Helpers.properties(regular);
+      const props = Object.entries(Schema.properties(regular));
       const rule = SchemaInferrer.MAP_KEY_RULES.find((candidate) => Json.stableStringify(candidate.propertyNames, 0) === Json.stableStringify(map.propertyNames, 0));
       if (rule && props.every(([key]) => rule.pattern.test(key))) {
         out.propertyNames = Json.clone(rule.propertyNames);
@@ -211,8 +210,8 @@ export class SchemaInferrer {
       out.additionalProperties = Json.clone(map.additionalProperties);
       return;
     }
-    const pa = new Map(Helpers.properties(a));
-    const pb = new Map(Helpers.properties(b));
+    const pa = new Map(Object.entries(Schema.properties(a)));
+    const pb = new Map(Object.entries(Schema.properties(b)));
     const keys = [...pa.keys(), ...[...pb.keys()].filter((key) => !pa.has(key))];
     out.properties = Object.fromEntries(
       keys.map((key) => {
@@ -308,7 +307,7 @@ export class SchemaInferrer {
   }
 
   static #isMap(schema: JsonSchema): boolean {
-    return schema.additionalProperties !== undefined && schema.propertyNames !== undefined && Helpers.properties(schema).length === 0;
+    return schema.additionalProperties !== undefined && schema.propertyNames !== undefined && Object.entries(Schema.properties(schema)).length === 0;
   }
 
   static #isEmpty(schema: JsonSchema): boolean {

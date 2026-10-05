@@ -16,6 +16,7 @@ export class CaptureSaver {
   static readonly FALLBACK_PREFIX = 'appii-capture-';
   static readonly FALLBACK_SUFFIX = '.json';
   static readonly UNIQUE_BYTES = 3;
+  static readonly PARTIAL_CODE = 'BROWSER';
 
   readonly #store: CaptureStore;
   readonly #probe: (path: string) => Promise<void>;
@@ -49,6 +50,22 @@ export class CaptureSaver {
     } catch (err) {
       throw await this.#rescue(err, capture);
     }
+  }
+
+  async keepPartial(err: unknown, path: string, shown: string): Promise<unknown> {
+    const partial = CaptureSaver.partial(err);
+    if (!partial || !isAppiiError(err)) return err;
+    await this.save(path, partial);
+    const count = partial.exchanges.length;
+    const kept = `${Text.plural(count, 'request')} recorded until then ${count === 1 ? 'was' : 'were'}`;
+    return new AppiiError(err.code, `${err.message}. The ${kept} saved to ${shown}`, { cause: err });
+  }
+
+  static partial(err: unknown): Capture | undefined {
+    if (!isAppiiError(err) || err.code !== CaptureSaver.PARTIAL_CODE || !Json.isPlainObject(err.details)) return undefined;
+    const capture = err.details.capture;
+    if (!Json.isPlainObject(capture) || !Array.isArray(capture.exchanges) || capture.exchanges.length === 0) return undefined;
+    return capture as unknown as Capture;
   }
 
   async #rescue(err: unknown, capture: Capture): Promise<AppiiError> {

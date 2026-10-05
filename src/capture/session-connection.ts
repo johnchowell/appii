@@ -25,6 +25,8 @@ export class SessionConnection implements NetworkConnection {
     'Target.attachedToTarget',
     'Target.detachedFromTarget',
     'Target.receivedMessageFromTarget',
+    'Target.targetCreated',
+    'Target.targetDestroyed',
   ];
 
   readonly key = SessionConnection.ROOT_KEY;

@@ -10,7 +10,10 @@ export class YamlWriter {
   static readonly ESCAPED_GLOBAL: RegExp = /[^\x00-\x7e]/gu;
   static readonly NOT_PLAIN: RegExp = /[^\x20-\x7e]/;
   static readonly MERGE_KEY = '<<';
+  static readonly VALUE_KEY = '=';
+  static readonly RESERVED_PLAIN: ReadonlySet<string> = new Set(['', YamlWriter.MERGE_KEY, YamlWriter.VALUE_KEY]);
   static readonly VERSIONS: readonly YamlVersion[] = ['1.1', '1.2'];
+  static readonly PROBE_LOG_LEVEL = 'silent';
 
   readonly #indent: number;
 
@@ -21,14 +24,14 @@ export class YamlWriter {
   static needsQuotes(text: string, cache: Map<string, boolean> = new Map()): boolean {
     const known = cache.get(text);
     if (known !== undefined) return known;
-    const quote = text === '' || text === YamlWriter.MERGE_KEY || YamlWriter.NOT_PLAIN.test(text) || !YamlWriter.VERSIONS.every((version) => YamlWriter.plainValue(text, version) === text);
+    const quote = YamlWriter.RESERVED_PLAIN.has(text) || YamlWriter.NOT_PLAIN.test(text) || !YamlWriter.VERSIONS.every((version) => YamlWriter.plainValue(text, version) === text);
     cache.set(text, quote);
     return quote;
   }
 
   static plainValue(text: string, version: YamlVersion): unknown {
     try {
-      return parse(text, { version });
+      return parse(text, { version, logLevel: YamlWriter.PROBE_LOG_LEVEL });
     } catch {
       return undefined;
     }

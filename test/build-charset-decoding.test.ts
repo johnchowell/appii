@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BodyParser, ModelBuilder } from '../src/build/index.js';
 import { ControlRules } from '../src/forms/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
-import { CharsetEncoder, Http, Schema, SingleByteIndexes } from '../src/shared/index.js';
+import { CharsetEncoder, HtmlEncodingSniffer, Http, Schema, SingleByteIndexes } from '../src/shared/index.js';
 import { TsClientHarness } from './fixtures/export-ts-harness.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
@@ -113,6 +113,64 @@ describe('Build decodes windows-1252 pages and form submissions with the WHATWG 
     const body = `--${boundary}\r\nContent-Disposition: form-data; name="_charset_"\r\n\r\nwindows-1252\r\n--${boundary}\r\nContent-Disposition: form-data; name="memo"\r\n\r\n${C1}\r\n--${boundary}--\r\n`;
     const parsed = BodyParser.create().parse(Http.toBodyData(latin1(body), `multipart/form-data; boundary=${boundary}`), `multipart/form-data; boundary=${boundary}`);
     assert.deepEqual(parsed.value, { _charset_: 'windows-1252', memo: EURO });
+  });
+});
+
+describe('HTML encoding sniffing of stored document bytes (legacy charset residual a)', () => {
+  const bytes = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'latin1'));
+  test('the BOM, then the transport charset, then the meta prescan, then windows-1252', () => {
+    assert.equal(HtmlEncodingSniffer.sniff(new Uint8Array([0xef, 0xbb, 0xbf, 0x3c]), 'windows-1252'), 'utf-8');
+    assert.equal(HtmlEncodingSniffer.sniff(new Uint8Array([0xff, 0xfe, 0x3c, 0x00])), 'utf-16le');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<meta charset="koi8-r">'), 'iso-8859-2'), 'iso-8859-2');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<!doctype html><META CHARSET=koi8-r>')), 'koi8-r');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<meta http-equiv="Content-Type" content="text/html; charset=shift_jis">')), 'shift_jis');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<meta content="text/html; charset=shift_jis">')), 'windows-1252');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<!-- <meta charset="koi8-r"> --><meta charset="iso-8859-7">')), 'iso-8859-7');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<p title="<meta charset=koi8-r>">x</p>')), 'windows-1252');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<meta charset="utf-16">')), 'utf-8');
+    assert.equal(HtmlEncodingSniffer.sniff(bytes('<p>caf\u00e9</p>')), 'windows-1252');
+  });
+
+  test('an unlabeled windows-1252 page stored as bytes yields its text and its forms', () => {
+    const f = new CaptureFactory('https://shop.example.com');
+    const html = '<!doctype html><title>Caf\u00e9</title><form action="/order" method="post"><input name="item" value="caf\u00e9"><button>Go</button></form>';
+    f.exchange({ url: '/menu', resourceType: 'document', status: 200, responseHeaders: { 'content-type': 'text/html' }, responseBody: bytes(html) });
+    const model = ModelBuilder.create({ now: new Date(0) }).build(f.capture());
+    const form = model.forms.find((item) => new URL(item.action).pathname === '/order');
+    assert.equal(form?.charset, 'windows-1252');
+    assert.equal(form?.fields.find((field) => field.name === 'item')?.value, 'caf\u00e9');
+  });
+});
+
+describe('a byte order mark decides the document encoding before any declaration (FB-21)', () => {
+  const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, 'utf8')]));
+  const page = (meta: string): string => `<!doctype html><html><head>${meta}<title>Search</title></head><body><form action="/search"><input type="hidden" name="_charset_"><input name="q" value="caf\u00e9"></form></body></html>`;
+  const build = (contentType: string, meta: string, characterSet?: string): ApiModel => {
+    const f = new CaptureFactory('https://shop.example.com');
+    const html = page(meta);
+    f.exchange({ url: '/page', resourceType: 'document', status: 200, responseHeaders: { 'content-type': contentType }, responseBody: utf8(html) });
+    const snapshot = f.snapshot('/page', 'Search', html);
+    if (characterSet !== undefined) snapshot.characterSet = characterSet;
+    f.exchange({ url: '/search?_charset_=UTF-8&q=caf%C3%A9', resourceType: 'document', status: 200, responseType: 'text/html', responseBody: '<p>ok</p>' });
+    return ModelBuilder.create({ now: new Date(0) }).build(f.capture());
+  };
+
+  for (const [label, contentType, meta] of [
+    ['a windows-1252 Content-Type header', 'text/html; charset=windows-1252', ''],
+    ['a windows-1252 meta charset', 'text/html', '<meta charset="windows-1252">'],
+  ] as const) {
+    test(`a UTF-8 page with a BOM and ${label} submits its forms as UTF-8`, () => {
+      const model = build(contentType, meta);
+      const search = find(model, 'GET', '/search');
+      assert.equal(search.form?.charset, 'UTF-8');
+      assert.equal(search.queryParams.find((param) => param.name === '_charset_')?.schema.const, 'UTF-8');
+      assert.deepEqual(search.queryParams.find((param) => param.name === 'q')?.examples, ['caf\u00e9']);
+    });
+  }
+
+  test('the document encoding that the browser reported for a snapshot wins over the response headers', () => {
+    const model = build('text/html; charset=windows-1252', '', 'UTF-8');
+    assert.equal(find(model, 'GET', '/search').form?.charset, 'UTF-8');
   });
 });
 

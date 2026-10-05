@@ -96,6 +96,16 @@ describe('ModelValidator and ModelStore', () => {
     ]);
   });
 
+  test('an api.json written by the previous model version gets the version message and the advice to build again (REG-6)', () => {
+    const old = Json.clone(PresentModels.fixture()) as unknown as Record<string, any>;
+    old.version = 1;
+    for (const endpoint of old.endpoints) if (endpoint.form) delete endpoint.form.charset;
+    assert.throws(
+      () => ModelStore.create().parse(old, 'api.json'),
+      (err: unknown) => err instanceof AppiiError && err.code === 'BAD_INPUT' && err.message === "api.json has unsupported API model version 1; this appii reads version 2. Run 'appii build' on the capture again to write a current api.json",
+    );
+  });
+
   test('ModelValidator accepts built models and pinpoints broken ones', () => {
     const validator = new ModelValidator();
     const model = PresentModels.fixture();
@@ -104,7 +114,7 @@ describe('ModelValidator and ModelStore', () => {
     assert.deepEqual(validator.validate(PresentModels.mixed()), []);
     assert.deepEqual(validator.validate(PresentModels.empty()), []);
     const broken = Json.clone(model) as unknown as Record<string, any>;
-    broken.version = 2;
+    broken.version = 3;
     broken.endpoints[0].kind = 'rest';
     broken.endpoints[1].auth.csrf = [{ location: 'cookie', name: 1, source: 'cookie' }];
     delete broken.endpoints[2].responses;
@@ -112,7 +122,7 @@ describe('ModelValidator and ModelStore', () => {
     broken.forms[0].fields[0].kind = 'div';
     broken.websockets = {};
     assert.deepEqual(validator.validate(broken), [
-      'version: expected 1, got 2',
+      'version: expected 2, got 3',
       'endpoints[0].kind: expected one of json, form, graphql, document, other',
       'endpoints[1].auth.csrf[0].location: expected one of header, body, query',
       'endpoints[1].auth.csrf[0].name: expected a string',
@@ -144,8 +154,8 @@ describe('ModelValidator and ModelStore', () => {
     await store.save(secret, model, { private: true });
     assert.equal((await stat(secret)).mode & 0o777, 0o600);
     await assert.rejects(store.save(join(dir, 'bad.json'), { ...model, endpoints: 'x' } as unknown as ApiModel), (err: unknown) => err instanceof AppiiError && err.code === 'INTERNAL');
-    await writeFile(join(dir, 'v2.json'), JSON.stringify({ ...model, version: 2 }));
-    await assert.rejects(store.load(join(dir, 'v2.json')), /unsupported API model version 2/);
+    await writeFile(join(dir, 'v3.json'), JSON.stringify({ ...model, version: 3 }));
+    await assert.rejects(store.load(join(dir, 'v3.json')), /unsupported API model version 3/);
     await writeFile(join(dir, 'broken.json'), JSON.stringify({ ...model, endpoints: [{}] }));
     await assert.rejects(store.load(join(dir, 'broken.json')), (err: unknown) => err instanceof AppiiError && err.code === 'BAD_INPUT' && /is not a valid API model \(api\.json\): endpoints\[0\]\.id: expected a string; .* and \d+ more$/.test(err.message));
   });

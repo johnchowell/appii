@@ -1,5 +1,5 @@
 import type { Capture, Exchange } from '../model/index.js';
-import { Http } from '../shared/index.js';
+import { Http, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 
 interface Hop {
@@ -62,7 +62,7 @@ export class OriginSelector {
     );
     return Helpers.distinct(candidates)
       .filter((origin) => OriginSelector.isFirstParty(origin, domains))
-      .sort(Helpers.compare);
+      .sort(Text.compare);
   }
 
   static primary(capture: Capture, chosen: readonly string[]): string {

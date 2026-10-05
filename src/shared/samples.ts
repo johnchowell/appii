@@ -17,13 +17,13 @@ export const COOKIE_SEPARATOR = '; ';
 export const IMAGE_SUBMITTER = 'image';
 export const IMAGE_COORDINATES: readonly string[] = Object.freeze(['x', 'y']);
 export const IMAGE_COORDINATE_VALUE = '0';
-export const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
+export const BODYLESS_METHODS: readonly string[] = Object.freeze(['GET', 'HEAD']);
 export const JSON_MIME = 'application/json';
 export const BINARY_MIME = 'application/octet-stream';
 export const TEXT_PLAIN = 'text/plain';
 export const CRLF = '\r\n';
 export const NEWLINE_SOURCE = '\r\n|\r|\n';
-export const FORM_BODY_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>(['form', 'multipart', 'text']);
+export const FORM_BODY_KINDS: readonly BodyKind[] = Object.freeze<BodyKind[]>(['form', 'multipart', 'text']);
 
 export interface SampleEntry {
   readonly name: string;
@@ -356,7 +356,7 @@ function samplePath(endpoint: Endpoint, variables: boolean): { path: SampleText;
 
 function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined, opts: SampleOptions): SampleEntry[] {
   const entries = new Map<string, SampleValue>();
-  if (submission && !BODYLESS_METHODS.has(endpoint.method)) {
+  if (submission && !BODYLESS_METHODS.includes(endpoint.method)) {
     for (const [name, value] of submission.action.searchParams) if (!entries.has(name)) entries.set(name, isRedacted(value) ? placeholder(name) : SampleText.literal(value));
     const formNames = actionQueryNames(submission.form);
     for (const param of endpoint.queryParams) {
@@ -416,8 +416,8 @@ function sampleHeaders(endpoint: Endpoint, opts: SampleOptions): SampleEntry[] {
 
 function sampleBody(endpoint: Endpoint, submission: FormSubmission | undefined): SampleBody | undefined {
   const shape = endpoint.requestBody;
-  if (!shape || shape.kind === 'empty' || BODYLESS_METHODS.has(endpoint.method)) return undefined;
-  const form = submission !== undefined && FORM_BODY_KINDS.has(shape.kind) ? submission : undefined;
+  if (!shape || shape.kind === 'empty' || BODYLESS_METHODS.includes(endpoint.method)) return undefined;
+  const form = submission !== undefined && FORM_BODY_KINDS.includes(shape.kind) ? submission : undefined;
   let value = form ? formSample(shape, form) : bodySample(shape);
   if (isRecord(value)) {
     const entries = new Map<string, SampleValue>(Object.entries(value));

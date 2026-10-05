@@ -2,7 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModelBuilder, PathTemplater, Redactor } from '../src/build/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
-import { Samples } from '../src/shared/index.js';
+import { Samples, SecretNames } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
 const R = Samples.REDACTED;
@@ -35,6 +35,22 @@ describe('Redactor name rules', () => {
       'rp_key', 'resetKey', 'activation_key', 'verification_code', 'sms_code', 'two_factor_code', 'backupCode',
     ];
     for (const name of secret) assert.ok(redactor.isSecretField(name), name);
+  });
+
+  test('names that fuse a two-word secret phrase into one word are secret (REG-3)', () => {
+    const fused = ['cardnumber', 'cardNumber', 'creditcardnumber', 'privatekey', 'privateKey', 'secretkey', 'sessionkey', 'accesskey', 'ccnumber', 'cc-number', 'cardcvc', 'cardcvv', 'cc-csc', 'securitycode', 'verificationcode', 'resetkey'];
+    for (const name of fused) assert.ok(redactor.isSecretField(name), name);
+    for (const name of ['publickey', 'sortkey', 'countrycode', 'zipcode', 'keycode', 'barcode']) assert.ok(!redactor.isSecretField(name), name);
+  });
+
+  test('the page form of the secret-name rule agrees with the Node form', () => {
+    const page = new Function(`return (${SecretNames.PAGE_FUNCTION});`)() as (rules: unknown, name: string) => boolean;
+    const names = [
+      'password', 'Password2', 'new_password1', 'confirmPassword', 'pw', 'pin', 'pinned', 'passenger', 'compass', 'cardnumber', 'cardNumber', 'cc_number', 'cardcvc', 'privatekey',
+      'api_key', 'apiKey', 'x-api-key', 'access_token', 'refreshToken', 'csrfmiddlewaretoken', 'secretary', 'keyboard', 'sort_key', 'public_key', 'two_factor_code', 'backupCode',
+      'username', 'email', 'q', '', '123', 'SSN', 'sessionid', 'session_id', 'userSessionId', 'otp', 'one-time-code', 'XMLHttpToken', 'mot_de_passe', 'geheim',
+    ];
+    for (const name of names) assert.equal(page(SecretNames.rules(), name), SecretNames.isSecret(name), name);
   });
 
   test('ordinary names stay visible', () => {
@@ -202,6 +218,39 @@ describe('Redactor policy in a built model', () => {
     assert.deepEqual(leaks(model, [JWT, JWT.split('.')[1] ?? JWT]), []);
     endpoint(model, 'GET', '/auth/magic/{magicId}');
     endpoint(model, 'GET', '/api/verify/{verifyId}');
+  });
+
+  test('a card number posted in a field named cardnumber stays out of the model (REG-3)', () => {
+    const f = new CaptureFactory('https://shop.example');
+    f.snapshot('/checkout', 'Checkout', '<form method="post" action="/pay"><input name="cardnumber" autocomplete="cc-number"><input name="cardcvc"><input name="privatekey"><input name="name"><button>Pay</button></form>');
+    f.exchange({
+      method: 'POST',
+      url: '/pay',
+      resourceType: 'document',
+      status: 302,
+      requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' },
+      requestBody: 'cardnumber=4242424242424242&cardcvc=123&privatekey=PRIVKEYVALUE77&name=Bob',
+    });
+    const model = build(f);
+    assert.deepEqual(leaks(model, ['4242424242424242', 'PRIVKEYVALUE77']), []);
+    assert.deepEqual(endpoint(model, 'POST', '/pay').requestBody?.examples[0], { cardnumber: R, cardcvc: R, privatekey: R, name: 'Bob' });
+  });
+
+  test('random tokens in password-reset, magic-link and verification paths are redacted, ordinary ids are kept (FB-6)', () => {
+    const f = new CaptureFactory('https://site.example.com');
+    const tokens = ['1-5ab-0123456789abcdef0123', '3f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c', 'c4p2zs-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d'];
+    f.document(`/accounts/password/reset/key/${tokens[0]}/`, CaptureFactory.page('Reset', 'reset'));
+    f.document(`/auth/magic/${tokens[1]}`, CaptureFactory.page('Magic', 'magic'));
+    f.document(`/reset-password/Mg/${tokens[2]}/`, CaptureFactory.page('Reset', 'reset'));
+    const ids = ['0123456789abcdef0123', 'fedcba9876543210fedc', '00aa11bb22cc33dd44ee'];
+    for (const id of ids) f.json('GET', `/api/users/${id}`, 200, { id });
+    const model = build(f);
+    assert.deepEqual(leaks(model, tokens), []);
+    const users = endpoint(model, 'GET', '/api/users/{userId}');
+    assert.deepEqual([...(users.pathParams[0]?.examples ?? [])].sort(), [...ids].sort());
+    assert.ok(users.samples.some((sample) => sample.url.endsWith(`/api/users/${ids[0]}`)));
+    assert.equal(redactor.url(`https://site.example.com/auth/magic/${tokens[1]}?next=1`), `https://site.example.com/auth/magic/${ENC}?next=1`);
+    assert.equal(redactor.url(`https://site.example.com/api/users/${ids[0]}`), `https://site.example.com/api/users/${ids[0]}`);
   });
 
   test('text/plain form submissions redact password fields (FB-9)', () => {

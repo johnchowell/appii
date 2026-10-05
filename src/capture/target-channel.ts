@@ -21,6 +21,7 @@ interface ChannelMessage {
 
 export class TargetChannel implements NetworkConnection {
   static readonly RESUME = 'Runtime.runIfWaitingForDebugger';
+  static readonly DETACH = 'Target.detachFromTarget';
 
   readonly sessionId: string;
   readonly key: string;
@@ -103,6 +104,12 @@ export class TargetChannel implements NetworkConnection {
         continue;
       }
     }
+  }
+
+  async detach(): Promise<void> {
+    if (this.#closed) return;
+    await this.#parent.send(TargetChannel.DETACH, { sessionId: this.sessionId }).catch(() => undefined);
+    this.close();
   }
 
   close(): void {

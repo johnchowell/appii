@@ -111,7 +111,46 @@ export class PatternAudit {
 
   static #repeatable(body: PatternNode): boolean {
     if (PatternAudit.#emptyOnly(body)) return false;
-    return PatternAudit.ambiguous(body) || PatternAudit.pumpable(body) || PatternAudit.nullable(body);
+    return PatternAudit.ambiguous(body) || PatternAudit.pumpable(body) || PatternAudit.nullable(body) || PatternAudit.shifting(body);
+  }
+
+  static shifting(body: PatternNode): boolean {
+    const first = PatternAudit.first(body);
+    const last = PatternAudit.last(body);
+    return PatternAudit.#unbounded(body).some((inner) => {
+      const chars = PatternAudit.chars(inner);
+      return PatternAudit.intersects(chars, last) && PatternAudit.intersects(chars, first);
+    });
+  }
+
+  static chars(node: PatternNode): CharRanges {
+    switch (node.kind) {
+      case 'set':
+        return node.set;
+      case 'seq':
+        return node.items.reduce<CharRanges>((out, item) => PatternAudit.union(out, PatternAudit.chars(item)), []);
+      case 'alt':
+        return node.options.reduce<CharRanges>((out, option) => PatternAudit.union(out, PatternAudit.chars(option)), []);
+      case 'repeat':
+        return node.max === 0 ? [] : PatternAudit.chars(node.body);
+      default:
+        return [];
+    }
+  }
+
+  static #unbounded(node: PatternNode): PatternNode[] {
+    switch (node.kind) {
+      case 'seq':
+        return node.items.flatMap((item) => PatternAudit.#unbounded(item));
+      case 'alt':
+        return node.options.flatMap((option) => PatternAudit.#unbounded(option));
+      case 'repeat': {
+        const inner = PatternAudit.#unbounded(node.body);
+        return node.max === Number.POSITIVE_INFINITY && !PatternAudit.#emptyOnly(node.body) ? [node.body, ...inner] : inner;
+      }
+      default:
+        return [];
+    }
   }
 
   static pumpable(node: PatternNode): boolean {

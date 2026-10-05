@@ -7,6 +7,10 @@ export interface CharsetDecodeOptions {
 
 export class CharsetEncoder {
   static readonly UTF8 = 'utf-8';
+  static readonly UTF16BE = 'utf-16be';
+  static readonly UTF16LE = 'utf-16le';
+  static readonly BOM_CODE_POINT = 0xfeff;
+  static readonly UNLABELED_DOCUMENT = 'windows-1252';
   static readonly UTF8_OUTPUT: ReadonlySet<string> = new Set(['utf-8', 'utf-16le', 'utf-16be', 'replacement']);
   static readonly SINGLE_BYTE: ReadonlySet<string> = new Set(SingleByteIndexes.names());
   static readonly FIRST_HIGH_BYTE = 0x80;
@@ -34,6 +38,17 @@ export class CharsetEncoder {
     if (!CharsetEncoder.SINGLE_BYTE.has(name)) return new CharsetEncoder(name, false, undefined);
     const table = CharsetEncoder.singleByteTable(name);
     return table === undefined ? new CharsetEncoder(name, false, undefined) : new CharsetEncoder(name, true, table);
+  }
+
+  static bom(bytes: Uint8Array): string | undefined {
+    if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return CharsetEncoder.UTF8;
+    if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return CharsetEncoder.UTF16BE;
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return CharsetEncoder.UTF16LE;
+    return undefined;
+  }
+
+  static textBom(text: string): string | undefined {
+    return text.charCodeAt(0) === CharsetEncoder.BOM_CODE_POINT ? CharsetEncoder.UTF8 : undefined;
   }
 
   static canonical(label: string | undefined): string | undefined {

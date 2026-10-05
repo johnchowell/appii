@@ -1,7 +1,9 @@
 import type { Header, JsonSchema, ParamInfo, ParamLocation } from '../model/index.js';
-import { EndpointIndex } from '../shared/index.js';
+import { EndpointIndex, Http } from '../shared/index.js';
+import { BodyParser } from './body-parser.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
+import { PathTemplater } from './path-templater.js';
 import type { PathTemplate, SegmentKind } from './path-templater.js';
 import { Redactor } from './redactor.js';
 import { SchemaInferrer } from './schema-inferrer.js';
@@ -57,11 +59,13 @@ export class ParamInferrer {
     }
   }
 
-  query(urls: readonly URL[]): ParamInfo[] {
+  query(urls: readonly URL[], encodings: readonly (string | undefined)[] = []): ParamInfo[] {
     const stats = new Map<string, ParamStats>();
-    for (const url of urls) {
+    urls.forEach((url, index) => {
       const counts = new Map<string, number>();
-      for (const [name, value] of url.searchParams) {
+      const encoding = encodings[index];
+      const pairs = Http.isLegacyCharset(encoding) ? BodyParser.urlencodedPairs(url.search.slice(1), encoding) : [...url.searchParams];
+      for (const [name, value] of pairs) {
         counts.set(name, (counts.get(name) ?? 0) + 1);
         const stat = ParamInferrer.#stat(stats, name);
         stat.values.push(value);
@@ -72,7 +76,7 @@ export class ParamInferrer {
         stat.present++;
         if (count > 1) stat.repeated = true;
       }
-    }
+    });
     return [...stats].map(([name, stat]) => {
       const scalar = this.#schemas.fromStrings(stat.values);
       const schema: JsonSchema = stat.repeated ? { type: 'array', items: scalar } : scalar;
@@ -103,10 +107,19 @@ export class ParamInferrer {
   }
 
   path(template: PathTemplate, paths: readonly string[]): ParamInfo[] {
-    const matches = paths.map((path) => EndpointIndex.matchPath(template.template, path)).filter((m): m is Record<string, string> => m !== undefined);
+    const matched = paths.flatMap((path) => {
+      const match = EndpointIndex.matchPath(template.template, path);
+      return match ? [{ segments: PathTemplater.segments(path), match }] : [];
+    });
     return template.params.map((param) => {
-      const values = matches.map((m) => m[param.name]).filter((value): value is string => value !== undefined);
-      const examples = values.map((value) => String(this.#redactor.field(param.name, value)));
+      const values: string[] = [];
+      const examples: string[] = [];
+      for (const { segments, match } of matched) {
+        const value = match[param.name];
+        if (value === undefined) continue;
+        values.push(value);
+        examples.push(this.#redactor.pathValue(segments, param.position, param.name, value));
+      }
       return this.#param(param.name, 'path', true, ParamInferrer.pathSchema(param.kind, values), examples);
     });
   }

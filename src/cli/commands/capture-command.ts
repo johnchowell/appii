@@ -1,6 +1,6 @@
 import { CaptureStore } from '../../capture/index.js';
 import { BasePresenter, PresenterFactory } from '../../present/index.js';
-import { Meta } from '../../shared/index.js';
+import { Fs, Meta } from '../../shared/index.js';
 import type { Capture } from '../../model/index.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
@@ -71,13 +71,15 @@ export class CaptureCommand extends Command {
       if (recording !== undefined) throw new UsageError(`--${recording} applies to recording and cannot be combined with --from-har`);
       const input = ctx.resolve(har);
       capture = await this.#store.load(input);
-      if (input === out) throw new UsageError(Helpers.overwriteMessage(OptionReader.string(values, 'out'), CaptureCommand.DEFAULT_OUT, 'HAR file'));
+      if (await Fs.sameFile(input, out)) throw new UsageError(Helpers.overwriteMessage(OptionReader.string(values, 'out'), CaptureCommand.DEFAULT_OUT, 'HAR file'));
     } else {
       const options = this.#capture.read(values, ctx);
       const url = this.argument(positionals, 0, '<url>');
       this.expectArguments(positionals, 1);
       await this.#saver.preflight([out]);
-      capture = await this.#runner.record({ ...options, url }, ctx);
+      capture = await this.#runner.record({ ...options, url }, ctx).catch(async (err: unknown) => {
+        throw await this.#saver.keepPartial(err, out, ctx.display(out));
+      });
     }
     await this.#saver.save(out, capture);
     const file = ctx.display(out);

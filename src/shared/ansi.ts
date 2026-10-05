@@ -1,6 +1,6 @@
 import { printable } from './text.js';
 
-const CODES = {
+const CODES = Object.freeze({
   bold: [1, 22],
   dim: [2, 22],
   red: [31, 39],
@@ -10,17 +10,17 @@ const CODES = {
   magenta: [35, 39],
   cyan: [36, 39],
   gray: [90, 39],
-} as const;
+} as const);
 
 export type AnsiStyle = keyof typeof CODES;
 
-export const METHOD_COLORS: Readonly<Record<string, AnsiStyle>> = {
+export const METHOD_COLORS: Readonly<Record<string, AnsiStyle>> = Object.freeze({
   GET: 'green',
   POST: 'yellow',
   PUT: 'blue',
   PATCH: 'magenta',
   DELETE: 'red',
-};
+});
 
 const ESCAPE_SOURCE = '\\x1b\\[[0-9;]*m';
 const RESET_CODE = 0;

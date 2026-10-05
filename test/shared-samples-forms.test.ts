@@ -159,3 +159,19 @@ describe('CharsetEncoder', () => {
     assert.equal(CharsetEncoder.for('shift_jis').exact, false);
   });
 });
+
+describe('samples of a form variant send only the fields of the form that the submitter belongs to (SAMPLES-SUBMITTER)', () => {
+  test('two forms that post to one URL: the sample for the "post" submitter has no field of the other form', () => {
+    const f = new CaptureFactory('https://v.example.com');
+    f.document('/long', '<!doctype html><meta charset="utf-8"><form id="long" action="/comments" method="post"><textarea name="body" required minlength="10"></textarea><input name="title" required maxlength="3"><button name="action" value="post">Post</button></form>');
+    f.document('/quick', '<!doctype html><meta charset="utf-8"><form id="quick" action="/comments" method="post"><input name="body" maxlength="5" required><select name="mood" required><option value="">-</option><option>ok</option></select><button name="action" value="quick">Quick</button></form>');
+    const model = ModelBuilder.create().build(f.capture());
+    const endpoint = model.endpoints.find((e) => e.path === '/comments' && e.method === 'POST');
+    assert.ok(endpoint);
+    const value = Samples.plainValue(Samples.requestSample(endpoint).body?.value) as Record<string, unknown>;
+    assert.equal(value.action, 'post');
+    assert.deepEqual(Object.keys(value).sort(), ['action', 'body', 'title']);
+    const quick = Schema.resolveConditions(endpoint.requestBody?.schema, { action: 'quick' });
+    assert.deepEqual(Object.keys(Schema.properties(quick)).sort(), ['action', 'body', 'mood']);
+  });
+});

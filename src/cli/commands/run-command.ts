@@ -84,7 +84,9 @@ export class RunCommand extends Command {
     const captureFile = join(dir, RunCommand.CAPTURE_FILE);
     const modelFile = join(dir, RunCommand.MODEL_FILE);
     await this.#saver.preflight([captureFile, modelFile]);
-    const capture = await this.#runner.record({ ...captureOptions, url }, ctx);
+    const capture = await this.#runner.record({ ...captureOptions, url }, ctx).catch(async (err: unknown) => {
+      throw await this.#saver.keepPartial(err, captureFile, ctx.display(captureFile));
+    });
     await this.#saver.save(captureFile, capture);
     ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: ctx.display(captureFile) }));
     ctx.out('');

@@ -1,13 +1,12 @@
 import { parseArgs } from 'node:util';
 import type { ParseArgsOptionsConfig } from 'node:util';
-import { Meta } from '../shared/index.js';
+import { Meta, Text } from '../shared/index.js';
 import { TextLayout } from '../present/index.js';
 import type { CliContext } from './cli-context.js';
 import { DisplayOptionGroup } from './display-option-group.js';
 import { ErrorReporter } from './error-reporter.js';
 import { ExitCode } from './exit-code.js';
 import { HelpFormatter } from './help-formatter.js';
-import { Helpers } from './helpers.js';
 import type { OptionDocs } from './option-group.js';
 import type { OptionValues } from './option-reader.js';
 import { UsageError } from './usage-error.js';
@@ -120,7 +119,7 @@ export abstract class Command {
       if (token.kind !== 'option' || Object.hasOwn(options, token.name)) continue;
       const negated = token.rawName.startsWith(Command.NEGATION_PREFIX);
       const candidates = Object.keys(options).filter((name) => !negated || options[name]?.type === 'boolean');
-      const guess = Helpers.closest(token.name, candidates);
+      const guess = Text.closest(token.name, candidates);
       const suggestion = guess === undefined ? '' : `; did you mean '${negated ? Command.NEGATION_PREFIX : '--'}${guess}'?`;
       return `unknown option '${token.rawName}'${suggestion}`;
     }

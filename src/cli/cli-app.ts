@@ -10,7 +10,6 @@ import { VersionCommand } from './commands/version-command.js';
 import { DisplayOptionGroup } from './display-option-group.js';
 import { ErrorReporter } from './error-reporter.js';
 import { ExitCode } from './exit-code.js';
-import { Helpers } from './helpers.js';
 import { OptionReader } from './option-reader.js';
 import { UsageError } from './usage-error.js';
 
@@ -99,7 +98,7 @@ export class CliApp {
         if (width !== undefined) options.width = width;
         continue;
       }
-      const guess = Helpers.closest(arg.replace(/=.*$/, ''), CliApp.GLOBAL_FLAGS);
+      const guess = Text.closest(arg.replace(/=.*$/, ''), CliApp.GLOBAL_FLAGS);
       throw new UsageError(`unknown option '${arg}' before the command${guess === undefined ? '' : `; did you mean '${guess}'?`}`);
     }
     return { options, rest: [] };

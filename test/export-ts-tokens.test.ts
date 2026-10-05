@@ -2,6 +2,7 @@ import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { chromium } from 'playwright';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
 import { TsClientHarness } from './fixtures/export-ts-harness.js';
 import type { Module, SentRequest } from './fixtures/export-ts-harness.js';
@@ -154,6 +155,18 @@ describe('hidden-field token of the submitted form (EXP2-6, EXP2-20)', () => {
     return new URLSearchParams(await TsClientHarness.text(post?.body)).get('_token') ?? '';
   }
 
+  async function submitAll(page: string): Promise<string[]> {
+    const recorder = TsClientHarness.recorder((request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === 'GET' && path === '/register') return TsClientHarness.html(page);
+      return new Response('done', { status: 200 });
+    });
+    const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch });
+    await TsClientHarness.call(client, register.name, { body: { 'registration[username]': 'bob' } });
+    const post = recorder.sent.find((request) => request.method === 'POST');
+    return new URLSearchParams(await TsClientHarness.text(post?.body)).getAll('_token');
+  }
+
   test('the token comes from the registration form, not from an earlier form or from markup that is not a form', async () => {
     const page = `<!doctype html><html><body>
 <!-- <form name="registration"><input type="hidden" name="_token" value="COMMENT"></form> -->
@@ -164,6 +177,41 @@ describe('hidden-field token of the submitted form (EXP2-6, EXP2-20)', () => {
 <form NAME = 'registration' action="/register" method="post"><input type="text" name="registration[username]"><input type=hidden name="_token" value="REG-2&amp;more"></form>
 </body></html>`;
     assert.equal(await submit(page), 'REG-2&more');
+  });
+
+  test('the client sends the token values that Chromium puts in the form data of the registration form', { timeout: 120_000 }, async () => {
+    const reg = (inputs: string) => `<form name="registration" action="/register" method="post"><input name="registration[username]">${inputs}</form>`;
+    const token = (value: string, extra = '') => `<input type="hidden" name="_token" value="${value}"${extra}>`;
+    const pages: Record<string, string> = {
+      scriptEscaped: `<script><!--\nvar s = '<script>';\n</script>\n${reg(token('FAKE-ESC'))}\n-->\n</script>${reg(token('REG'))}`,
+      scriptDoubleEnd: `<script><!-- <script> x </script> --> ${reg(token('FAKE-2'))} </script>${reg(token('REG'))}`,
+      disabled: reg(token('DIS', ' disabled') + token('EN')),
+      fieldset: reg(`<fieldset disabled><legend>${token('LEGEND')}</legend><legend>${token('LEGEND-2')}</legend>${token('FIELDSET')}</fieldset>${token('AFTER')}`),
+      svgTitle: `<svg><title>${reg(token('SVG-TITLE'))}</title></svg>${reg(token('REG'))}`,
+      svgStyle: `<svg><style><input type="hidden" name="_token" value="SVG-STYLE" form="reg"></style></svg><form id="reg" name="registration" action="/register" method="post">${token('REG')}</form>`,
+      mathText: `<math><mi>${reg(token('MI'))}</mi></math>${reg(token('REG'))}`,
+      breakout: `<svg><p>${reg(token('BREAK'))}</svg>${reg(token('REG'))}`,
+      twoTokens: reg(token('T1') + '<input name="note">' + token('T2')),
+      checkable: reg('<input type="checkbox" name="_token" value="BOX"><input type="submit" name="_token" value="GO">' + token('SENT')),
+      charref: reg(token('&euro;&notin;&notit;&amp=x&ampx&#x20AC;&#128;&#0000065;&#x110000;&lt')),
+      lineBreaks: reg(token('a\r\nb\rc')),
+      noscript: `<noscript>${reg(token('NOSCRIPT'))}</noscript>${reg(token('REG'))}`,
+    };
+    const browser = await chromium.launch({ headless: true });
+    try {
+      for (const [label, html] of Object.entries(pages)) {
+        const page = await browser.newPage();
+        await page.setContent(html);
+        const expected = await page.evaluate(() => {
+          const form = [...document.forms].find((item) => item.getAttribute('name') === 'registration');
+          return form === undefined ? [] : new FormData(form).getAll('_token').map(String);
+        });
+        await page.close();
+        assert.deepEqual(await submitAll(html), expected.map((value) => value.replace(/\r\n|\r|\n/g, '\r\n')), label);
+      }
+    } finally {
+      await browser.close();
+    }
   });
 
   test('an input outside the form joins it through the form attribute', async () => {
@@ -230,12 +278,20 @@ describe('stale page tokens (EXP2-10, RETRY-1)', () => {
       assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'POST /form']);
       assert.deepEqual(second.staleTokens?.tokens, ['csrf_token']);
       assert.deepEqual(second.staleTokens?.pages, ['https://rot.example.com/form']);
-      assert.match(second.staleTokens?.message ?? '', new RegExp(`status ${status}\\..*csrf_token.*refreshTokens\\(\\)`));
-      client.refreshTokens();
+      assert.match(second.staleTokens?.message ?? '', new RegExp(`status ${status}\\..*csrf_token.*loads it again for the next request`));
       assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'b' } })).status, 200);
       assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'POST /form', 'GET /form', 'POST /form']);
     });
   }
+
+  test('a token that the server rotates without a cookie change: the page that it rejected is loaded again for the next call (EXP2-10)', async () => {
+    const recorder = rotating(422, false);
+    const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch });
+    assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'a' } })).status, 200);
+    assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'b' } })).status, 422);
+    assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'c' } })).status, 200);
+    assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'POST /form', 'GET /form', 'POST /form']);
+  });
 
   test('a rejection right after the client loaded the page has no stale token notice', async () => {
     const recorder = TsClientHarness.recorder((request) =>

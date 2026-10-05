@@ -24,12 +24,12 @@ export class BodyBudget {
     return this.#used;
   }
 
-  of(bytes: Uint8Array | null | undefined, contentType: string | undefined, contentEncoding: string | undefined): BodyData | undefined {
+  of(bytes: Uint8Array | null | undefined, contentType: string | undefined, contentEncoding: string | undefined, text = false): BodyData | undefined {
     if (!bytes || bytes.length === 0) return undefined;
     const kept = Math.min(bytes.length, this.maxBodyBytes);
     if (this.#used + kept > this.maxTotalBodyBytes) return BodyBudget.unread(contentType ?? '', bytes.length);
     this.#used += kept;
-    return Http.toBodyData(bytes, contentType ?? '', { maxBytes: this.maxBodyBytes, contentEncoding });
+    return Http.toBodyData(bytes, contentType ?? '', { maxBytes: this.maxBodyBytes, contentEncoding, text });
   }
 
   reset(): void {

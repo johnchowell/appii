@@ -109,7 +109,7 @@ export class ExportCommand extends Command {
       return ExitCode.OK;
     }
     const target = await Helpers.outputFile(ctx, out, result.filename);
-    if (target === input) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
+    if (await Fs.sameFile(target, input)) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
     await Fs.writeFileAtomic(target, result.content, redact ? {} : { mode: ModelStore.PRIVATE_MODE });
     ctx.out(TextLayout.clean(`Wrote ${ctx.display(target)} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
     return ExitCode.OK;
@@ -122,7 +122,7 @@ export class ExportCommand extends Command {
   #unknownFormat(format: string): UsageError {
     const formats = this.#formats();
     const names = [...formats, ...Object.keys(ExporterRegistry.ALIASES).filter((alias) => this.#registry.has(alias))];
-    const guess = Helpers.closest(format.trim(), names);
+    const guess = Text.closest(format.trim(), names);
     const hint = guess === undefined ? '' : `; did you mean '${guess}'?`;
     return new UsageError(`--format must be one of ${formats.join(', ')}; got '${format}'${hint}`, { details: { format, formats } });
   }

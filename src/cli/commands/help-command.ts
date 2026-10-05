@@ -1,4 +1,4 @@
-import { Meta } from '../../shared/index.js';
+import { Meta, Text } from '../../shared/index.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
 import type { CommandDeps, CommandSpec } from '../command.js';
@@ -6,7 +6,6 @@ import { DisplayOptionGroup } from '../display-option-group.js';
 import type { CommandRegistry } from '../command-registry.js';
 import { ExitCode } from '../exit-code.js';
 import { HelpFormatter } from '../help-formatter.js';
-import { Helpers } from '../helpers.js';
 import type { OptionValues } from '../option-reader.js';
 import { UsageError } from '../usage-error.js';
 import { VersionCommand } from './version-command.js';
@@ -39,7 +38,7 @@ export class HelpCommand extends Command {
   }
 
   static unknownCommand(name: string, names: readonly string[]): UsageError {
-    const guess = Helpers.closest(name, names);
+    const guess = Text.closest(name, names);
     return new UsageError(`unknown command '${name}'${guess === undefined ? '' : `; did you mean '${guess}'?`}`);
   }
 

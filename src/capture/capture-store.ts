@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { open, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AppiiError, Fs, Json, Text } from '../shared/index.js';
 import type { Capture } from '../model/index.js';
@@ -84,14 +84,11 @@ export class CaptureStore {
     if (problems.length > 0) {
       throw new AppiiError('BAD_INPUT', `Refusing to save an invalid capture: ${Text.summarize(problems, CaptureStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
-    const tmp = Fs.tempPath(path);
     try {
-      await Fs.ensureDir(dirname(path));
-      await writeFile(tmp, CaptureStore.#lines(capture), { mode: CaptureStore.FILE_MODE });
-      await rename(tmp, path);
+      await Fs.writeFileAtomic(path, CaptureStore.#lines(capture), { mode: CaptureStore.FILE_MODE });
     } catch (err) {
-      await rm(tmp, { force: true }).catch(() => undefined);
-      throw new AppiiError('IO', `Cannot write ${path}: ${Text.errorMessage(err)}`, { cause: err, details: { capture } });
+      const message = err instanceof AppiiError ? err.message : `Cannot write ${path}: ${Text.errorMessage(err)}`;
+      throw new AppiiError('IO', message, { cause: err, details: { capture } });
     }
   }
 

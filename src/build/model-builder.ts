@@ -1,4 +1,5 @@
 import type { ApiModel, Capture, Endpoint, FormField, WebSocketCapture } from '../model/index.js';
+import { MODEL_VERSION } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
 import { AppiiError, Http, Text } from '../shared/index.js';
@@ -59,7 +60,7 @@ export class ModelBuilder {
   constructor(parts: ModelBuilderParts, options: BuildOptions = {}) {
     this.#maxExamples = ModelBuilder.#checkMaxExamples(options.maxExamples);
     if (options.now !== undefined && Number.isNaN(options.now.getTime())) throw new AppiiError('BAD_INPUT', 'Build option now must be a valid date');
-    this.#origins = options.origins === undefined ? undefined : Helpers.distinct(options.origins.map((origin) => ModelBuilder.normalizeOrigin(origin))).sort(Helpers.compare);
+    this.#origins = options.origins === undefined ? undefined : Helpers.distinct(options.origins.map((origin) => ModelBuilder.normalizeOrigin(origin))).sort(Text.compare);
     this.#parts = parts;
     this.#redactor = parts.redactor ?? Redactor.create({ redact: options.redact ?? true });
     this.#options = { ...options };
@@ -127,7 +128,7 @@ export class ModelBuilder {
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
-    const grouped = this.#parts.grouper.group(exchanges, { forms: this.#parts.forms.targets(capture), encodings: this.#parts.forms.encodings(capture) });
+    const grouped = this.#parts.grouper.group(exchanges, { forms: this.#parts.forms.targets(capture), encoding: this.#parts.forms.submissionEncoding(capture) });
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
     this.#parts.auth.detect(endpoints, capture);
@@ -140,7 +141,7 @@ export class ModelBuilder {
     const shown = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
     const forms = FormLinker.endpointIds(linked, shown, endpoints);
     return this.#redactUrls({
-      version: 1,
+      version: MODEL_VERSION,
       name: this.#options.name ?? (primaryOrigin ? new URL(primaryOrigin).host : ModelBuilder.DEFAULT_NAME),
       generatedAt: (this.#options.now ?? new Date()).toISOString(),
       source: {
@@ -165,8 +166,9 @@ export class ModelBuilder {
     };
     if (model.source.startUrl !== undefined) model.source.startUrl = url(model.source.startUrl);
     for (const endpoint of model.endpoints) {
+      const secrets = FormLinker.endpointSecrets(endpoint, model.forms);
       for (const sample of endpoint.samples) {
-        sample.url = url(sample.url);
+        sample.url = this.#redactor.url(sample.url, secrets);
         if (sample.pageUrl !== undefined) sample.pageUrl = url(sample.pageUrl);
       }
       for (const token of endpoint.auth.csrf) if (token.sourceUrl !== undefined) token.sourceUrl = url(token.sourceUrl);
@@ -190,7 +192,7 @@ export class ModelBuilder {
 
   #chosenOrigins(capture: Capture): string[] {
     if (this.#origins) return [...this.#origins];
-    if (this.#options.allOrigins) return OriginSelector.origins(capture).sort(Helpers.compare);
+    if (this.#options.allOrigins) return OriginSelector.origins(capture).sort(Text.compare);
     return OriginSelector.firstParty(capture);
   }
 
@@ -227,11 +229,11 @@ export class ModelBuilder {
 
   static #compare(a: Endpoint, b: Endpoint): number {
     return (
-      Helpers.compare(a.origin, b.origin) ||
-      Helpers.compare(a.path, b.path) ||
-      Helpers.compare(a.method, b.method) ||
-      Helpers.compare(a.operationName ?? '', b.operationName ?? '') ||
-      Helpers.compare(a.key, b.key)
+      Text.compare(a.origin, b.origin) ||
+      Text.compare(a.path, b.path) ||
+      Text.compare(a.method, b.method) ||
+      Text.compare(a.operationName ?? '', b.operationName ?? '') ||
+      Text.compare(a.key, b.key)
     );
   }
 

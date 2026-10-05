@@ -39,7 +39,10 @@ bodies, `--read-timeout` sets how long appii waits for a body after its request
 ends, and `--user-agent` replaces the User-Agent of the browser. appii checks
 that it can write the output file before the recording starts. If the file
 cannot be saved after the recording, appii writes the recording to a file in
-the temporary directory and the error message gives its path.
+the temporary directory and the error message gives its path. If the browser
+closes before the recording ends, for example because it crashed, appii saves
+the requests recorded until then and exits with an error that says so. Pages
+that the site opens in new tabs or windows are recorded too.
 
 ### build: infer the API
 
@@ -50,7 +53,11 @@ appii build capture.json
 Writes `api.json`: endpoints with path templates, query and header parameters,
 request and response schemas, auth cookies, bearer tokens, CSRF tokens and
 where they come from, cookie roles, and the validation rules of the HTML forms
-that submit to each endpoint.
+that submit to each endpoint. Like Chromium, appii reads a page without a
+charset in its Content-Type header or a `<meta charset>` as windows-1252, and
+reads form submissions in the charset of the form. Captures larger than the
+largest string Node.js can hold are read piece by piece. A model written by an
+older appii must be built again from its capture.
 
 ### list: look at the endpoints
 
@@ -96,7 +103,12 @@ of the endpoint. The Markdown and HTML exports show the same command.
 appii export api.json --format openapi
 ```
 
-Use `-o <file>` to choose the output file or `-o -` for stdout,
+Use `-o <file>` to choose the output file or `-o -` for stdout. If the file is
+a symbolic link, appii writes the file that the link points to; a FIFO or a
+character device such as `/dev/null` is written in place, and an existing file
+keeps its permissions (a file with secrets, such as an export without
+redaction, can only lose permissions). `build`, `export` and `capture --from-har` refuse to
+write over their input file, also through a link. Use
 `--endpoints 1,3,getItem` to export a subset and `appii export --formats` to
 list the formats:
 
@@ -125,9 +137,12 @@ the site uses. It keeps a page while the cookies for that page stay the same.
 The client never sends a request two times on its own. If the server rejects
 a request with status 400, 403, 419 or 422 and the client took a token from a
 page that it loaded before, `response.staleTokens` names the token and the
-page. Call `client.refreshTokens()` to load the page again for the next
-request. Send the request again only if the server can safely receive it two
-times.
+page, and the client forgets that page, so the next request loads it again as
+a browser would after a reload. `client.refreshTokens()` forgets all pages.
+Send the request again only if the server can safely receive it two times.
+The client does not check a form pattern that can take exponential or
+high-degree polynomial time, such as `(a+)+b` or `(.*a){25}`, unless you pass
+`unsafePatterns: true`.
 
 For a subset of the endpoints, the `json` export keeps only the cookies and
 forms of the selected endpoints, and `setBy` and `usedBy` name only selected

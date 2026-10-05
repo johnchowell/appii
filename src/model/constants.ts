@@ -1,4 +1,4 @@
-export const MODEL_VERSION = 1;
+export const MODEL_VERSION = 2;
 export const CAPTURE_VERSION = 1;
 
 export const RESOURCE_TYPES = Object.freeze([

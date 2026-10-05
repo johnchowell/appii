@@ -12,7 +12,7 @@ export class FormSchemaCombiner {
   static readonly SUBMIT_TYPE = 'submit';
   static readonly NOVALIDATE = 'x-html-novalidate';
   static readonly HTML_PREFIX = 'x-html-';
-  static readonly FIELDS = 'x-appii-fields';
+  static readonly FIELDS = Schema.VARIANT_FIELDS;
   static readonly ANNOTATION_KEYS: ReadonlySet<string> = new Set([
     'title',
     'description',
@@ -50,9 +50,9 @@ export class FormSchemaCombiner {
   }
 
   overlay(form: JsonSchema, observed: JsonSchema | undefined): JsonSchema {
-    const observedProps = Helpers.properties(observed);
+    const observedProps = Object.entries(Schema.properties(observed));
     if (!observed || Schema.primaryType(observed) !== 'object' || observedProps.length === 0) return form;
-    const formProps = Helpers.properties(form);
+    const formProps = Object.entries(Schema.properties(form));
     const formNames = new Set(formProps.map(([name]) => name));
     const extra = observedProps.filter(([name]) => !formNames.has(name)).map(([name, schema]): [string, JsonSchema] => [name, Json.clone(schema)]);
     const required = Helpers.distinct([...Schema.requiredSet(form), ...[...Schema.requiredSet(observed)].filter((name) => !formNames.has(name))]);
@@ -129,7 +129,7 @@ export class FormSchemaCombiner {
   }
 
   static #conditions(top: JsonSchema, variants: readonly Variant[]): JsonSchema | undefined {
-    const topProps = new Map(Helpers.properties(top));
+    const topProps = new Map(Object.entries(Schema.properties(top)));
     const branches: { when: JsonSchema; then: JsonSchema }[] = [];
     for (const variant of variants) {
       const others = variants.filter((other) => other !== variant);
@@ -189,12 +189,12 @@ export class FormSchemaCombiner {
   }
 
   static #variant(schema: JsonSchema): Variant {
-    return { schema, properties: new Map(Helpers.properties(schema)), required: Schema.requiredSet(schema) };
+    return { schema, properties: new Map(Object.entries(Schema.properties(schema))), required: Schema.requiredSet(schema) };
   }
 
   static #sameShape(a: JsonSchema, b: JsonSchema): boolean {
-    const pa = new Map(Helpers.properties(a));
-    const pb = new Map(Helpers.properties(b));
+    const pa = new Map(Object.entries(Schema.properties(a)));
+    const pb = new Map(Object.entries(Schema.properties(b)));
     if (pa.size !== pb.size || (a[FormSchemaCombiner.NOVALIDATE] === true) !== (b[FormSchemaCombiner.NOVALIDATE] === true)) return false;
     const ra = Schema.requiredSet(a);
     const rb = Schema.requiredSet(b);
@@ -209,8 +209,8 @@ export class FormSchemaCombiner {
   }
 
   static #merge(a: JsonSchema, b: JsonSchema): JsonSchema {
-    const other = new Map(Helpers.properties(b));
-    const properties = Helpers.properties(a).map(([name, schema]): [string, JsonSchema] => {
+    const other = new Map(Object.entries(Schema.properties(b)));
+    const properties = Object.entries(Schema.properties(a)).map(([name, schema]): [string, JsonSchema] => {
       const twin = other.get(name);
       return [name, twin && FormSchemaCombiner.#key(twin) !== FormSchemaCombiner.#key(schema) ? FormSchemaCombiner.alternatives(schema, twin) : schema];
     });

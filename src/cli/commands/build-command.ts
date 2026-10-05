@@ -1,6 +1,6 @@
 import { dirname, relative, sep } from 'node:path';
 import { CaptureStore } from '../../capture/index.js';
-import { Meta } from '../../shared/index.js';
+import { Fs, Meta } from '../../shared/index.js';
 import { BuildOptionGroup } from '../build-option-group.js';
 import { BuildStep } from '../build-step.js';
 import type { CliContext } from '../cli-context.js';
@@ -59,7 +59,7 @@ export class BuildCommand extends Command {
     const explicit = OptionReader.string(values, 'out');
     const out = await Helpers.outputFile(ctx, explicit, BuildCommand.DEFAULT_OUT);
     const capture = await this.#store.load(input);
-    if (out === input) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
+    if (await Fs.sameFile(out, input)) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
     await this.#step.run(capture, { out, source: BuildCommand.source(out, input), options }, ctx);
     return ExitCode.OK;
   }

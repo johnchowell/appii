@@ -50,7 +50,7 @@ export class HarConverter {
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = Helpers.REDIRECT_STATUSES;
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
   static readonly NORMALIZED_METHODS: ReadonlySet<string> = new Set(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT']);
-  static readonly MAX_DATE_MS = 8.64e15;
+  static readonly MAX_DATE_MS = Helpers.MAX_DATE_MS;
   static readonly MS_PER_SECOND = 1000;
   static readonly RESPONSE_START_TIMINGS: readonly string[] = ['blocked', 'dns', 'connect', 'send', 'wait'];
   static readonly MEMORY_CACHE = 'memory';
@@ -191,8 +191,8 @@ export class HarConverter {
       first = Math.min(first, t);
       last = Math.max(last, t);
     }
-    const startedAt = HarConverter.#dateOr(log._appiiStartedAt, Number.isFinite(first) ? new Date(first).toISOString() : new Date().toISOString());
-    const endedAt = HarConverter.#dateOr(log._appiiEndedAt, Number.isFinite(last) ? new Date(last).toISOString() : startedAt);
+    const startedAt = HarConverter.#dateOr(log._appiiStartedAt, Helpers.isoTime(first, new Date().toISOString()));
+    const endedAt = HarConverter.#dateOr(log._appiiEndedAt, Helpers.isoTime(last, startedAt));
     const own = typeof log._appiiStartedAt === 'string';
     const startUrl = own
       ? typeof log._appiiStartUrl === 'string'
@@ -389,7 +389,7 @@ export class HarConverter {
       resourceType,
       ...(typeof raw._appiiPageUrl === 'string' && raw._appiiPageUrl ? { pageUrl: raw._appiiPageUrl } : {}),
       startedAt: HarConverter.#startedAt(raw.startedDateTime, index),
-      durationMs: HarConverter.#duration(raw),
+      durationMs: HarConverter.#duration(raw, Date.parse(HarConverter.#startedAt(raw.startedDateTime, index))),
       request,
       ...(response ? { response } : {}),
       ...(error ? { error } : {}),
@@ -439,8 +439,10 @@ export class HarConverter {
     const headerType = Http.getHeader(headers, 'content-type') ?? '';
     let mimeType = (typeof pd.mimeType === 'string' && pd.mimeType) || headerType;
     let bytes: Uint8Array | undefined;
+    let requestBase64 = false;
     if (typeof pd.text === 'string') {
       const base64 = pd._appiiEncoding === 'base64' || pd._encoding === 'base64' || pd.encoding === 'base64';
+      requestBase64 = base64;
       bytes = base64 ? Buffer.from(pd.text, 'base64') : Buffer.from(pd.text, 'utf8');
     } else if (Array.isArray(pd.params) && pd.params.length > 0) {
       const params = (pd.params as unknown[]).filter((p): p is HarParam => Json.isPlainObject(p) && typeof p.name === 'string');
@@ -449,7 +451,7 @@ export class HarConverter {
       bytes = rebuilt.bytes;
     }
     if (!bytes || bytes.length === 0) return undefined;
-    const body = Http.toBodyData(bytes, mimeType, { contentEncoding: Http.getHeader(headers, 'content-encoding') });
+    const body = Http.toBodyData(bytes, mimeType, { contentEncoding: Http.getHeader(headers, 'content-encoding'), text: !requestBase64 });
     if (typeof req.bodySize === 'number' && Number.isFinite(req.bodySize) && req.bodySize > 0) body.size = req.bodySize;
     if (pd._appiiTruncated === true) body.truncated = true;
     return body;
@@ -460,7 +462,7 @@ export class HarConverter {
     const mimeType = HarConverter.#declaredMime(content) || Http.getHeader(headers, 'content-type') || '';
     const bytes = content.encoding === 'base64' ? Buffer.from(content.text, 'base64') : Buffer.from(content.text, 'utf8');
     if (bytes.length === 0) return undefined;
-    const body = Http.toBodyData(bytes, mimeType);
+    const body = Http.toBodyData(bytes, mimeType, { text: content.encoding !== 'base64' });
     const size = typeof content.size === 'number' && Number.isFinite(content.size) && content.size > 0 ? content.size : bytes.length;
     body.size = size;
     if (content._appiiTruncated === true) body.truncated = true;
@@ -532,10 +534,10 @@ export class HarConverter {
           else if (key === 'samesite') cookie.sameSite = value;
           else if (key === 'max-age' && /^-?\d+$/.test(value)) {
             const seconds = Number(value);
-            maxAge = new Date(seconds <= 0 ? 0 : Math.min(atMs + seconds * HarConverter.MS_PER_SECOND, HarConverter.MAX_DATE_MS)).toISOString();
+            maxAge = Helpers.isoTime(seconds <= 0 ? 0 : Math.min(atMs + seconds * HarConverter.MS_PER_SECOND, HarConverter.MAX_DATE_MS), undefined);
           } else if (key === 'expires') {
             const date = CookieParser.parseDate(value);
-            if (date !== null) expires = new Date(date).toISOString();
+            if (date !== null) expires = Helpers.isoTime(date, undefined);
           }
         }
         const expiry = maxAge ?? expires;
@@ -632,8 +634,7 @@ export class HarConverter {
 
   static #isoFromEpochSeconds(value: unknown, fallback: string): string {
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-    const ms = Math.round(value * HarConverter.MS_PER_SECOND);
-    return Number.isFinite(ms) && Math.abs(ms) <= HarConverter.MAX_DATE_MS ? new Date(ms).toISOString() : fallback;
+    return Helpers.isoTime(Math.round(value * HarConverter.MS_PER_SECOND), fallback);
   }
 
   static #linkRedirects(exchanges: Exchange[], entries: ImportedEntry[]): void {
@@ -675,7 +676,7 @@ export class HarConverter {
       pages.push({
         url: e.request.url,
         title: HarConverter.#title(html),
-        capturedAt: Number.isFinite(end) ? new Date(end).toISOString() : e.startedAt,
+        capturedAt: Helpers.isoTime(end, e.startedAt),
         html,
       });
     }
@@ -734,13 +735,14 @@ export class HarConverter {
     return new Date(ms).toISOString();
   }
 
-  static #duration(raw: Record<string, unknown>): number {
-    if (typeof raw.time === 'number' && Number.isFinite(raw.time) && raw.time >= 0) return raw.time;
+  static #duration(raw: Record<string, unknown>, startMs: number): number {
+    const fits = (ms: number): boolean => Number.isFinite(ms) && ms >= 0 && startMs + ms <= HarConverter.MAX_DATE_MS;
+    if (typeof raw.time === 'number' && fits(raw.time)) return raw.time;
     const timings = raw.timings;
     if (!Json.isPlainObject(timings)) return 0;
     let total = 0;
     for (const value of Object.values(timings)) if (typeof value === 'number' && Number.isFinite(value) && value > 0) total += value;
-    return total;
+    return fits(total) ? total : 0;
   }
 
   static #dateOr(value: unknown, fallback: string): string {
@@ -758,7 +760,7 @@ export class HarConverter {
   }
 
   static #iso(ms: number): string {
-    return new Date(Number.isFinite(ms) ? ms : Date.now()).toISOString();
+    return Helpers.isoTime(ms, new Date().toISOString());
   }
 
   static #parse(text: string): unknown {

@@ -10,6 +10,7 @@ export class Helpers {
   static readonly NO_CONTENT_STATUSES: ReadonlySet<number> = new Set([204, 205]);
   static readonly NESTED_DESTINATIONS: ReadonlySet<string> = new Set(['iframe', 'frame', 'embed', 'object', 'fencedframe']);
   static readonly CHUNKED = 'chunked';
+  static readonly MAX_DATE_MS = 8.64e15;
 
   static stripPseudoHeaders(headers: readonly Header[]): Header[] {
     return headers.filter((h) => !h.name.startsWith(':')).map((h) => ({ name: h.name, value: h.value }));
@@ -29,6 +30,11 @@ export class Helpers {
     return value !== undefined && /^\d+$/.test(value) ? Number(value) : undefined;
   }
 
+  static fullBodySize(headers: Header[], received: number): number {
+    const declared = Http.isContentEncoded(Http.getHeader(headers, 'content-encoding')) ? undefined : Helpers.contentLength(headers);
+    return Math.max(declared ?? 0, received);
+  }
+
   static isChunked(headers: Header[]): boolean {
     return (Http.getHeader(headers, 'transfer-encoding') ?? '').toLowerCase().includes(Helpers.CHUNKED);
   }
@@ -44,6 +50,10 @@ export class Helpers {
       startedAt: new Date(whole).toISOString(),
       durationMs: Math.round(Math.max(0, durationMs + (startMs - whole)) * 1000) / 1000,
     };
+  }
+
+  static isoTime<T>(ms: number, fallback: T): string | T {
+    return Number.isFinite(ms) && Math.abs(ms) <= Helpers.MAX_DATE_MS ? new Date(ms).toISOString() : fallback;
   }
 
   static withoutFragment(url: string): string {
