@@ -1,6 +1,7 @@
-import { load } from 'cheerio';
 import { AppiiError, Http } from '../shared/index.js';
+import { ControlRules } from './control-rules.js';
 import { HtmlMicrosyntax } from './html-microsyntax.js';
+import { HtmlTreeBuilder } from './html-tree-builder.js';
 
 export interface HtmlNode {
   type: string;
@@ -20,17 +21,33 @@ export class HtmlDocument {
   static readonly HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
   static readonly ELEMENT_TYPES: ReadonlySet<string> = new Set(['tag', 'script', 'style']);
   static readonly BLOCKED_BASE_PROTOCOLS: ReadonlySet<string> = new Set(['data:', 'javascript:']);
+  static readonly LIVE_FORM_INDEX = 'data-appii-form-index';
+  static readonly LIVE_FORM_OWNER = 'data-appii-form-owner';
+  static readonly LIVE_SELECTOR = 'data-appii-selector';
+  static readonly LIVE_INDEX_PATTERN: RegExp = /^[0-9]+$/;
+  static readonly META_CHARSET: RegExp = /charset[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r ;"']+))/i;
+  static readonly HTTP_EQUIV_CONTENT_TYPE = 'content-type';
+  static readonly PRESCAN_REPLACEMENTS: ReadonlyMap<string, string> = new Map([
+    ['UTF-16BE', 'UTF-8'],
+    ['UTF-16LE', 'UTF-8'],
+    ['x-user-defined', 'windows-1252'],
+  ]);
 
   readonly url: string;
   readonly baseUrl: string;
+  readonly encoding: string;
   readonly root: HtmlNode;
   readonly elements: readonly HtmlElement[];
   readonly allElements: readonly HtmlElement[];
   readonly #ids: ReadonlyMap<string, HtmlElement>;
+  readonly #parserOwners: ReadonlyMap<HtmlElement, HtmlElement>;
+  #forms: readonly HtmlElement[] | undefined;
+  #liveForms: ReadonlyMap<number, HtmlElement> | undefined;
 
-  constructor(root: HtmlNode, url: string) {
+  constructor(root: HtmlNode, url: string, parserOwners: ReadonlyMap<HtmlElement, HtmlElement> = new Map(), encoding?: string) {
     this.root = root;
     this.url = url;
+    this.#parserOwners = parserOwners;
     this.elements = HtmlDocument.#collect(root, false);
     this.allElements = HtmlDocument.#collect(root, true);
     const ids = new Map<string, HtmlElement>();
@@ -40,16 +57,18 @@ export class HtmlDocument {
     }
     this.#ids = ids;
     this.baseUrl = this.#frozenBaseUrl();
+    this.encoding = (encoding === undefined ? undefined : ControlRules.encodingName(encoding)) ?? this.#metaEncoding() ?? ControlRules.CHARSET;
   }
 
-  static parse(html: string, pageUrl: string): HtmlDocument {
+  static parse(html: string, pageUrl: string, options: { encoding?: string | undefined } = {}): HtmlDocument {
     let url: string;
     try {
       url = new URL(pageUrl).href;
     } catch (cause) {
       throw new AppiiError('BAD_INPUT', `Invalid page URL: ${pageUrl}`, { cause });
     }
-    return new HtmlDocument(load(html).root()[0] as unknown as HtmlNode, url);
+    const tree = new HtmlTreeBuilder().build(html);
+    return new HtmlDocument(tree.root, url, tree.owners, options.encoding);
   }
 
   static isElement(node: HtmlNode | null | undefined): node is HtmlElement {
@@ -131,8 +150,31 @@ export class HtmlDocument {
       .join('');
   }
 
-  forms(): HtmlElement[] {
-    return this.elements.filter((element) => this.isHtml(element, 'form'));
+  forms(): readonly HtmlElement[] {
+    this.#forms ??= this.elements.filter((element) => this.isHtml(element, 'form'));
+    return this.#forms;
+  }
+
+  parserOwner(control: HtmlElement): HtmlElement | undefined {
+    return this.#parserOwners.get(control);
+  }
+
+  liveFormIndex(form: HtmlElement): number | undefined {
+    const value = this.attr(form, HtmlDocument.LIVE_FORM_INDEX);
+    return value !== undefined && HtmlDocument.LIVE_INDEX_PATTERN.test(value) ? Number(value) : undefined;
+  }
+
+  liveSelector(form: HtmlElement): string | undefined {
+    const value = this.attr(form, HtmlDocument.LIVE_SELECTOR);
+    return value === undefined || value === '' ? undefined : value;
+  }
+
+  liveOwner(control: HtmlElement): HtmlElement | null | undefined {
+    const value = this.attr(control, HtmlDocument.LIVE_FORM_OWNER);
+    if (value === undefined) return undefined;
+    if (value === '') return null;
+    if (!HtmlDocument.LIVE_INDEX_PATTERN.test(value)) return undefined;
+    return this.#liveFormsByIndex().get(Number(value)) ?? null;
   }
 
   resolveUrl(href: string, base: string = this.baseUrl): string | undefined {
@@ -143,6 +185,37 @@ export class HtmlDocument {
     const trimmed = value === undefined ? '' : HtmlMicrosyntax.trim(value);
     if (trimmed === '') return this.url;
     return this.resolveUrl(trimmed) ?? trimmed;
+  }
+
+  #liveFormsByIndex(): ReadonlyMap<number, HtmlElement> {
+    if (this.#liveForms) return this.#liveForms;
+    const out = new Map<number, HtmlElement>();
+    for (const form of this.forms()) {
+      const index = this.liveFormIndex(form);
+      if (index !== undefined && !out.has(index)) out.set(index, form);
+    }
+    this.#liveForms = out;
+    return out;
+  }
+
+  #metaEncoding(): string | undefined {
+    for (const element of this.elements) {
+      if (!this.isHtml(element, 'meta')) continue;
+      const charset = this.attr(element, 'charset');
+      const equiv = this.attr(element, 'http-equiv');
+      const content = this.attr(element, 'content');
+      let label: string | undefined;
+      if (charset !== undefined) label = charset;
+      else if (equiv !== undefined && HtmlMicrosyntax.asciiLower(HtmlMicrosyntax.trim(equiv)) === HtmlDocument.HTTP_EQUIV_CONTENT_TYPE && content !== undefined) {
+        const m = HtmlDocument.META_CHARSET.exec(content);
+        label = m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+      }
+      if (label === undefined) continue;
+      const name = ControlRules.encodingName(label);
+      if (name === undefined || name === ControlRules.REPLACEMENT) continue;
+      return HtmlDocument.PRESCAN_REPLACEMENTS.get(name) ?? name;
+    }
+    return undefined;
   }
 
   #frozenBaseUrl(): string {

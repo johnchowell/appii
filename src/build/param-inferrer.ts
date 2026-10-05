@@ -20,6 +20,7 @@ interface ParamStats {
   present: number;
   repeated: boolean;
   values: string[];
+  examples: string[];
 }
 
 export class ParamInferrer {
@@ -38,7 +39,7 @@ export class ParamInferrer {
   }
 
   static create(options: ParamInferrerOptions): ParamInferrer {
-    return new ParamInferrer({ schemas: SchemaInferrer.create(), redactor: new Redactor(), headers: new HeaderPolicy() }, options);
+    return new ParamInferrer({ schemas: SchemaInferrer.create(), redactor: Redactor.create(), headers: HeaderPolicy.create() }, options);
   }
 
   static pathSchema(kind: SegmentKind, values: readonly string[]): JsonSchema {
@@ -62,7 +63,9 @@ export class ParamInferrer {
       const counts = new Map<string, number>();
       for (const [name, value] of url.searchParams) {
         counts.set(name, (counts.get(name) ?? 0) + 1);
-        ParamInferrer.#stat(stats, name).values.push(value);
+        const stat = ParamInferrer.#stat(stats, name);
+        stat.values.push(value);
+        stat.examples.push(this.#redactor.queryField(name, value, url));
       }
       for (const [name, count] of counts) {
         const stat = ParamInferrer.#stat(stats, name);
@@ -73,8 +76,7 @@ export class ParamInferrer {
     return [...stats].map(([name, stat]) => {
       const scalar = this.#schemas.fromStrings(stat.values);
       const schema: JsonSchema = stat.repeated ? { type: 'array', items: scalar } : scalar;
-      const examples = stat.values.map((value) => String(this.#redactor.field(name, value)));
-      return this.#param(name, 'query', stat.present === urls.length, schema, examples);
+      return this.#param(name, 'query', stat.present === urls.length, schema, stat.examples);
     });
   }
 
@@ -122,7 +124,7 @@ export class ParamInferrer {
   static #stat(stats: Map<string, ParamStats>, name: string): ParamStats {
     let stat = stats.get(name);
     if (!stat) {
-      stat = { present: 0, repeated: false, values: [] };
+      stat = { present: 0, repeated: false, values: [], examples: [] };
       stats.set(name, stat);
     }
     return stat;

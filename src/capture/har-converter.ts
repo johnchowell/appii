@@ -26,7 +26,14 @@ export interface HarConverterDeps {
 interface Ordered {
   readonly start: number;
   readonly pageUrl: string | undefined;
+  readonly navigation: { readonly chain: string; readonly url: string } | undefined;
   readonly build: (pageref: string | undefined) => HarEntry;
+}
+
+interface Commit {
+  readonly at: number;
+  readonly url: string;
+  readonly owner: Exchange;
 }
 
 interface ImportedEntry {
@@ -38,9 +45,12 @@ interface ImportedEntry {
 export class HarConverter {
   static readonly VERSION = '1.2';
   static readonly HTML_MIMES: ReadonlySet<string> = new Set(['text/html', 'application/xhtml+xml']);
-  static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
-  static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+  static readonly REDIRECT_STATUSES: ReadonlySet<number> = Helpers.REDIRECT_STATUSES;
+  static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
   static readonly NORMALIZED_METHODS: ReadonlySet<string> = new Set(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT']);
+  static readonly MAX_DATE_MS = 8.64e15;
+  static readonly MS_PER_SECOND = 1000;
+  static readonly RESPONSE_START_TIMINGS: readonly string[] = ['blocked', 'dns', 'connect', 'send', 'wait'];
 
   readonly #cookies: CookieParser;
   readonly #validator: CaptureValidator;
@@ -60,32 +70,52 @@ export class HarConverter {
     const titles = new Map<string, string>();
     for (const page of capture?.pages ?? []) if (page.title && !titles.has(page.url)) titles.set(page.url, page.title);
 
+    const navigations = HarConverter.#navigations(exchanges);
     const ordered: Ordered[] = [
-      ...exchanges.map((e) => ({ start: Date.parse(e.startedAt), pageUrl: e.pageUrl, build: (ref: string | undefined) => this.#exchangeEntry(e, ref) })),
-      ...(capture?.websockets ?? []).map((ws) => ({ start: Date.parse(ws.openedAt), pageUrl: ws.pageUrl, build: (ref: string | undefined) => HarConverter.#socketEntry(ws, ref) })),
+      ...exchanges.map((e) => ({
+        start: Date.parse(e.startedAt),
+        pageUrl: e.pageUrl,
+        navigation: navigations.get(e),
+        build: (ref: string | undefined) => this.#exchangeEntry(e, ref),
+      })),
+      ...(capture?.websockets ?? []).map((ws) => ({
+        start: Date.parse(ws.openedAt),
+        pageUrl: ws.pageUrl,
+        navigation: undefined,
+        build: (ref: string | undefined) => HarConverter.#socketEntry(ws, ref),
+      })),
     ];
     const sorted = ordered
       .map((item, index) => ({ item, index }))
       .sort((a, b) => HarConverter.#order(a.item.start) - HarConverter.#order(b.item.start) || a.index - b.index)
       .map(({ item }) => item);
 
-    const pages = new Map<string, HarPage>();
+    const pages: HarPage[] = [];
+    const current = new Map<string, HarPage>();
+    const chains = new Map<string, HarPage>();
+    const open = (url: string, start: number): HarPage => {
+      const page: HarPage = {
+        startedDateTime: HarConverter.#iso(start),
+        id: `page_${pages.length + 1}`,
+        title: titles.get(url) ?? url,
+        pageTimings: { onContentLoad: -1, onLoad: -1 },
+      };
+      pages.push(page);
+      current.set(url, page);
+      return page;
+    };
     const entries = sorted.map((item) => {
-      let pageref: string | undefined;
-      if (item.pageUrl) {
-        let page = pages.get(item.pageUrl);
+      let page: HarPage | undefined;
+      if (item.navigation) {
+        page = chains.get(item.navigation.chain);
         if (!page) {
-          page = {
-            startedDateTime: HarConverter.#iso(item.start),
-            id: `page_${pages.size + 1}`,
-            title: titles.get(item.pageUrl) ?? item.pageUrl,
-            pageTimings: { onContentLoad: -1, onLoad: -1 },
-          };
-          pages.set(item.pageUrl, page);
+          page = open(item.navigation.url, item.start);
+          chains.set(item.navigation.chain, page);
         }
-        pageref = page.id;
+      } else if (item.pageUrl) {
+        page = current.get(item.pageUrl) ?? open(item.pageUrl, item.start);
       }
-      return item.build(pageref);
+      return item.build(page?.id);
     });
 
     const creator = Meta.creator();
@@ -93,7 +123,7 @@ export class HarConverter {
       log: {
         version: HarConverter.VERSION,
         creator: { name: creator.name, version: creator.version },
-        pages: [...pages.values()],
+        pages,
         entries,
         ...(capture
           ? {
@@ -139,9 +169,10 @@ export class HarConverter {
       }
     });
 
-    const pageUrls = HarConverter.#pageUrls(Array.isArray(log.pages) ? log.pages : [], exchanges, exchangeEntries);
-    exchanges.forEach((e, i) => HarConverter.#assignPage(e, exchangeEntries[i]!, pageUrls));
-    websockets.forEach((ws, i) => HarConverter.#assignPage(ws, socketEntries[i]!, pageUrls));
+    const commits = HarConverter.#commits(exchanges, exchangeEntries);
+    const titled = HarConverter.#titledPages(Array.isArray(log.pages) ? log.pages : [], commits);
+    exchanges.forEach((e, i) => HarConverter.#assignPage(e, Date.parse(e.startedAt), exchangeEntries[i]!, commits, titled));
+    websockets.forEach((ws, i) => HarConverter.#assignPage(ws, Date.parse(ws.openedAt), socketEntries[i]!, commits, titled));
     HarConverter.#linkRedirects(exchanges, exchangeEntries);
 
     let first = Number.POSITIVE_INFINITY;
@@ -366,7 +397,7 @@ export class HarConverter {
         if (!Json.isPlainObject(m)) continue;
         const opcode = Number(m.opcode);
         if (opcode !== 1 && opcode !== 2) continue;
-        const at = typeof m.time === 'number' && Number.isFinite(m.time) ? new Date(Math.round(m.time * 1000)).toISOString() : openedAt;
+        const at = HarConverter.#isoFromEpochSeconds(m.time, openedAt);
         messages.push({ direction: m.type === 'send' ? 'sent' : 'received', at, opcode: opcode === 1 ? 'text' : 'binary', data: typeof m.data === 'string' ? m.data : '' });
       }
     }
@@ -482,7 +513,7 @@ export class HarConverter {
           else if (key === 'samesite') cookie.sameSite = value;
           else if (key === 'max-age' && /^-?\d+$/.test(value)) {
             const seconds = Number(value);
-            maxAge = new Date(seconds <= 0 ? 0 : Math.min(atMs + seconds * 1000, 8.64e15)).toISOString();
+            maxAge = new Date(seconds <= 0 ? 0 : Math.min(atMs + seconds * HarConverter.MS_PER_SECOND, HarConverter.MAX_DATE_MS)).toISOString();
           } else if (key === 'expires') {
             const date = CookieParser.parseDate(value);
             if (date !== null) expires = new Date(date).toISOString();
@@ -509,23 +540,81 @@ export class HarConverter {
     return { blocked: -1, dns: -1, connect: -1, send: 0, wait: duration, receive: 0, ssl: -1 };
   }
 
-  static #pageUrls(pages: unknown[], exchanges: Exchange[], entries: ImportedEntry[]): Map<string, string> {
-    const out = new Map<string, string>();
+  static #navigations(exchanges: Exchange[]): Map<Exchange, { chain: string; url: string }> {
+    const byId = new Map(exchanges.map((e) => [e.id, e]));
+    const next = new Map<string, Exchange>();
+    for (const e of exchanges) if (e.redirectedFrom && byId.has(e.redirectedFrom) && !next.has(e.redirectedFrom)) next.set(e.redirectedFrom, e);
+    const out = new Map<Exchange, { chain: string; url: string }>();
+    for (const e of exchanges) {
+      if (!Helpers.isTopLevelNavigation(e)) continue;
+      let first = e;
+      const back = new Set<string>([first.id]);
+      for (let prev = first.redirectedFrom ? byId.get(first.redirectedFrom) : undefined; prev && !back.has(prev.id); prev = prev.redirectedFrom ? byId.get(prev.redirectedFrom) : undefined) {
+        back.add(prev.id);
+        first = prev;
+      }
+      let last = e;
+      const forward = new Set<string>([last.id]);
+      for (let following = next.get(last.id); following && !forward.has(following.id); following = next.get(following.id)) {
+        forward.add(following.id);
+        last = following;
+      }
+      out.set(e, { chain: first.id, url: last.request.url });
+    }
+    return out;
+  }
+
+  static #commits(exchanges: Exchange[], entries: ImportedEntry[]): Map<string, Commit[]> {
+    const out = new Map<string, Commit[]>();
     exchanges.forEach((e, i) => {
-      const ref = entries[i]?.pageref;
-      if (ref && !out.has(ref) && e.resourceType === 'document') out.set(ref, e.request.url);
+      const entry = entries[i];
+      const status = e.response?.status;
+      if (!entry?.pageref || status === undefined || e.error || !Helpers.isTopLevelNavigation(e)) return;
+      if (HarConverter.REDIRECT_STATUSES.has(status) || Helpers.NO_CONTENT_STATUSES.has(status)) return;
+      const list = out.get(entry.pageref) ?? [];
+      list.push({ at: HarConverter.#responseStart(entry.raw, e), url: e.request.url, owner: e });
+      out.set(entry.pageref, list);
     });
+    for (const list of out.values()) list.sort((a, b) => a.at - b.at);
+    return out;
+  }
+
+  static #titledPages(pages: unknown[], commits: Map<string, Commit[]>): Map<string, string> {
+    const out = new Map<string, string>();
     for (const page of pages) {
-      if (!Json.isPlainObject(page) || typeof page.id !== 'string' || out.has(page.id)) continue;
+      if (!Json.isPlainObject(page) || typeof page.id !== 'string' || commits.has(page.id)) continue;
       if (typeof page.title === 'string' && /^https?:\/\//i.test(page.title)) out.set(page.id, page.title);
     }
     return out;
   }
 
-  static #assignPage(target: Exchange | WebSocketCapture, entry: ImportedEntry, pageUrls: Map<string, string>): void {
+  static #assignPage(target: Exchange | WebSocketCapture, start: number, entry: ImportedEntry, commits: Map<string, Commit[]>, titled: Map<string, string>): void {
     if (entry.own || target.pageUrl || !entry.pageref) return;
-    const url = pageUrls.get(entry.pageref);
+    const list = commits.get(entry.pageref);
+    let url = list ? undefined : titled.get(entry.pageref);
+    for (const commit of list ?? []) {
+      if (commit.at > start) break;
+      if (commit.owner !== target) url = commit.url;
+    }
     if (url) target.pageUrl = url;
+  }
+
+  static #responseStart(raw: Record<string, unknown>, e: Exchange): number {
+    const start = Date.parse(e.startedAt);
+    const timings = raw.timings;
+    if (!Json.isPlainObject(timings) || typeof timings.wait !== 'number') return start;
+    let offset = 0;
+    for (const key of HarConverter.RESPONSE_START_TIMINGS) {
+      const value = timings[key];
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) offset += value;
+    }
+    return start + offset;
+  }
+
+  static #isoFromEpochSeconds(value: unknown, fallback: string): string {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    const ms = Math.round(value * HarConverter.MS_PER_SECOND);
+    return Number.isFinite(ms) && Math.abs(ms) <= HarConverter.MAX_DATE_MS ? new Date(ms).toISOString() : fallback;
   }
 
   static #linkRedirects(exchanges: Exchange[], entries: ImportedEntry[]): void {

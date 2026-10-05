@@ -33,7 +33,7 @@ export class BodyShaper {
   }
 
   static create(options: BodyShaperOptions): BodyShaper {
-    return new BodyShaper({ schemas: SchemaInferrer.create(), redactor: new Redactor() }, options);
+    return new BodyShaper({ schemas: SchemaInferrer.create(), redactor: Redactor.create() }, options);
   }
 
   shape(bodies: readonly ParsedBody[], compact = false): BodyShape | undefined {
@@ -99,7 +99,7 @@ export class BodyShaper {
     const out: unknown[] = [];
     const seen = new Set<string>();
     for (const value of values) {
-      let example = this.#redactor.deep(value);
+      let example = kind === 'text' && typeof value === 'string' ? this.#redactor.plainText(value) : this.#redactor.deep(value);
       if (kind === 'text' && typeof example === 'string') example = Text.truncate(example, BodyShaper.TEXT_EXAMPLE_LENGTH);
       else if (compact) example = BodyShaper.#compact(example);
       const key = Json.stableStringify(example, 0);

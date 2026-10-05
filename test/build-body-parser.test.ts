@@ -242,6 +242,13 @@ describe('BodyParser GraphQL', () => {
     assert.ok(!GraphqlDocument.looksLikeDocument('query_x { a }'));
     assert.ok(!GraphqlDocument.looksLikeDocument(''));
     assert.ok(!GraphqlDocument.looksLikeDocument('# only a comment'));
+    for (const text of ['mutation testing', 'fragment shader tutorial', 'query letters', 'subscription plans', '{"a":1}', 'query (', 'fragment on on X { a }']) {
+      assert.ok(!GraphqlDocument.looksLikeDocument(text), text);
+    }
+    for (const text of ['query { a }', 'mutation M($x: [Int!] = [1, 2]) @tag(n: "a)") { m }', 'subscription S { s }', '{ ...F }', 'fragment F on User @x { id }', 'query @cached { a }']) {
+      assert.ok(GraphqlDocument.looksLikeDocument(text), text);
+    }
+    assert.equal(parser.parse(body('{"query":"fragment shader tutorial"}', 'application/json')).kind, 'json');
   });
 
   test('document detection is linear on hostile input', () => {

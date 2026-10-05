@@ -402,3 +402,33 @@ describe('HeaderPolicy', () => {
     assert.equal(policy.isNotableResponse('date'), false);
   });
 });
+
+describe('GraphQL detection (FB-22)', () => {
+  test('GET persisted queries without a query parameter are split by operation', () => {
+    const f = new CaptureFactory();
+    const extensions = encodeURIComponent(JSON.stringify({ persistedQuery: { version: 1, sha256Hash: 'abc' } }));
+    for (const operation of ['GetViewer', 'ListProducts']) {
+      f.json('GET', `/graphql?operationName=${operation}&variables=%7B%7D&extensions=${extensions}`, 200, { data: {} });
+    }
+    const endpoints = grouper().group(f.capture().exchanges);
+    assert.deepEqual(endpoints.map((endpoint) => [endpoint.key, endpoint.kind]).sort(), [
+      [`GET ${ORIGIN}/graphql#GetViewer`, 'graphql'],
+      [`GET ${ORIGIN}/graphql#ListProducts`, 'graphql'],
+    ]);
+  });
+
+  test('free text that starts with a GraphQL keyword is not a document', () => {
+    const f = new CaptureFactory();
+    f.json('GET', '/search?query=mutation+testing', 200, {});
+    f.json('GET', '/search?query=shoes', 200, {});
+    f.json('POST', '/api/search', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { query: 'fragment shader tutorial' } } });
+    f.json('POST', '/api/search', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { query: 'query letters' } } });
+    f.json('GET', '/graphql?query=' + encodeURIComponent('query Q($id: ID!) @live { item(id: $id) { id } }'), 200, {});
+    const endpoints = grouper().group(f.capture().exchanges);
+    assert.deepEqual(endpoints.map((endpoint) => [endpoint.key, endpoint.kind]).sort(), [
+      [`GET ${ORIGIN}/graphql#Q`, 'graphql'],
+      [`GET ${ORIGIN}/search`, 'json'],
+      [`POST ${ORIGIN}/api/search`, 'json'],
+    ]);
+  });
+});

@@ -1,3 +1,9 @@
+import { TokenDetector } from '../forms/index.js';
+
+export interface HeaderPolicyDeps {
+  tokens?: TokenDetector;
+}
+
 export class HeaderPolicy {
   static readonly BROWSER_HEADERS: ReadonlySet<string> = new Set([
     'user-agent',
@@ -63,7 +69,6 @@ export class HeaderPolicy {
     'private-token',
   ]);
   static readonly AUTH_PATTERN: RegExp = /(?:^|-)(?:api-?key|auth-?token|access-?token|session-?token|id-?token)$/;
-  static readonly CSRF_PATTERN: RegExp = /csrf|xsrf|request-?verification-?token|anti-?forgery/i;
   static readonly NOTABLE_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
     'content-type',
     'location',
@@ -77,6 +82,16 @@ export class HeaderPolicy {
   ]);
   static readonly NOTABLE_RESPONSE_PATTERN: RegExp = /^(?:x-)?rate-?limit|csrf|xsrf/i;
 
+  readonly #tokens: TokenDetector;
+
+  constructor(deps: HeaderPolicyDeps = {}) {
+    this.#tokens = deps.tokens ?? new TokenDetector();
+  }
+
+  static create(): HeaderPolicy {
+    return new HeaderPolicy({ tokens: new TokenDetector() });
+  }
+
   isParam(name: string): boolean {
     const lower = name.toLowerCase();
     if (lower === '' || HeaderPolicy.BROWSER_HEADERS.has(lower)) return false;
@@ -89,7 +104,7 @@ export class HeaderPolicy {
   }
 
   isCsrf(name: string): boolean {
-    return HeaderPolicy.CSRF_PATTERN.test(name);
+    return this.#tokens.isCsrfHeader(name);
   }
 
   isNotableResponse(name: string): boolean {

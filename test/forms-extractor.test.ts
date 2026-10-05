@@ -437,7 +437,7 @@ describe('FormExtractor on tricky markup', () => {
 
   test('collaborators can be substituted through the deps object', () => {
     class NoTokens extends TokenDetector {
-      override isTokenField(): boolean {
+      override isHiddenTokenField(): boolean {
         return false;
       }
     }

@@ -1,13 +1,17 @@
 import type { HtmlDocument, HtmlElement } from './html-document.js';
 
 export class FormOwnerResolver {
+  static readonly FORM_ATTRIBUTE = 'form';
+
   owner(doc: HtmlDocument, control: HtmlElement): HtmlElement | null {
-    const formId = doc.attr(control, 'form');
+    const live = doc.liveOwner(control);
+    if (live !== undefined) return live;
+    const formId = doc.attr(control, FormOwnerResolver.FORM_ATTRIBUTE);
     if (formId !== undefined) {
       const target = formId === '' ? undefined : doc.byId(formId);
       return target && doc.isHtml(target, 'form') ? target : null;
     }
-    return doc.closest(control, 'form') ?? null;
+    return doc.parserOwner(control) ?? doc.closest(control, 'form') ?? null;
   }
 
   group(doc: HtmlDocument, controls: readonly HtmlElement[]): Map<HtmlElement, HtmlElement[]> {

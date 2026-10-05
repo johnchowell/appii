@@ -1,9 +1,10 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BodyParser, EndpointGrouper, FormCollector, FormLinker, HtmlPages, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { BodyParser, EndpointGrouper, FormCollector, FormLinker, HtmlPages, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
 import type { Capture, Endpoint, JsonSchema } from '../src/model/index.js';
 import { Samples, Schema } from '../src/shared/index.js';
+import { SchemaCheck } from './fixtures/build-schema-check.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
 const ORIGIN = CaptureFactory.ORIGIN;
@@ -61,7 +62,7 @@ describe('FormLinker on the fixture flow', () => {
     assert.equal(body?.mimeType, 'application/x-www-form-urlencoded');
     assert.equal(body?.kind, 'form');
     assert.deepEqual(body?.schema?.required, ['email', 'password', 'action']);
-    assert.deepEqual(prop(body?.schema, 'password'), { type: 'string', title: 'Password', minLength: 8, 'x-html-minlength': 8, 'x-html-type': 'password', 'x-html-required': true });
+    assert.deepEqual(prop(body?.schema, 'password'), { type: 'string', title: 'Password', minLength: 4, 'x-html-minlength': 8, 'x-html-type': 'password', 'x-html-required': true });
     assert.equal(prop(body?.schema, 'email').format, 'email');
     assert.equal(prop(body?.schema, 'csrf_token')['x-appii-token'], true);
     assert.equal(prop(body?.schema, 'csrf_token')['x-appii-token-example'], Samples.REDACTED);
@@ -85,27 +86,38 @@ describe('FormLinker on the fixture flow', () => {
     assert.equal(search.form?.enctype, 'application/x-www-form-urlencoded');
   });
 
-  test('the multipart signup form keeps every validating constraint and both submitters', () => {
+  test('the multipart signup form keeps every validating constraint and accepts both submitters', () => {
     const signup = find(endpoints, `POST ${ORIGIN}/signup`);
     assert.equal(signup.kind, 'form');
     const body = signup.requestBody;
     assert.equal(body?.mimeType, 'multipart/form-data');
     assert.equal(body?.kind, 'multipart');
     assert.deepEqual(body?.examples, []);
-    assert.deepEqual(body?.schema?.required, ['username', 'email', 'country', 'terms', 'intent']);
-    assert.equal(prop(body?.schema, 'username').pattern, '^(?:[a-z0-9_]{3,16})$');
-    assert.deepEqual([prop(body?.schema, 'age').minimum, prop(body?.schema, 'age').maximum, prop(body?.schema, 'age').type], [13, 120, 'integer']);
-    assert.equal(prop(body?.schema, 'website').format, 'uri');
-    assert.equal(prop(body?.schema, 'birthday')['x-html-max'], '2026-12-31');
-    assert.deepEqual(prop(body?.schema, 'country').enum, ['us', 'ca']);
-    assert.deepEqual(prop(body?.schema, 'plan').enum, ['free', 'pro']);
-    assert.equal(prop(body?.schema, 'interests').uniqueItems, true);
-    assert.equal(prop(body?.schema, 'bio').maxLength, 200);
-    assert.equal(prop(body?.schema, 'terms').const, 'on');
-    assert.deepEqual(prop(body?.schema, 'avatar'), { type: 'string', format: 'binary', 'x-html-accept': 'image/*', 'x-html-type': 'file' });
-    assert.equal(prop(body?.schema, 'readonly_field').readOnly, true);
-    assert.ok(!('locked' in Schema.properties(body?.schema)) && !('disabled_field' in Schema.properties(body?.schema)));
-    assert.deepEqual(prop(body?.schema, 'intent'), { type: 'string', 'x-html-type': 'submit', enum: ['create', 'draft'], 'x-html-labels': ['Create', 'Save draft'] });
+    const schema = body?.schema;
+    assert.deepEqual(schema?.required, ['intent']);
+    assert.deepEqual(schema?.if, { required: ['intent'], properties: { intent: { const: 'create' } } });
+    const create = schema?.then as JsonSchema;
+    assert.deepEqual(create.required, ['username', 'email', 'country', 'terms', 'intent']);
+    assert.equal(prop(create, 'username').pattern, '^(?:[a-z0-9_]{3,16})$');
+    assert.deepEqual([prop(create, 'age').minimum, prop(create, 'age').maximum, prop(create, 'age').type], [13, 120, 'integer']);
+    assert.deepEqual(prop(create, 'country').enum, ['us', 'ca']);
+    assert.equal(prop(schema, 'username')['x-html-pattern'], '[a-z0-9_]{3,16}');
+    assert.equal(prop(schema, 'username').pattern, undefined);
+    assert.deepEqual([prop(schema, 'website').format, prop(schema, 'website')['x-html-type']], [undefined, 'url']);
+    assert.equal(prop(schema, 'birthday')['x-html-max'], '2026-12-31');
+    assert.deepEqual(prop(schema, 'plan').enum, ['free', 'pro']);
+    assert.equal(prop(schema, 'interests').uniqueItems, true);
+    assert.deepEqual([prop(schema, 'bio').maxLength, prop(schema, 'bio')['x-html-maxlength']], [400, 200]);
+    assert.equal(prop(schema, 'terms').const, 'on');
+    assert.deepEqual(prop(schema, 'avatar'), { type: 'string', format: 'binary', 'x-html-accept': 'image/*', 'x-html-type': 'file' });
+    assert.equal(prop(schema, 'readonly_field').readOnly, true);
+    assert.ok(!('locked' in Schema.properties(schema)) && !('disabled_field' in Schema.properties(schema)));
+    assert.deepEqual(prop(schema, 'intent'), { type: 'string', 'x-html-type': 'submit', enum: ['create', 'draft'], 'x-html-labels': ['Create', 'Save draft'] });
+    const valid = { username: 'good_name', email: 'g@example.com', country: 'us', terms: 'on', intent: 'create' };
+    assert.deepEqual(SchemaCheck.errors(schema, valid), []);
+    assert.deepEqual(SchemaCheck.errors(schema, { intent: 'draft', username: '', country: '' }), []);
+    assert.ok(!SchemaCheck.valid(schema, { ...valid, username: 'A!' }));
+    assert.ok(!SchemaCheck.valid(schema, { intent: 'create' }));
     assert.deepEqual(signup.queryParams, [{ name: 'draft', in: 'query', required: false, schema: { type: 'integer' }, examples: ['1'] }]);
     assert.equal(signup.form?.enctype, 'multipart/form-data');
     assert.equal(signup.form?.submitters.length, 2);
@@ -210,7 +222,7 @@ describe('FormLinker matching rules', () => {
     f.document('/news#top', html);
     f.document('/other', html);
     const capture = f.capture();
-    const collected = new FormCollector({ extractor, pages: new HtmlPages() }).collect(capture);
+    const collected = new FormCollector({ documents: new PageDocuments({ extractor, pages: new HtmlPages() }) }).collect(capture);
     assert.equal(collected.length, 2);
     const { endpoints } = linker().link([], capture);
     assert.equal(endpoints.length, 1);

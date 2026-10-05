@@ -1,24 +1,17 @@
-import type {
-  BodyKind,
-  Capture,
-  Endpoint,
-  EndpointForm,
-  FormDescriptor,
-  FormEnctype,
-  FormField,
-  JsonSchema,
-  ParamInfo,
-} from '../model/index.js';
+import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo } from '../model/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
-import { EndpointIndex, Json, Schema } from '../shared/index.js';
+import { Json, Schema } from '../shared/index.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { FormCollector } from './form-collector.js';
+import { FormSchemaCombiner } from './form-schema-combiner.js';
 import { Helpers } from './helpers.js';
+import { HtmlPages } from './html-pages.js';
+import { PageDocuments } from './page-documents.js';
 import { ParamInferrer } from './param-inferrer.js';
 import { PathTemplater } from './path-templater.js';
-import type { PathTemplate } from './path-templater.js';
+import type { PathEvidence, PathTemplate } from './path-templater.js';
 import { Redactor } from './redactor.js';
 import { SchemaInferrer } from './schema-inferrer.js';
 
@@ -30,6 +23,7 @@ export interface FormLinkerDeps {
   collector?: FormCollector;
   params?: ParamInferrer;
   redactor?: Redactor;
+  combiner?: FormSchemaCombiner;
 }
 
 export interface FormLinkerOptions {
@@ -55,49 +49,79 @@ interface Link {
   readonly submissions: Submission[];
 }
 
+type Encodings = ReadonlyMap<string, string>;
+
 export class FormLinker {
   static readonly DEFAULT_MAX_EXAMPLES = 3;
-  static readonly SUBMIT_TYPE = 'submit';
   static readonly LINKED_KINDS: ReadonlySet<string> = new Set(['document', 'other']);
   static readonly ENCTYPE_KINDS: Readonly<Record<FormEnctype, BodyKind>> = {
     'application/x-www-form-urlencoded': 'form',
     'multipart/form-data': 'multipart',
     'text/plain': 'text',
   };
+  static readonly SECRET_TYPES: ReadonlySet<string> = new Set(['password']);
+  static readonly ANNOTATION_KEYS: readonly string[] = ['title', 'description'];
+  static readonly ANNOTATION_PREFIX = 'x-html-';
 
   readonly #schemas: FormSchemaBuilder;
   readonly #paths: PathTemplater;
   readonly #collector: FormCollector;
   readonly #params: ParamInferrer;
   readonly #redactor: Redactor;
+  readonly #combiner: FormSchemaCombiner;
 
   constructor(deps: FormLinkerDeps) {
     this.#schemas = deps.schemas;
     this.#paths = deps.paths ?? new PathTemplater();
-    this.#collector = deps.collector ?? new FormCollector({ extractor: deps.extractor });
-    this.#redactor = deps.redactor ?? new Redactor();
+    this.#collector = deps.collector ?? new FormCollector({ documents: new PageDocuments({ pages: new HtmlPages(), extractor: deps.extractor }) });
+    this.#redactor = deps.redactor ?? Redactor.create();
     this.#params = deps.params ?? new ParamInferrer({ schemas: deps.inferrer, redactor: this.#redactor }, { maxExamples: FormLinker.DEFAULT_MAX_EXAMPLES });
+    this.#combiner = deps.combiner ?? new FormSchemaCombiner();
   }
 
   static create(options: FormLinkerOptions = {}): FormLinker {
     const tokens = new TokenDetector();
     const inferrer = SchemaInferrer.create();
-    const redactor = new Redactor(options.redact ?? true);
+    const redactor = new Redactor(options.redact ?? true, { tokens });
     return new FormLinker({
       extractor: new FormExtractor({ tokens }),
       schemas: new FormSchemaBuilder({ tokens }),
       inferrer,
       redactor,
       params: new ParamInferrer({ schemas: inferrer, redactor }, { maxExamples: options.maxExamples ?? FormLinker.DEFAULT_MAX_EXAMPLES }),
+      combiner: new FormSchemaCombiner(),
     });
+  }
+
+  static fieldNames(form: FormDescriptor): string[] {
+    const names = form.fields.filter((field) => !field.disabled && field.name !== '').map((field) => field.name);
+    return [...new Set(names)].sort(Helpers.compare);
+  }
+
+  targets(capture: Capture): Map<string, PathEvidence> {
+    const out = new Map<string, { forms: Set<string>; names: Set<string> }>();
+    for (const submission of this.#submissions(this.#collector.collect(capture))) {
+      const key = submission.url.origin + submission.url.pathname;
+      const entry = out.get(key) ?? { forms: new Set<string>(), names: new Set<string>() };
+      const names = FormLinker.fieldNames(submission.form);
+      entry.forms.add(JSON.stringify(names));
+      for (const name of names) entry.names.add(name);
+      out.set(key, entry);
+    }
+    return out;
+  }
+
+  encodings(capture: Capture): Map<string, string> {
+    return this.#collector.encodings(capture);
   }
 
   link(endpoints: Endpoint[], capture: Capture): FormLinkResult {
     const forms = this.#collector.collect(capture);
+    const matcher = new EndpointMatcher(endpoints, { paths: this.#paths });
     const links = new Map<string, Link>();
     const created: Endpoint[] = [];
     for (const submission of this.#submissions(forms)) {
-      const existing = FormLinker.#find(endpoints, submission);
+      const existing = FormLinker.#find(endpoints, submission, matcher);
       if (existing) {
         FormLinker.#entry(links, existing.key, () => ({ endpoint: existing, submissions: [] })).submissions.push(submission);
         continue;
@@ -112,7 +136,8 @@ export class FormLinker {
       });
       link.submissions.push(submission);
     }
-    for (const link of links.values()) this.#apply(link);
+    const encodings = this.#collector.encodings(capture);
+    for (const link of links.values()) this.#apply(link, encodings);
     return { endpoints: [...endpoints, ...created], forms: forms.map((form) => this.#redactor.form(form)) };
   }
 
@@ -132,19 +157,22 @@ export class FormLinker {
     return out;
   }
 
-  #apply(link: Link): void {
+  #apply(link: Link, encodings: Encodings): void {
     const { endpoint, submissions } = link;
     const first = submissions[0];
     if (!first) return;
-    const built = submissions.map((submission) => this.#schemas.build(submission.form, submission.submitter));
+    const built = submissions.map((submission) =>
+      this.#schemas.build(submission.form, submission.submitter, { documentEncoding: encodings.get(HtmlPages.documentKey(submission.form.pageUrl)) }),
+    );
     const primary = built[0]!;
-    const schema = this.#redactor.schema(FormLinker.#combine(built.map((result) => result.schema)));
+    const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)));
+    const secrets = FormLinker.#secretNames(submissions);
     if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), primary.mimeType);
     if (link.template) endpoint.pathParams = this.#params.path(link.template, submissions.map((submission) => submission.url.pathname));
     if (endpoint.method === 'GET') {
-      FormLinker.#mergeQuery(endpoint, schema);
+      this.#mergeQuery(endpoint, schema, secrets);
     } else {
-      FormLinker.#mergeBody(endpoint, schema, primary.mimeType);
+      this.#mergeBody(endpoint, schema, primary.mimeType, secrets);
       this.#mergeActionQuery(endpoint, submissions, link.template !== undefined);
     }
     if (FormLinker.LINKED_KINDS.has(endpoint.kind)) endpoint.kind = 'form';
@@ -160,13 +188,68 @@ export class FormLinker {
     for (const param of params) if (!known.has(param.name)) endpoint.queryParams.push({ ...param, required: false });
   }
 
-  static #find(endpoints: readonly Endpoint[], submission: Submission): Endpoint | undefined {
+  #mergeQuery(endpoint: Endpoint, schema: JsonSchema, secrets: ReadonlySet<string>): void {
+    const props = Helpers.properties(schema);
+    const required = Schema.requiredSet(schema);
+    const existing = new Map(endpoint.queryParams.map((param) => [param.name, param]));
+    const names = new Set(props.map(([name]) => name));
+    const params: ParamInfo[] = props.map(([name, property]) => ({
+      name,
+      in: 'query',
+      required: required.has(name),
+      schema: property,
+      examples: Helpers.distinct((existing.get(name)?.examples ?? []).map((example) => String(this.#redactor.named(name, example, secrets)))),
+    }));
+    for (const param of endpoint.queryParams) if (!names.has(param.name)) params.push(param);
+    endpoint.queryParams = params;
+  }
+
+  #mergeBody(endpoint: Endpoint, schema: JsonSchema, mimeType: FormEnctype, secrets: ReadonlySet<string>): void {
+    const observed = endpoint.requestBody;
+    if (!observed) {
+      endpoint.requestBody = { mimeType, kind: FormLinker.ENCTYPE_KINDS[mimeType], schema, examples: [] };
+      return;
+    }
+    const encoded = observed.kind === FormLinker.ENCTYPE_KINDS[mimeType];
+    const merged = encoded ? this.#combiner.overlay(schema, observed.schema) : FormLinker.#annotate(observed.schema, schema);
+    endpoint.requestBody = {
+      mimeType: observed.mimeType,
+      kind: observed.kind,
+      ...(merged ? { schema: merged } : {}),
+      examples: this.#redactor.examples(observed.examples, secrets),
+    };
+  }
+
+  static #annotate(observed: JsonSchema | undefined, form: JsonSchema): JsonSchema | undefined {
+    if (!observed) return undefined;
+    const out = Json.clone(observed);
+    const formProps = new Map(Helpers.properties(form));
+    for (const [name, property] of Helpers.properties(out)) {
+      const source = formProps.get(name);
+      if (!source || Schema.primaryType(source) !== Schema.primaryType(property)) continue;
+      for (const [key, value] of Object.entries(source)) {
+        if ((key.startsWith(FormLinker.ANNOTATION_PREFIX) || FormLinker.ANNOTATION_KEYS.includes(key)) && !Object.hasOwn(property, key)) Helpers.setOwn(property, key, Json.clone(value));
+      }
+    }
+    return out;
+  }
+
+  static #secretNames(submissions: readonly Submission[]): Set<string> {
+    const names = new Set<string>();
+    for (const { form } of submissions) {
+      for (const field of form.fields) if (FormLinker.SECRET_TYPES.has(field.type) && field.name !== '') names.add(field.name);
+      for (const name of form.tokenFields) names.add(name);
+    }
+    return names;
+  }
+
+  static #find(endpoints: readonly Endpoint[], submission: Submission, matcher: EndpointMatcher): Endpoint | undefined {
     let best: Endpoint | undefined;
     let bestParams = Number.POSITIVE_INFINITY;
     for (const endpoint of endpoints) {
       if (endpoint.method !== submission.target.method || endpoint.origin !== submission.url.origin) continue;
       if (endpoint.kind === 'graphql' || endpoint.operationName !== undefined) continue;
-      if (EndpointIndex.matchPath(endpoint.path, submission.url.pathname) === undefined) continue;
+      if (!matcher.accepts(endpoint, submission.url.pathname, { byExamples: true })) continue;
       const params = EndpointMatcher.paramCount(endpoint.path);
       if (params < bestParams) {
         best = endpoint;
@@ -185,49 +268,6 @@ export class FormLinker {
     return link;
   }
 
-  static #combine(schemas: readonly JsonSchema[]): JsonSchema {
-    const [primary, ...rest] = schemas;
-    if (!primary) return { type: 'object', properties: {} };
-    const out = Json.clone(primary);
-    const props = new Map(Helpers.properties(out));
-    for (const other of rest) {
-      for (const [name, schema] of Helpers.properties(other)) {
-        const existing = props.get(name);
-        if (!existing) props.set(name, Json.clone(schema));
-        else props.set(name, FormLinker.#alternatives(existing, schema));
-      }
-    }
-    out.properties = Object.fromEntries(props);
-    return out;
-  }
-
-  static #alternatives(existing: JsonSchema, other: JsonSchema): JsonSchema {
-    const submitter = (schema: JsonSchema): boolean => schema['x-html-type'] === FormLinker.SUBMIT_TYPE;
-    if (!submitter(existing) || !submitter(other) || existing.type !== other.type) return existing;
-    const values = (schema: JsonSchema): unknown[] | undefined => ('const' in schema ? [schema.const] : Array.isArray(schema.enum) ? schema.enum : undefined);
-    const a = values(existing);
-    const b = values(other);
-    if (!a || !b || ('const' in existing && 'const' in other && Object.is(existing.const, other.const))) return existing;
-    const labels = (schema: JsonSchema, count: number): string[] => {
-      if (Array.isArray(schema['x-html-labels'])) return schema['x-html-labels'].map(String);
-      return Array.from({ length: count }, () => (typeof schema.title === 'string' ? schema.title : ''));
-    };
-    const enumValues: unknown[] = [];
-    const enumLabels: string[] = [];
-    const la = labels(existing, a.length);
-    const lb = labels(other, b.length);
-    [...a, ...b].forEach((value, i) => {
-      if (enumValues.some((known) => Object.is(known, value))) return;
-      enumValues.push(value);
-      enumLabels.push((i < a.length ? la[i] : lb[i - a.length]) ?? '');
-    });
-    const { const: _const, title: _title, default: _default, ...rest } = existing;
-    const merged: JsonSchema = { ...rest, enum: enumValues };
-    if (enumLabels.some((label, i) => label !== '' && label !== enumValues[i])) merged['x-html-labels'] = enumLabels;
-    else delete merged['x-html-labels'];
-    return merged;
-  }
-
   static #endpointForm(form: FormDescriptor, enctype: FormEnctype): EndpointForm {
     return {
       pageUrl: form.pageUrl,
@@ -239,48 +279,5 @@ export class FormLinker {
       submitters: Json.clone(form.submitters),
       tokenFields: [...form.tokenFields],
     };
-  }
-
-  static #mergeQuery(endpoint: Endpoint, schema: JsonSchema): void {
-    const props = Helpers.properties(schema);
-    const required = Schema.requiredSet(schema);
-    const existing = new Map(endpoint.queryParams.map((param) => [param.name, param]));
-    const names = new Set(props.map(([name]) => name));
-    const params: ParamInfo[] = props.map(([name, property]) => ({
-      name,
-      in: 'query',
-      required: required.has(name),
-      schema: property,
-      examples: existing.get(name)?.examples ?? [],
-    }));
-    for (const param of endpoint.queryParams) if (!names.has(param.name)) params.push(param);
-    endpoint.queryParams = params;
-  }
-
-  static #mergeBody(endpoint: Endpoint, schema: JsonSchema, mimeType: FormEnctype): void {
-    const observed = endpoint.requestBody;
-    if (!observed) {
-      endpoint.requestBody = { mimeType, kind: FormLinker.ENCTYPE_KINDS[mimeType], schema, examples: [] };
-      return;
-    }
-    endpoint.requestBody = {
-      mimeType: observed.mimeType,
-      kind: observed.kind,
-      schema: FormLinker.#overlay(schema, observed.schema),
-      examples: observed.examples,
-    };
-  }
-
-  static #overlay(form: JsonSchema, observed: JsonSchema | undefined): JsonSchema {
-    const observedProps = Helpers.properties(observed);
-    if (!observed || Schema.primaryType(observed) !== 'object' || observedProps.length === 0) return form;
-    const formProps = Helpers.properties(form);
-    const formNames = new Set(formProps.map(([name]) => name));
-    const extra = observedProps.filter(([name]) => !formNames.has(name)).map(([name, schema]): [string, JsonSchema] => [name, Json.clone(schema)]);
-    const required = [...Schema.requiredSet(form), ...[...Schema.requiredSet(observed)].filter((name) => !formNames.has(name))];
-    const { properties: _properties, required: _required, ...rest } = form;
-    const out: JsonSchema = { type: 'object', ...rest, properties: Object.fromEntries([...formProps, ...extra]) };
-    if (required.length > 0) out.required = required;
-    return out;
   }
 }

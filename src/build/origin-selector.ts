@@ -2,8 +2,15 @@ import type { Capture, Exchange } from '../model/index.js';
 import { Http } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 
+interface Hop {
+  readonly url: string;
+  readonly via?: number;
+  readonly index: number;
+}
+
 export class OriginSelector {
   static readonly MAX_REDIRECTS = 50;
+  static readonly PERMANENT_REDIRECTS: ReadonlySet<number> = new Set([301, 308]);
 
   static domainOf(url: string): string | undefined {
     const parsed = Helpers.httpUrl(url);
@@ -15,23 +22,22 @@ export class OriginSelector {
   }
 
   static startChain(capture: Capture): string[] {
-    const start = Helpers.httpUrl(capture.startUrl);
+    return OriginSelector.#hops(capture).map((hop) => hop.url);
+  }
+
+  static homeChain(capture: Capture): string[] {
+    const hops = OriginSelector.#hops(capture);
+    const [start] = hops;
     if (!start) return [];
-    const chain = [start.href];
-    let current: Exchange | undefined = capture.exchanges.find(
-      (exchange) => exchange.resourceType === 'document' && Http.parseUrl(exchange.request.url)?.href === start.href,
-    );
-    for (let hops = 0; current && hops < OriginSelector.MAX_REDIRECTS; hops++) {
-      const id: string = current.id;
-      current = capture.exchanges.find((exchange) => exchange.redirectedFrom === id);
-      if (current) chain.push(current.request.url);
-    }
-    return chain;
+    const home = OriginSelector.domainOf(start.url);
+    const end = Math.max(...hops.map((hop) => hop.index));
+    const laterHome = capture.exchanges.some((exchange, index) => index > end && exchange.resourceType === 'document' && OriginSelector.domainOf(exchange.request.url) === home);
+    return hops.filter((hop, i) => i === 0 || OriginSelector.domainOf(hop.url) === home || OriginSelector.#moved(hop, home, laterHome)).map((hop) => hop.url);
   }
 
   static referenceDomains(capture: Capture): Set<string> {
     const domains = new Set<string>();
-    for (const url of OriginSelector.startChain(capture)) {
+    for (const url of OriginSelector.homeChain(capture)) {
       const domain = OriginSelector.domainOf(url);
       if (domain) domains.add(domain);
     }
@@ -51,7 +57,7 @@ export class OriginSelector {
 
   static firstParty(capture: Capture): string[] {
     const domains = OriginSelector.referenceDomains(capture);
-    const candidates = [...OriginSelector.origins(capture), ...OriginSelector.startChain(capture).map((url) => Helpers.originOf(url))].filter(
+    const candidates = [...OriginSelector.origins(capture), ...OriginSelector.homeChain(capture).map((url) => Helpers.originOf(url))].filter(
       (origin): origin is string => !!origin,
     );
     return Helpers.distinct(candidates)
@@ -61,7 +67,7 @@ export class OriginSelector {
 
   static primary(capture: Capture, chosen: readonly string[]): string {
     const allowed = new Set(chosen);
-    const chain = OriginSelector.startChain(capture).map((url) => Helpers.originOf(url));
+    const chain = OriginSelector.homeChain(capture).map((url) => Helpers.originOf(url));
     const documents = capture.exchanges
       .filter((exchange) => exchange.resourceType === 'document')
       .map((exchange) => Helpers.originOf(exchange.request.url))
@@ -69,5 +75,38 @@ export class OriginSelector {
     const all = capture.exchanges.map((exchange) => Helpers.originOf(exchange.request.url)).filter((origin): origin is string => !!origin && allowed.has(origin));
     const candidates = [...chain.reverse(), Helpers.mostFrequent(documents), Helpers.mostFrequent(all), chosen[0]];
     return candidates.find((origin): origin is string => origin !== undefined && allowed.has(origin)) ?? '';
+  }
+
+  static #moved(hop: Hop, home: string | undefined, laterHome: boolean): boolean {
+    if (OriginSelector.#returnsTo(hop.url, home)) return false;
+    if (hop.via !== undefined && OriginSelector.PERMANENT_REDIRECTS.has(hop.via)) return true;
+    return !laterHome;
+  }
+
+  static #returnsTo(url: string, home: string | undefined): boolean {
+    const parsed = Helpers.httpUrl(url);
+    if (!parsed || home === undefined) return false;
+    for (const value of parsed.searchParams.values()) {
+      if (OriginSelector.domainOf(value) === home) return true;
+    }
+    return false;
+  }
+
+  static #hops(capture: Capture): Hop[] {
+    const start = Helpers.httpUrl(capture.startUrl);
+    if (!start) return [];
+    const position = (exchange: Exchange | undefined): number => (exchange ? capture.exchanges.indexOf(exchange) : -1);
+    let current: Exchange | undefined = capture.exchanges.find(
+      (exchange) => exchange.resourceType === 'document' && Http.parseUrl(exchange.request.url)?.href === start.href,
+    );
+    const hops: Hop[] = [{ url: start.href, index: position(current) }];
+    for (let count = 0; current && count < OriginSelector.MAX_REDIRECTS; count++) {
+      const previous: Exchange = current;
+      current = capture.exchanges.find((exchange) => exchange.redirectedFrom === previous.id);
+      if (!current) break;
+      const via = previous.response?.status;
+      hops.push(via === undefined ? { url: current.request.url, index: position(current) } : { url: current.request.url, via, index: position(current) });
+    }
+    return hops;
   }
 }

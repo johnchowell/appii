@@ -12,6 +12,8 @@ import { NetworkIdleMonitor } from './network-idle-monitor.js';
 import { PageSnapshotter } from './page-snapshotter.js';
 import { TrafficRecorder } from './traffic-recorder.js';
 import type { TrafficRecorderOptions } from './traffic-recorder.js';
+import type { UserAgentIdentity } from './user-agent-identity.js';
+import { UserAgentOverride } from './user-agent-override.js';
 
 export interface CaptureSessionOptions extends BrowserLauncherOptions {
   url?: string;
@@ -30,12 +32,14 @@ export interface CaptureSessionDeps {
   snapshots?: () => PageSnapshotter;
   state?: () => BrowserStateTracker;
   idle?: () => NetworkIdleMonitor;
+  identity?: (identity: UserAgentIdentity) => UserAgentOverride;
 }
 
 interface RunFactories {
   readonly snapshots: () => PageSnapshotter;
   readonly state: () => BrowserStateTracker;
   readonly idle: () => NetworkIdleMonitor;
+  readonly identity: (identity: UserAgentIdentity) => UserAgentOverride;
 }
 
 interface CaptureRun {
@@ -44,6 +48,7 @@ interface CaptureRun {
   readonly snapshots: PageSnapshotter;
   readonly state: BrowserStateTracker;
   readonly idle: NetworkIdleMonitor;
+  readonly identity: UserAgentOverride | undefined;
   attached: boolean;
   contextClosed: boolean;
 }
@@ -58,6 +63,8 @@ export class CaptureSession {
   static readonly DEFAULT_IDLE_MS = 1500;
   static readonly NAVIGATION_TIMEOUT_MS = 30000;
   static readonly FINALIZE_TIMEOUT_MS = 15000;
+  static readonly PREPARE_TIMEOUT_MS = 5000;
+  static readonly DOWNLOAD_STARTING = 'Download is starting';
   static readonly START_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'file:']);
 
   readonly recorder: TrafficRecorder;
@@ -79,6 +86,7 @@ export class CaptureSession {
       snapshots: deps.snapshots ?? (() => new PageSnapshotter()),
       state: deps.state ?? (() => new BrowserStateTracker()),
       idle: deps.idle ?? (() => new NetworkIdleMonitor()),
+      identity: deps.identity ?? ((identity) => new UserAgentOverride(identity)),
     };
     this.recorder = deps.recorder;
     let resolveStop: () => void = () => undefined;
@@ -96,6 +104,7 @@ export class CaptureSession {
       snapshots: () => new PageSnapshotter(),
       state: () => new BrowserStateTracker(),
       idle: () => new NetworkIdleMonitor(),
+      identity: (identity) => new UserAgentOverride(identity),
     });
   }
 
@@ -118,8 +127,8 @@ export class CaptureSession {
     else signal?.addEventListener('abort', onAbort, { once: true });
     try {
       if (this.#stopped) return this.#assemble(startedAt, { cookies: [], storage: [], pages: [] });
-      const { browser, context } = await this.#deps.launcher.launch();
-      return await this.#capture(browser, context, startedAt);
+      const { browser, context, identity } = await this.#deps.launcher.launch();
+      return await this.#capture(browser, context, identity, startedAt);
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }
@@ -133,13 +142,14 @@ export class CaptureSession {
     return this.#options.idleMs ?? CaptureSession.DEFAULT_IDLE_MS;
   }
 
-  async #capture(browser: Browser, context: BrowserContext, startedAt: Date): Promise<Capture> {
+  async #capture(browser: Browser, context: BrowserContext, identity: UserAgentIdentity | undefined, startedAt: Date): Promise<Capture> {
     const run: CaptureRun = {
       browser,
       context,
       snapshots: this.#factories.snapshots(),
       state: this.#factories.state(),
       idle: this.#factories.idle(),
+      identity: identity ? this.#factories.identity(identity) : undefined,
       attached: false,
       contextClosed: false,
     };
@@ -147,6 +157,7 @@ export class CaptureSession {
     const unsubscribe = onExchange ? this.recorder.onExchange(onExchange) : undefined;
     let failure: unknown;
     try {
+      run.identity?.attach(context);
       this.recorder.attach(context);
       run.attached = true;
       run.idle.attach(context);
@@ -214,6 +225,7 @@ export class CaptureSession {
         throw new AppiiError('BROWSER', `Cannot open a browser page: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
       }
     }
+    await Helpers.settle(Promise.all([run.identity?.prepare(page), this.recorder.prepare(page), run.snapshots.prepare(page)]), CaptureSession.PREPARE_TIMEOUT_MS);
     const url = this.#options.url;
     if (url) await this.#open(run, page, url);
     if (this.#stopped) return;
@@ -240,6 +252,7 @@ export class CaptureSession {
       await page.goto(url, { waitUntil: 'load', timeout: CaptureSession.NAVIGATION_TIMEOUT_MS });
     } catch (err) {
       if (this.#gone(run) || page.isClosed() || err instanceof errors.TimeoutError || !this.#headless) return;
+      if (CaptureSession.#isDownload(err)) return;
       throw new AppiiError('CAPTURE', `Cannot open ${url}: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
     }
   }
@@ -258,6 +271,7 @@ export class CaptureSession {
     }
     if (run.attached) this.recorder.detach();
     run.idle.detach();
+    run.identity?.detach();
     run.snapshots.detach();
     run.state.stop();
     await Helpers.settle(this.recorder.settled(), timeout);
@@ -301,6 +315,10 @@ export class CaptureSession {
       for (const page of context.pages()) watch(page);
       cleanups.push(() => context.off('page', watch));
     });
+  }
+
+  static #isDownload(err: unknown): boolean {
+    return err instanceof Error && err.message.includes(CaptureSession.DOWNLOAD_STARTING);
   }
 
   static #failure(err: unknown, capture: Capture): AppiiError {

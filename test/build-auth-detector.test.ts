@@ -1,8 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AuthDetector, BodyParser, CsrfSourceResolver, EndpointFactory, EndpointGrouper, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { AuthDetector, BodyParser, CsrfSourceResolver, EndpointFactory, EndpointGrouper, HtmlPages, ModelBuilder, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import { FormExtractor, TokenDetector } from '../src/forms/index.js';
 import type { Capture, Endpoint } from '../src/model/index.js';
+import { Samples, Schema } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
 const ORIGIN = CaptureFactory.ORIGIN;
@@ -101,11 +102,11 @@ describe('AuthDetector token sources', () => {
     f.json('GET', '/api/late', 200, { token: 'later-value-123456' });
     const endpoints = detect(f.capture());
     assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/a`).auth.csrf, [
-      { location: 'header', name: 'x-xsrf-token', source: 'response', sourceName: 'csrfToken', sourceUrl: f.url('/api/session') },
+      { location: 'header', name: 'x-xsrf-token', source: 'response', sourceName: 'csrfToken', sourceUrl: f.url('/api/session'), sourceMethod: 'GET' },
     ]);
     assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/b`).auth.csrf[0]?.sourceName, 'deep');
     assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/c`).auth.csrf, [
-      { location: 'header', name: 'x-csrf-token', source: 'response', sourceName: 'x-csrf-token', sourceUrl: f.url('/api/ping') },
+      { location: 'header', name: 'x-csrf-token', source: 'response', sourceName: 'x-csrf-token', sourceUrl: f.url('/api/ping'), sourceMethod: 'GET' },
     ]);
     assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/d`).auth.csrf, [{ location: 'header', name: 'x-csrf-token', source: 'unknown' }]);
   });
@@ -148,7 +149,7 @@ describe('AuthDetector token sources', () => {
       body,
       sources: (capture) => {
         created++;
-        return new CsrfSourceResolver(capture, { extractor, tokens, body });
+        return new CsrfSourceResolver(capture, { tokens, body, documents: new PageDocuments({ extractor, pages: new HtmlPages({ body }) }) });
       },
     });
     const capture = f.capture();
@@ -211,5 +212,77 @@ describe('AuthDetector for endpoints without traffic', () => {
     assert.ok(AuthDetector.predictCookies(admin, capture).includes('scoped'));
     detector().detect([same], capture);
     assert.deepEqual(same.auth.cookies, ['none', 'secure', 'sid', 'strict', 'wide']);
+  });
+});
+
+describe('AuthDetector token name policy', () => {
+  test('generic token fields of APIs are not CSRF tokens without page evidence (FB-11)', () => {
+    const f = new CaptureFactory('https://app.example.com');
+    f.json('POST', '/api/auth/login', 200, { refreshToken: 'REFRESH-0123456789', csrfToken: 'CSRF-0123456789abc' }, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { email: 'a@b.c', password: 'x' } } });
+    f.json('POST', '/api/auth/refresh', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { token: 'REFRESH-0123456789' } } });
+    f.json('POST', '/api/devices', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { token: 'fcm-device-token-0123456789', nonce: 'n-0123456789' } } });
+    f.json('GET', '/api/verify-email?token=VERIFY-0123456789', 200, {});
+    f.json('POST', '/api/orders', 200, {}, { requestHeaders: { 'x-nonce': 'client-nonce-0123456789', 'api-nonce': '1700000000123' } });
+    const endpoints = detect(f.capture());
+    assert.deepEqual(find(endpoints, 'POST https://app.example.com/api/orders').auth.csrf, []);
+    assert.deepEqual(find(endpoints, 'POST https://app.example.com/api/auth/refresh').auth.csrf, []);
+    assert.deepEqual(find(endpoints, 'POST https://app.example.com/api/devices').auth.csrf, []);
+    assert.deepEqual(find(endpoints, 'GET https://app.example.com/api/verify-email').auth.csrf, []);
+  });
+
+  test('generic names are CSRF tokens when the value comes from a hidden token field, a CSRF meta tag or a CSRF cookie', () => {
+    const f = new CaptureFactory();
+    f.snapshot('/form', 'Form', '<html><head><meta name="csrf-token" content="meta-0123456789"></head><body><form method="post" action="/x"><input type="hidden" name="logintoken" value="hidden-0123456789"></form></body></html>');
+    f.json('POST', '/api/a', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { token: 'meta-0123456789' } } });
+    f.json('POST', '/api/b', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { logintoken: 'hidden-0123456789' } } });
+    f.json('POST', '/api/c', 200, {}, { requestHeaders: { 'content-type': 'application/json', cookie: 'XSRF-TOKEN=cookie-0123456789' }, requestBody: { json: { _token: 'cookie-0123456789' } } });
+    const endpoints = detect(f.capture());
+    assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/a`).auth.csrf, [{ location: 'body', name: 'token', source: 'meta', sourceName: 'csrf-token', sourceUrl: f.url('/form') }]);
+    assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/b`).auth.csrf, [{ location: 'body', name: 'logintoken', source: 'hidden-field', sourceName: 'logintoken', sourceUrl: f.url('/form') }]);
+    assert.deepEqual(find(endpoints, `POST ${ORIGIN}/api/c`).auth.csrf, [{ location: 'body', name: '_token', source: 'cookie', sourceName: 'XSRF-TOKEN' }]);
+  });
+
+  test('hidden CSRF fields with framework names are token fields of the form (FB-10)', () => {
+    const f = new CaptureFactory('https://moodle.example');
+    const token = 'kXo3PzR9aB7cD1eF2gH3iJ4kL5mN6oP7';
+    f.document('/login/index.php', CaptureFactory.page('Login', `<form method="post" action="/login/index.php"><input type="hidden" name="logintoken" value="${token}"><input name="username"><input type="password" name="password"></form>`));
+    f.exchange({ method: 'POST', url: '/login/index.php', resourceType: 'document', status: 303, requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, requestBody: `logintoken=${token}&username=u&password=p` });
+    const model = ModelBuilder.create({ now: new Date(0) }).build(f.capture({ startUrl: 'https://moodle.example/login/index.php' }));
+    const login = model.endpoints.find((endpoint) => endpoint.method === 'POST');
+    assert.deepEqual(login?.form?.tokenFields, ['logintoken']);
+    assert.deepEqual(login?.auth.csrf, [{ location: 'body', name: 'logintoken', source: 'hidden-field', sourceName: 'logintoken', sourceUrl: 'https://moodle.example/login/index.php' }]);
+    const property = Schema.properties(login?.requestBody?.schema).logintoken;
+    assert.equal(property?.['x-appii-token'], true);
+    assert.equal(property?.default, undefined);
+    assert.ok(!JSON.stringify(model).includes(token));
+  });
+
+  test('a token from a POST response records the method; a safe source is preferred (FB-12)', () => {
+    const f = new CaptureFactory('https://app.example.com');
+    f.json('POST', '/api/auth/login', 200, { csrfToken: 'CSRF-LOGIN-0123456789' }, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { email: 'a@b.c' } } });
+    f.json('POST', '/api/items', 201, {}, { requestHeaders: { 'content-type': 'application/json', 'x-csrf-token': 'CSRF-LOGIN-0123456789' }, requestBody: { json: { name: 'x' } } });
+    f.json('POST', '/api/rotate', 200, { csrfToken: 'CSRF-BOTH-0123456789' });
+    f.json('GET', '/api/csrf', 200, { csrfToken: 'CSRF-BOTH-0123456789' });
+    f.json('POST', '/api/orders', 201, {}, { requestHeaders: { 'x-csrf-token': 'CSRF-BOTH-0123456789' } });
+    const endpoints = detect(f.capture());
+    assert.deepEqual(find(endpoints, 'POST https://app.example.com/api/items').auth.csrf, [
+      { location: 'header', name: 'x-csrf-token', source: 'response', sourceName: 'csrfToken', sourceUrl: 'https://app.example.com/api/auth/login', sourceMethod: 'POST' },
+    ]);
+    assert.deepEqual(find(endpoints, 'POST https://app.example.com/api/orders').auth.csrf, [
+      { location: 'header', name: 'x-csrf-token', source: 'response', sourceName: 'csrfToken', sourceUrl: 'https://app.example.com/api/csrf', sourceMethod: 'GET' },
+    ]);
+  });
+
+  test('source URLs of CSRF tokens are redacted (FB-4)', () => {
+    const f = new CaptureFactory();
+    const token = 'tok-0123456789abcdef';
+    f.snapshot('/dashboard?session_id=SESSIONIDSECRET42#access_token=FRAG', 'D', `<html><head><meta name="csrf-token" content="${token}"></head></html>`);
+    f.json('GET', '/api/session?api_key=SESSIONAPIKEY123456', 200, { csrfToken: 'resp-0123456789abc' });
+    f.json('POST', '/api/a', 200, {}, { requestHeaders: { 'x-csrf-token': token } });
+    f.json('POST', '/api/b', 200, {}, { requestHeaders: { 'x-csrf-token': 'resp-0123456789abc' } });
+    const endpoints = detect(f.capture());
+    const encoded = encodeURIComponent(Samples.REDACTED);
+    assert.equal(find(endpoints, `POST ${ORIGIN}/api/a`).auth.csrf[0]?.sourceUrl, `${ORIGIN}/dashboard?session_id=${encoded}#access_token=${encoded}`);
+    assert.equal(find(endpoints, `POST ${ORIGIN}/api/b`).auth.csrf[0]?.sourceUrl, `${ORIGIN}/api/session?api_key=${encoded}`);
   });
 });

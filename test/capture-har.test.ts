@@ -303,8 +303,9 @@ describe('HarConverter.toHar', () => {
         ['page_2', 'https://example.com/account'],
       ],
     );
-    assert.equal(entry('e1').pageref, undefined);
-    assert.equal(entry('e2').pageref, 'page_1');
+    assert.equal(entry('e1').pageref, 'page_1');
+    assert.equal(entry('e2').pageref, 'page_2');
+    assert.equal(entry('e3').pageref, 'page_2');
     assert.equal(entry('ws1').pageref, 'page_2');
   });
 
@@ -538,7 +539,8 @@ describe('HarConverter.fromHar with third-party HARs', () => {
     assert.equal(home.resourceType, 'document');
     assert.equal(home.durationMs, 50);
     assert.equal(home.response?.remoteAddress, '203.0.113.5');
-    assert.equal(home.pageUrl, 'https://shop.test/');
+    assert.equal(home.pageUrl, undefined);
+    assert.equal(login.pageUrl, 'https://shop.test/');
     assert.equal(login.request.method, 'POST');
     assert.equal(Http.bodyText(login.request.body), 'csrf=t0k&user=a');
     assert.equal(login.request.body?.size, 14);
@@ -611,6 +613,7 @@ describe('HarConverter.fromHar with third-party HARs', () => {
           }),
           entry('https://ff.test/form', {
             pageref: 'page_1',
+            startedDateTime: '2026-03-02T09:00:01.000+01:00',
             request: {
               method: 'POST',
               headers: [{ name: 'Sec-Fetch-Mode', value: 'navigate' }],
@@ -766,5 +769,159 @@ describe('ResourceTypeMapper', () => {
     assert.equal(infer({}, 'application/json'), 'fetch');
     assert.equal(infer({}, '', 'POST'), 'fetch');
     assert.equal(infer({}, 'application/octet-stream'), 'other');
+  });
+});
+
+describe('HarConverter pages follow navigations', () => {
+  const ORIGIN = 'https://site.test';
+  let clock = Date.parse('2026-04-01T10:00:00.000Z');
+
+  function exchange(id: string, method: string, path: string, resourceType: Exchange['resourceType'], pageUrl: string | undefined, extra: Partial<Exchange> = {}, headers: Record<string, string> = {}): Exchange {
+    clock += 100;
+    return {
+      id,
+      source: 'browser',
+      resourceType,
+      ...(pageUrl ? { pageUrl: ORIGIN + pageUrl } : {}),
+      startedAt: new Date(clock).toISOString(),
+      durationMs: 20,
+      request: { method, url: ORIGIN + path, headers: Object.entries(headers).map(([name, value]) => ({ name, value })) },
+      response: { status: 200, statusText: 'OK', headers: [{ name: 'content-type', value: resourceType === 'document' ? 'text/html' : 'application/json' }] },
+      ...extra,
+    };
+  }
+
+  test('puts each navigation document in the page it loads, follows redirects and starts a new page for each visit', () => {
+    const exchanges = [
+      exchange('home', 'GET', '/', 'document', undefined),
+      exchange('api-home', 'GET', '/api/home', 'fetch', '/'),
+      exchange('b', 'GET', '/b', 'document', '/'),
+      exchange('frame', 'GET', '/widget', 'document', '/b', {}, { 'Sec-Fetch-Dest': 'iframe' }),
+      exchange('api-b', 'GET', '/api/b', 'fetch', '/b'),
+      exchange('c', 'GET', '/c', 'document', '/b'),
+      exchange('api-c', 'GET', '/api/c', 'fetch', '/c'),
+      exchange('login', 'POST', '/login', 'document', '/c', { response: { status: 303, statusText: 'See Other', headers: [{ name: 'location', value: '/account' }] } }),
+      exchange('account', 'GET', '/account', 'document', '/c', { redirectedFrom: 'login' }),
+      exchange('api-account', 'GET', '/api/account', 'fetch', '/account'),
+      exchange('home-again', 'GET', '/', 'document', '/account'),
+      exchange('api-home-again', 'GET', '/api/home', 'fetch', '/'),
+    ];
+    const har = new HarConverter().toHar(exchanges);
+    assertHar12(har);
+    const refs = Object.fromEntries(har.log.entries.map((e) => [e._appiiId, e.pageref]));
+    assert.deepEqual(refs, {
+      home: 'page_1',
+      'api-home': 'page_1',
+      b: 'page_2',
+      frame: 'page_2',
+      'api-b': 'page_2',
+      c: 'page_3',
+      'api-c': 'page_3',
+      login: 'page_4',
+      account: 'page_4',
+      'api-account': 'page_4',
+      'home-again': 'page_5',
+      'api-home-again': 'page_5',
+    });
+    assert.deepEqual(
+      har.log.pages?.map((p) => [p.id, p.title, p.startedDateTime]),
+      [
+        ['page_1', ORIGIN + '/', exchanges[0]!.startedAt],
+        ['page_2', ORIGIN + '/b', exchanges[2]!.startedAt],
+        ['page_3', ORIGIN + '/c', exchanges[5]!.startedAt],
+        ['page_4', ORIGIN + '/account', exchanges[7]!.startedAt],
+        ['page_5', ORIGIN + '/', exchanges[10]!.startedAt],
+      ],
+    );
+    const back = new HarConverter().fromHar(har);
+    assert.deepEqual(
+      back.exchanges.map((e) => e.pageUrl),
+      exchanges.map((e) => e.pageUrl),
+    );
+  });
+
+  test('gives entries of a Playwright HAR the URL of the document that was current when they started', () => {
+    const entry = (path: string, method: string, start: string, status: number, dest: string, extra: Record<string, unknown> = {}) => ({
+      pageref: 'page@1',
+      startedDateTime: start,
+      time: 20,
+      request: {
+        method,
+        url: ORIGIN + path,
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: [
+          { name: 'sec-fetch-dest', value: dest },
+          { name: 'sec-fetch-mode', value: dest === 'document' ? 'navigate' : 'cors' },
+        ],
+        queryString: [],
+        headersSize: -1,
+        bodySize: 0,
+      },
+      response: {
+        status,
+        statusText: '',
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: [{ name: 'content-type', value: dest === 'document' ? 'text/html' : 'application/json' }, ...(status === 303 ? [{ name: 'location', value: '/app' }] : [])],
+        content: { size: 0, mimeType: dest === 'document' ? 'text/html' : 'application/json' },
+        redirectURL: status === 303 ? ORIGIN + '/app' : '',
+        headersSize: -1,
+        bodySize: -1,
+      },
+      cache: {},
+      timings: { send: 0, wait: 20, receive: 0 },
+      ...extra,
+    });
+    const har = {
+      log: {
+        version: '1.2',
+        creator: { name: 'Playwright', version: '1.56.1' },
+        pages: [{ startedDateTime: '2026-04-01T09:00:00.000Z', id: 'page@1', title: 'App done', pageTimings: { onContentLoad: -1, onLoad: -1 } }],
+        entries: [
+          entry('/', 'GET', '2026-04-01T09:00:00.000Z', 200, 'document'),
+          entry('/api/home', 'GET', '2026-04-01T09:00:00.500Z', 200, 'empty'),
+          entry('/login', 'GET', '2026-04-01T09:00:01.000Z', 200, 'document'),
+          entry('/login', 'POST', '2026-04-01T09:00:02.000Z', 303, 'document'),
+          entry('/app', 'GET', '2026-04-01T09:00:02.030Z', 200, 'document'),
+          entry('/api/items', 'GET', '2026-04-01T09:00:03.000Z', 200, 'empty'),
+        ],
+      },
+    };
+    const capture = new HarConverter().fromHar(har as unknown as Har);
+    assert.deepEqual(
+      capture.exchanges.map((e) => `${e.request.method} ${new URL(e.request.url).pathname} <- ${e.pageUrl ? new URL(e.pageUrl).pathname : '-'}`),
+      ['GET / <- -', 'GET /api/home <- /', 'GET /login <- /', 'POST /login <- /login', 'GET /app <- /login', 'GET /api/items <- /app'],
+    );
+  });
+
+  test('imports WebSocket messages with out-of-range times at the time the socket opened', () => {
+    const har = {
+      log: {
+        version: '1.2',
+        creator: { name: 'tool', version: '1' },
+        entries: [
+          {
+            _resourceType: 'websocket',
+            startedDateTime: '2026-04-01T09:00:00.000Z',
+            time: 0,
+            request: { method: 'GET', url: 'wss://site.test/ws', headers: [] },
+            response: { status: 101, headers: [] },
+            _webSocketMessages: [
+              { type: 'send', time: 1.79e15, opcode: 1, data: 'micro' },
+              { type: 'receive', time: 1775034000.25, opcode: 1, data: 'ok' },
+            ],
+          },
+        ],
+      },
+    };
+    const capture = new HarConverter().fromHar(har as unknown as Har);
+    assert.deepEqual(
+      capture.websockets[0]!.messages.map((m) => [m.data, m.at]),
+      [
+        ['micro', '2026-04-01T09:00:00.000Z'],
+        ['ok', new Date(1775034000250).toISOString()],
+      ],
+    );
   });
 });

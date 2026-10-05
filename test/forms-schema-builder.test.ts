@@ -61,7 +61,7 @@ describe('FormSchemaBuilder on fixture forms', () => {
             'x-html-required': true,
             'x-html-autocomplete': 'username',
           },
-          password: { type: 'string', title: 'Password', minLength: 8, 'x-html-minlength': 8, 'x-html-type': 'password', 'x-html-required': true },
+          password: { type: 'string', title: 'Password', minLength: 4, 'x-html-minlength': 8, 'x-html-type': 'password', 'x-html-required': true },
           remember: { type: 'string', title: 'Remember me', const: 'yes', 'x-html-type': 'checkbox' },
           action: { type: 'string', title: 'Sign in', const: 'login', 'x-html-type': 'submit' },
         },
@@ -114,10 +114,10 @@ describe('FormSchemaBuilder on fixture forms', () => {
         'x-html-step': '1',
         'x-html-type': 'number',
       });
-      assert.deepEqual(prop(create.schema, 'website'), { type: 'string', format: 'uri', 'x-html-type': 'url' });
+      assert.deepEqual(prop(create.schema, 'website'), { type: 'string', 'x-html-type': 'url' });
       assert.deepEqual(prop(create.schema, 'birthday'), {
         type: 'string',
-        format: 'date',
+        pattern: EntrySlotFactory.PATTERNS.date,
         'x-html-min': '1900-01-01',
         'x-html-max': '2026-12-31',
         'x-html-type': 'date',
@@ -146,7 +146,7 @@ describe('FormSchemaBuilder on fixture forms', () => {
       });
       assert.deepEqual(prop(create.schema, 'bio'), {
         type: 'string',
-        maxLength: 200,
+        maxLength: 400,
         'x-html-maxlength': 200,
         'x-html-type': 'textarea',
         default: 'Hello\nworld',
@@ -435,10 +435,9 @@ describe('FormSchemaBuilder entry-list semantics', () => {
     assert.match('a@b.c,d@e.f', new RegExp(String(prop(schema, 'many').pattern), 'u'));
     assert.match('', new RegExp(String(prop(schema, 'many').pattern), 'u'));
     assert.doesNotMatch('a@b.c,,d@e.f', new RegExp(String(prop(schema, 'many').pattern), 'u'));
-    assert.deepEqual(prop(schema, 'site'), { type: 'string', format: 'uri', 'x-html-type': 'url', default: 'https://x.y/' });
+    assert.deepEqual(prop(schema, 'site'), { type: 'string', 'x-html-type': 'url', default: 'https://x.y/' });
     assert.deepEqual(prop(schema, 'at'), {
       type: 'string',
-      format: 'time',
       pattern: EntrySlotFactory.PATTERNS.time,
       minLength: 1,
       'x-html-type': 'time',
@@ -449,11 +448,11 @@ describe('FormSchemaBuilder entry-list semantics', () => {
     assert.equal(prop(schema, 'dt').default, '2024-01-02T03:04:05.6');
     assert.match('2024-01-02T03:04:05.6', new RegExp(String(prop(schema, 'dt').pattern), 'u'));
     assert.deepEqual(prop(schema, 'tint'), { type: 'string', pattern: '^#[0-9a-f]{6}$', 'x-html-type': 'color', default: '#ff0000' });
-    assert.deepEqual(prop(schema, 'len'), { type: 'string', minLength: 2, maxLength: 5, 'x-html-minlength': 2, 'x-html-maxlength': 5, 'x-html-type': 'text' });
+    assert.deepEqual(prop(schema, 'len'), { type: 'string', minLength: 1, maxLength: 5, 'x-html-minlength': 2, 'x-html-maxlength': 5, 'x-html-type': 'text' });
     assert.deepEqual(prop(schema, 'area'), {
       type: 'string',
       minLength: 1,
-      maxLength: 3,
+      maxLength: 6,
       'x-html-maxlength': 3,
       'x-html-type': 'textarea',
       'x-html-required': true,

@@ -1,5 +1,6 @@
 import { Http, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
+import { Redactor } from './redactor.js';
 
 export type SegmentKind = 'integer' | 'uuid' | 'hex' | 'date' | 'token' | 'literal';
 
@@ -13,6 +14,11 @@ export interface PathParam {
 export interface PathTemplate {
   template: string;
   params: PathParam[];
+}
+
+export interface PathEvidence {
+  readonly forms: ReadonlySet<string>;
+  readonly names: ReadonlySet<string>;
 }
 
 export interface SegmentRule {
@@ -36,6 +42,7 @@ export class PathTemplater {
       kind: 'hex',
       test: (segment) => /^(?:[0-9a-f]{16,}|[0-9A-F]{16,})$/.test(segment) && /[0-9]/.test(segment) && /[a-fA-F]/.test(segment),
     },
+    { kind: 'token', test: (segment) => Redactor.looksSecret(Http.decodeComponent(segment)) },
     { kind: 'token', test: (segment) => PathTemplater.isOpaqueToken(segment) },
   ];
   static readonly FIXED_SEGMENTS: readonly RegExp[] = [
@@ -76,9 +83,9 @@ export class PathTemplater {
     return PathTemplater.RULES.find((rule) => rule.test(segment))?.kind ?? 'literal';
   }
 
-  template(paths: string[]): Map<string, PathTemplate> {
+  template(paths: string[], evidence: ReadonlyMap<string, PathEvidence> = new Map()): Map<string, PathTemplate> {
     const rows = Helpers.distinct(paths).map((path) => this.#row(path));
-    this.#generalize(rows);
+    this.#generalize(rows, evidence);
     const groups = new Map<string, Row[]>();
     for (const row of rows) {
       const key = JSON.stringify([row.path.startsWith('/'), row.segments.map((segment, i) => (row.open[i] ? null : segment))]);
@@ -101,7 +108,7 @@ export class PathTemplater {
     return { path, segments, kinds, open: kinds.map((kind) => kind !== 'literal') };
   }
 
-  #generalize(rows: readonly Row[]): void {
+  #generalize(rows: readonly Row[], evidence: ReadonlyMap<string, PathEvidence>): void {
     for (let changed = true; changed; ) {
       changed = false;
       const buckets = new Map<string, { position: number; rows: Row[]; values: Set<string> }>();
@@ -121,7 +128,10 @@ export class PathTemplater {
       }
       for (const bucket of buckets.values()) {
         if (bucket.values.size < PathTemplater.MIN_DISTINCT_LITERALS) continue;
-        for (const row of bucket.rows) row.open[bucket.position] = true;
+        const pinned = PathTemplater.#pinned(bucket.rows, bucket.position, evidence);
+        const open = bucket.rows.filter((row) => !pinned.has(row.segments[bucket.position] ?? ''));
+        if (new Set(open.map((row) => row.segments[bucket.position])).size < PathTemplater.MIN_DISTINCT_LITERALS) continue;
+        for (const row of open) row.open[bucket.position] = true;
         changed = true;
       }
     }
@@ -151,6 +161,52 @@ export class PathTemplater {
       return `{${name}}`;
     });
     return { template: '/' + segments.join('/'), params };
+  }
+
+  static #pinned(rows: readonly Row[], position: number, evidence: ReadonlyMap<string, PathEvidence>): Set<string> {
+    const byValue = new Map<string, { forms: Set<string>; names: Set<string> }>();
+    for (const row of rows) {
+      const found = evidence.get(row.path);
+      if (!found || (found.forms.size === 0 && found.names.size === 0)) continue;
+      const value = row.segments[position] ?? '';
+      const entry = byValue.get(value) ?? { forms: new Set<string>(), names: new Set<string>() };
+      for (const form of found.forms) entry.forms.add(form);
+      for (const name of found.names) entry.names.add(name);
+      byValue.set(value, entry);
+    }
+    const parent = new Map([...byValue.keys()].map((value) => [value, value]));
+    const root = (value: string): string => {
+      let current = value;
+      while (parent.get(current) !== current) current = parent.get(current) ?? current;
+      for (let next = value; next !== current; ) {
+        const up = parent.get(next) ?? current;
+        parent.set(next, current);
+        next = up;
+      }
+      return current;
+    };
+    const join = (groups: ReadonlyMap<string, string[]>): void => {
+      for (const members of groups.values()) for (const member of members.slice(1)) parent.set(root(member), root(members[0] ?? member));
+    };
+    const byForm = new Map<string, string[]>();
+    const byName = new Map<string, string[]>();
+    const formless = new Set<string>();
+    const add = (groups: Map<string, string[]>, key: string, value: string): void => {
+      const list = groups.get(key);
+      if (list) list.push(value);
+      else groups.set(key, [value]);
+    };
+    for (const [value, entry] of byValue) {
+      for (const form of entry.forms) add(byForm, form, value);
+      for (const name of entry.names) add(byName, name, value);
+      if (entry.forms.size === 0) formless.add(value);
+    }
+    join(byForm);
+    join(new Map([...byName].filter(([, members]) => members.some((member) => formless.has(member)))));
+    const classes = new Map<string, string[]>();
+    for (const value of byValue.keys()) add(classes, root(value), value);
+    if (classes.size < 2) return new Set();
+    return new Set([...classes.values()].filter((members) => members.length === 1).flat());
   }
 
   static #paramName(row: Row, position: number, kind: SegmentKind): string {

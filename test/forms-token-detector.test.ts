@@ -78,3 +78,25 @@ test('fixture app page exposes no meta token and the login form token is a field
     await site.close();
   }
 });
+
+test('isHiddenTokenField also accepts hidden fields whose name ends in token and known framework names (FB-10)', () => {
+  for (const name of ['logintoken', 'securitytoken', 'wpLoginToken', 'wpEditToken', '_xfToken', 'formhash', 'canary', 'user[token]', 'csrf_token']) {
+    assert.ok(detector.isHiddenTokenField(name), name);
+  }
+  for (const name of ['', 'token_count', 'token_type', 'tokens', 'tokenized', 'email', 'state']) assert.ok(!detector.isHiddenTokenField(name), name);
+  assert.ok(!detector.isTokenField('logintoken'));
+});
+
+test('isCsrfName accepts only unambiguous CSRF names; generic names need page evidence (FB-11)', () => {
+  for (const name of ['csrf', '_csrf', 'csrf_token', 'csrfmiddlewaretoken', 'XSRF-TOKEN', 'authenticity_token', 'user[authenticity_token]', '_wpnonce', '__RequestVerificationToken', 'anti_forgery_token']) {
+    assert.ok(detector.isCsrfName(name), name);
+  }
+  for (const name of ['', 'token', '_token', 'nonce', 'refreshToken', 'access_token', 'logintoken', 'sesskey']) assert.ok(!detector.isCsrfName(name), name);
+});
+
+test('isCsrfHeader covers CSRF, XSRF, nonce, request verification and anti-forgery headers (FB-13)', () => {
+  for (const name of ['x-csrf-token', 'X-XSRF-TOKEN', 'x-wp-nonce', 'RequestVerificationToken', 'x-anti-forgery']) assert.ok(detector.isCsrfHeader(name), name);
+  for (const name of ['', 'x-request-id', 'authorization', 'x-api-key']) assert.ok(!detector.isCsrfHeader(name), name);
+  for (const name of ['x-csrf-token', 'X-WP-Nonce', 'x-xsrf-token']) assert.ok(detector.isKnownCsrfHeader(name), name);
+  for (const name of ['x-nonce', 'api-nonce', 'x-request-id']) assert.ok(!detector.isKnownCsrfHeader(name), name);
+});

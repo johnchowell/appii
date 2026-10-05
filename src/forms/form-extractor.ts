@@ -51,7 +51,7 @@ export class FormExtractor {
     const controls = doc.elements.filter((element) => this.#controls.isControl(doc, element));
     const owned = this.#owners.group(doc, controls);
     const labels = this.#labels.associations(doc);
-    return doc.forms().map((form, index) => this.#describe(doc, form, index, owned.get(form) ?? [], labels));
+    return doc.forms().map((form, index) => this.#describe(doc, form, doc.liveFormIndex(form) ?? index, owned.get(form) ?? [], labels));
   }
 
   #describe(doc: HtmlDocument, form: HtmlElement, index: number, controls: readonly HtmlElement[], labels: LabelAssociations): FormDescriptor {
@@ -90,7 +90,7 @@ export class FormExtractor {
 
   #tokenFields(fields: readonly FormField[]): string[] {
     const names = fields
-      .filter((field) => field.type === 'hidden' && !field.disabled && this.#tokens.isTokenField(field.name))
+      .filter((field) => field.type === 'hidden' && !field.disabled && this.#tokens.isHiddenTokenField(field.name))
       .map((field) => field.name);
     return [...new Set(names)];
   }

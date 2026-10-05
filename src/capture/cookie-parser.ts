@@ -28,6 +28,24 @@ export interface PlaywrightCookie {
   sameSite: 'Strict' | 'Lax' | 'None';
 }
 
+export interface CdpCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  size?: number;
+  httpOnly: boolean;
+  secure: boolean;
+  session: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+}
+
+export interface CookieContext {
+  sameSite: boolean;
+  partition: string | undefined;
+}
+
 interface CookieAttributeList {
   expiresAt?: number;
   maxAgeAt?: number;
@@ -37,6 +55,12 @@ interface CookieAttributeList {
   secure: boolean;
   httpOnly: boolean;
   sameSite: SameSite | null;
+  partitioned: boolean;
+}
+
+interface ParsedCookie {
+  readonly cookie: Cookie;
+  readonly partitioned: boolean;
 }
 
 export class CookieParser {
@@ -67,6 +91,36 @@ export class CookieParser {
       sameSite: c.sameSite ?? null,
       hostOnly,
     };
+  }
+
+  static fromCdp(c: CdpCookie): Cookie {
+    const hostOnly = !c.domain.startsWith('.');
+    return {
+      name: c.name,
+      value: c.value,
+      domain: hostOnly ? c.domain : c.domain.slice(1),
+      path: c.path,
+      expires: c.session || c.expires < 0 ? null : c.expires,
+      httpOnly: c.httpOnly,
+      secure: c.secure,
+      sameSite: c.sameSite ?? null,
+      hostOnly,
+    };
+  }
+
+  static context(exchange: Exchange): CookieContext {
+    const url = exchange.request.url;
+    const navigation = Helpers.isTopLevelNavigation(exchange);
+    const siteFor = navigation ? url : (exchange.pageUrl ?? url);
+    let sameSite = navigation || exchange.pageUrl === undefined;
+    if (!sameSite) {
+      try {
+        sameSite = Http.isSameSite(url, siteFor);
+      } catch {
+        sameSite = false;
+      }
+    }
+    return { sameSite, partition: CookieParser.#site(siteFor) };
   }
 
   static tokenize(setCookie: string): SetCookieParts | null {
@@ -167,12 +221,12 @@ export class CookieParser {
   }
 
   parse(setCookie: string, requestUrl: string): Cookie | null {
-    return this.#parseAt(setCookie, requestUrl, this.#now().getTime());
+    return this.#parseAt(setCookie, requestUrl, this.#now().getTime())?.cookie ?? null;
   }
 
   replay(exchanges: Exchange[], jar: Cookie[] = []): Cookie[] {
     const store = new Map<string, Cookie>();
-    for (const cookie of jar) store.set(CookieParser.key(cookie), { ...cookie });
+    for (const cookie of jar) store.set(CookieParser.#storeKey(cookie, undefined), { ...cookie });
     let clock = Number.NEGATIVE_INFINITY;
     for (const exchange of exchanges) {
       if (!exchange.response) continue;
@@ -180,9 +234,10 @@ export class CookieParser {
       const at = Number.isNaN(end) ? this.#now().getTime() : end;
       clock = Math.max(clock, at);
       CookieParser.#evict(store, at);
+      const context = CookieParser.context(exchange);
       for (const header of Http.getHeaderAll(exchange.response.headers, 'set-cookie')) {
         for (const line of header.split('\n')) {
-          if (line.trim()) this.#store(store, line, exchange.request.url, at);
+          if (line.trim()) this.#store(store, line, exchange.request.url, at, context);
         }
       }
     }
@@ -190,9 +245,11 @@ export class CookieParser {
     return [...store.values()];
   }
 
-  #store(store: Map<string, Cookie>, line: string, requestUrl: string, at: number): void {
-    const cookie = this.#parseAt(line, requestUrl, at);
-    if (!cookie) return;
+  #store(store: Map<string, Cookie>, line: string, requestUrl: string, at: number, context: CookieContext): void {
+    const parsed = this.#parseAt(line, requestUrl, at);
+    if (!parsed) return;
+    const cookie = parsed.cookie;
+    if (cookie.sameSite !== 'None' && !context.sameSite) return;
     if (!cookie.secure && !Http.isPotentiallyTrustworthy(new URL(requestUrl))) {
       for (const existing of store.values()) {
         if (
@@ -205,12 +262,12 @@ export class CookieParser {
         }
       }
     }
-    const key = CookieParser.key(cookie);
+    const key = CookieParser.#storeKey(cookie, parsed.partitioned ? context.partition : undefined);
     store.delete(key);
     if (!CookieParser.isExpired(cookie, at)) store.set(key, cookie);
   }
 
-  #parseAt(setCookie: string, requestUrl: string, nowMs: number): Cookie | null {
+  #parseAt(setCookie: string, requestUrl: string, nowMs: number): ParsedCookie | null {
     const parts = CookieParser.tokenize(setCookie);
     if (!parts) return null;
     let url: URL;
@@ -241,6 +298,7 @@ export class CookieParser {
     const path = attrs.path ?? CookieParser.defaultPath(url);
     if (attrs.secure && !Http.isPotentiallyTrustworthy(url)) return null;
     if (attrs.sameSite === 'None' && !attrs.secure) return null;
+    if (attrs.partitioned && !attrs.secure) return null;
 
     const lowerName = parts.name.toLowerCase();
     if (lowerName.startsWith(CookieParser.SECURE_PREFIX) && !attrs.secure) return null;
@@ -252,21 +310,24 @@ export class CookieParser {
 
     const expiry = attrs.maxAgeAt ?? attrs.expiresAt;
     return {
-      name: parts.name,
-      value: parts.value,
-      domain,
-      path,
-      expires: expiry === undefined ? null : expiry / 1000,
-      httpOnly: attrs.httpOnly,
-      secure: attrs.secure,
-      sameSite: attrs.sameSite,
-      hostOnly,
+      cookie: {
+        name: parts.name,
+        value: parts.value,
+        domain,
+        path,
+        expires: expiry === undefined ? null : expiry / 1000,
+        httpOnly: attrs.httpOnly,
+        secure: attrs.secure,
+        sameSite: attrs.sameSite,
+        hostOnly,
+      },
+      partitioned: attrs.partitioned,
     };
   }
 
   static #attributes(list: CookieAttribute[], url: URL, nowMs: number): CookieAttributeList {
     const limitMs = nowMs + CookieParser.MAX_AGE_LIMIT_SECONDS * 1000;
-    const out: CookieAttributeList = { hasPath: false, secure: false, httpOnly: false, sameSite: null };
+    const out: CookieAttributeList = { hasPath: false, secure: false, httpOnly: false, sameSite: null, partitioned: false };
     for (const { name, value } of list) {
       switch (name.toLowerCase()) {
         case 'expires': {
@@ -296,6 +357,9 @@ export class CookieParser {
         case 'httponly':
           out.httpOnly = true;
           break;
+        case 'partitioned':
+          out.partitioned = true;
+          break;
         case 'samesite': {
           const v = value.toLowerCase();
           out.sameSite = v === 'none' ? 'None' : v === 'strict' ? 'Strict' : v === 'lax' ? 'Lax' : null;
@@ -306,6 +370,16 @@ export class CookieParser {
       }
     }
     return out;
+  }
+
+  static #storeKey(cookie: Cookie, partition: string | undefined): string {
+    return `${CookieParser.key(cookie)}\u0000${partition ?? ''}`;
+  }
+
+  static #site(url: string): string | undefined {
+    const parsed = Http.parseUrl(url);
+    if (!parsed || !Helpers.NETWORK_SCHEMES.has(parsed.protocol)) return undefined;
+    return `${parsed.protocol}//${Http.registrableDomain(parsed.hostname)}`;
   }
 
   static #evict(store: Map<string, Cookie>, atMs: number): void {

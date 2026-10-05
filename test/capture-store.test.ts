@@ -1,7 +1,8 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { CaptureStore, CaptureValidator, HarConverter } from '../src/capture/index.js';
 import type { Har } from '../src/capture/index.js';
@@ -128,6 +129,76 @@ describe('CaptureStore', () => {
     assert.deepEqual([...Http.bodyBytes(a?.request.body)], [0, 1, 2, 255]);
     assert.equal(b?.response?.body, undefined);
     assert.equal(c?.response?.body, undefined);
+  });
+
+  test('does not follow symbolic links out of the HAR folder and reads only regular files', async () => {
+    const folder = join(dir, 'links');
+    const outside = join(dir, 'outside');
+    await mkdir(join(folder, 'inner'), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'secret.txt'), 'SECRET-OUTSIDE');
+    await writeFile(join(folder, 'inner', 'inside.txt'), 'inside');
+    await symlink(join(outside, 'secret.txt'), join(folder, 'file-link'));
+    await symlink(outside, join(folder, 'dir-link'));
+    await symlink(join(folder, 'inner', 'inside.txt'), join(folder, 'inner-link'));
+    execFileSync('mkfifo', [join(folder, 'pipe')]);
+    const entry = (url: string, file: string) => ({
+      startedDateTime: '2026-05-01T10:00:00.000Z',
+      time: 1,
+      request: { method: 'GET', url, headers: [] },
+      response: { status: 200, headers: [], content: { mimeType: 'text/plain', size: 10, _file: file } },
+    });
+    const har = {
+      log: {
+        version: '1.2',
+        creator: { name: 'Playwright', version: '1.56.1' },
+        entries: [
+          entry('https://example.com/a', 'file-link'),
+          entry('https://example.com/b', 'dir-link/secret.txt'),
+          entry('https://example.com/c', 'inner'),
+          entry('https://example.com/d', 'pipe'),
+          entry('https://example.com/e', 'inner-link'),
+        ],
+      },
+    };
+    const path = join(folder, 'links.har');
+    await writeFile(path, JSON.stringify(har));
+    const loaded = await CaptureStore.create().load(path);
+    assert.deepEqual(
+      loaded.exchanges.map((e) => Http.bodyText(e.response?.body)),
+      ['', '', '', '', 'inside'],
+    );
+    assert.ok(!JSON.stringify(loaded).includes('SECRET-OUTSIDE'));
+  });
+
+  test('streams a capture to disk in parts, so captures larger than the longest JavaScript string can be saved', async () => {
+    const big = 'A'.repeat(64 * 1024 * 1024);
+    const body = { mimeType: 'application/octet-stream', encoding: 'base64' as const, data: big, size: (big.length / 4) * 3 };
+    const base = capture();
+    const template = base.exchanges[0]!;
+    const large: Capture = {
+      ...base,
+      exchanges: Array.from({ length: 9 }, (_, i) => ({ ...template, id: `big${i}`, response: { ...template.response!, body } })),
+    };
+    const path = join(dir, 'big', 'capture.json');
+    await new CaptureStore().save(path, large);
+    const info = await stat(path);
+    assert.ok(info.size > 2 ** 29, `wrote ${info.size} bytes`);
+    assert.equal(info.mode & 0o777, 0o600);
+    assert.deepEqual(await readdir(join(dir, 'big')), ['capture.json']);
+    const parts = [...CaptureStore.chunks(large)];
+    assert.ok(parts.length > large.exchanges.length);
+    assert.ok(Math.max(...parts.map((part) => part.length)) < big.length + 4096);
+    await rm(path);
+  });
+
+  test('serializes in parts to exactly the same ASCII JSON text', () => {
+    const value = capture();
+    value.pages[0]!.title = 'Caf\u00e9 \ud83d\ude00';
+    assert.equal([...CaptureStore.chunks(value)].join('') + '\n', Json.asciiJson(value) + '\n');
+    assert.equal(CaptureStore.serialize(value), Json.asciiJson(value) + '\n');
+    const empty: Capture = { ...value, exchanges: [], websockets: [], cookies: [], storage: [], pages: [] };
+    assert.equal(CaptureStore.serialize(empty), Json.asciiJson(empty) + '\n');
   });
 
   test('uses the injected HAR converter', async () => {

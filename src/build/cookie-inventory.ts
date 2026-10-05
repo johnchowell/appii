@@ -41,7 +41,7 @@ export class CookieInventory {
   }
 
   static create(options: CookieInventoryOptions = {}): CookieInventory {
-    return new CookieInventory({ classifier: new CookieClassifier(), parser: new CookieParser(), redactor: new Redactor(options.redact ?? true) });
+    return new CookieInventory({ classifier: new CookieClassifier(), parser: new CookieParser(), redactor: Redactor.create({ redact: options.redact ?? true }) });
   }
 
   static applies(cookie: Cookie, url: URL): boolean {

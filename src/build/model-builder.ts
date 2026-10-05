@@ -1,7 +1,7 @@
-import type { ApiModel, Capture, Endpoint, WebSocketCapture } from '../model/index.js';
+import type { ApiModel, Capture, Endpoint, FormField, WebSocketCapture } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
-import { AppiiError, Http, Json, Text } from '../shared/index.js';
+import { AppiiError, Http, Text } from '../shared/index.js';
 import { AuthDetector } from './auth-detector.js';
 import { BodyParser } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
@@ -17,6 +17,7 @@ import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
 import { OriginSelector } from './origin-selector.js';
+import { PageDocuments } from './page-documents.js';
 import { ParamInferrer } from './param-inferrer.js';
 import { PathTemplater } from './path-templater.js';
 import { Redactor } from './redactor.js';
@@ -60,7 +61,7 @@ export class ModelBuilder {
     if (options.now !== undefined && Number.isNaN(options.now.getTime())) throw new AppiiError('BAD_INPUT', 'Build option now must be a valid date');
     this.#origins = options.origins === undefined ? undefined : Helpers.distinct(options.origins.map((origin) => ModelBuilder.normalizeOrigin(origin))).sort(Helpers.compare);
     this.#parts = parts;
-    this.#redactor = parts.redactor ?? new Redactor(options.redact ?? true);
+    this.#redactor = parts.redactor ?? Redactor.create({ redact: options.redact ?? true });
     this.#options = { ...options };
   }
 
@@ -69,11 +70,11 @@ export class ModelBuilder {
     const body = BodyParser.create();
     const schemas = SchemaInferrer.create();
     const paths = new PathTemplater();
-    const redactor = new Redactor(options.redact ?? true);
-    const headers = new HeaderPolicy();
     const tokens = new TokenDetector();
+    const redactor = new Redactor(options.redact ?? true, { tokens });
+    const headers = new HeaderPolicy({ tokens });
     const extractor = new FormExtractor({ tokens });
-    const pages = new HtmlPages({ body });
+    const documents = new PageDocuments({ pages: new HtmlPages({ body }), extractor });
     const params = new ParamInferrer({ schemas, redactor, headers }, { maxExamples });
     const grouper = new EndpointGrouper(
       {
@@ -93,7 +94,9 @@ export class ModelBuilder {
       tokens,
       body,
       headers,
-      sources: (capture) => new CsrfSourceResolver(capture, { extractor, tokens, body, pages, headers }),
+      redactor,
+      documents,
+      sources: (capture) => new CsrfSourceResolver(capture, { tokens, body, documents, headers }),
     });
     const cookies = new CookieInventory({ classifier: new CookieClassifier(), parser: new CookieParser(), redactor, body });
     const forms = new FormLinker({
@@ -101,7 +104,7 @@ export class ModelBuilder {
       schemas: new FormSchemaBuilder({ tokens }),
       inferrer: schemas,
       paths,
-      collector: new FormCollector({ extractor, pages }),
+      collector: new FormCollector({ documents }),
       params,
       redactor,
     });
@@ -122,7 +125,7 @@ export class ModelBuilder {
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
-    const grouped = this.#parts.grouper.group(exchanges);
+    const grouped = this.#parts.grouper.group(exchanges, { forms: this.#parts.forms.targets(capture), encodings: this.#parts.forms.encodings(capture) });
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
     this.#parts.auth.detect(endpoints, capture);
@@ -133,7 +136,7 @@ export class ModelBuilder {
     const cookies = this.#parts.cookies.build(capture, endpoints, chosen);
     const primaryOrigin = OriginSelector.primary(capture, chosen);
     const forms = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
-    return {
+    return this.#redactUrls({
       version: 1,
       name: this.#options.name ?? (primaryOrigin ? new URL(primaryOrigin).host : ModelBuilder.DEFAULT_NAME),
       generatedAt: (this.#options.now ?? new Date()).toISOString(),
@@ -149,7 +152,34 @@ export class ModelBuilder {
       cookies,
       forms,
       websockets: this.#websockets(capture.websockets, this.#origins === undefined && this.#options.allOrigins === true ? undefined : allowed),
+    });
+  }
+
+  #redactUrls(model: ApiModel): ApiModel {
+    const url = (value: string): string => this.#redactor.url(value);
+    const fields = (list: FormField[]): void => {
+      for (const field of list) if (field.formAction !== undefined) field.formAction = url(field.formAction);
     };
+    if (model.source.startUrl !== undefined) model.source.startUrl = url(model.source.startUrl);
+    for (const endpoint of model.endpoints) {
+      for (const sample of endpoint.samples) sample.url = url(sample.url);
+      for (const token of endpoint.auth.csrf) if (token.sourceUrl !== undefined) token.sourceUrl = url(token.sourceUrl);
+      const form = endpoint.form;
+      if (form) {
+        form.pageUrl = url(form.pageUrl);
+        form.action = url(form.action);
+        fields(form.fields);
+        fields(form.submitters);
+      }
+    }
+    for (const form of model.forms) {
+      form.pageUrl = url(form.pageUrl);
+      form.action = url(form.action);
+      fields(form.fields);
+      fields(form.submitters);
+    }
+    for (const socket of model.websockets) socket.url = url(socket.url);
+    return model;
   }
 
   #chosenOrigins(capture: Capture): string[] {
@@ -179,9 +209,7 @@ export class ModelBuilder {
   }
 
   #socketExample(data: string): string {
-    const parsed = Json.safeParse(data);
-    const text = parsed.ok && typeof parsed.value === 'object' && parsed.value !== null ? JSON.stringify(this.#redactor.deep(parsed.value)) : String(this.#redactor.deep(data));
-    return Text.truncate(text, ModelBuilder.WEBSOCKET_EXAMPLE_LENGTH);
+    return Text.truncate(this.#redactor.frame(data), ModelBuilder.WEBSOCKET_EXAMPLE_LENGTH);
   }
 
   static #socketAllowed(socket: WebSocketCapture, allowed: ReadonlySet<string>): boolean {

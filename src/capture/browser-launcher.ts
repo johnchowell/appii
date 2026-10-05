@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import type { Browser, BrowserContext, BrowserContextOptions, LaunchOptions } from 'playwright';
 import { AppiiError, Fs, Text } from '../shared/index.js';
+import { UserAgentIdentity } from './user-agent-identity.js';
 
 export interface BrowserLauncherOptions {
   headless?: boolean;
@@ -14,6 +15,7 @@ export interface BrowserLauncherOptions {
 export interface LaunchedBrowser {
   browser: Browser;
   context: BrowserContext;
+  identity?: UserAgentIdentity;
 }
 
 export class BrowserLauncher {
@@ -62,12 +64,18 @@ export class BrowserLauncher {
       );
     }
     try {
-      const context = await browser.newContext(this.contextOptions());
-      return { browser, context };
+      const identity = this.headless && !this.options.userAgent ? await BrowserLauncher.#headedIdentity(browser) : undefined;
+      const context = await browser.newContext({ ...this.contextOptions(), ...(identity ? { userAgent: identity.userAgent } : {}) });
+      return { browser, context, ...(identity ? { identity } : {}) };
     } catch (err) {
       await browser.close().catch(() => undefined);
       throw new AppiiError('BROWSER', `Cannot create a browser context: ${Text.errorMessage(err, { firstLine: true })}`, { cause: err });
     }
+  }
+
+  static async #headedIdentity(browser: Browser): Promise<UserAgentIdentity | undefined> {
+    const probe = await UserAgentIdentity.probe(browser);
+    return probe ? UserAgentIdentity.headed(probe) : undefined;
   }
 
   static #pick(options: BrowserLauncherOptions): BrowserLauncherOptions {

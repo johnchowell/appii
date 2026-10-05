@@ -1,4 +1,5 @@
-import type { BodyData, BodyKind } from '../model/index.js';
+import * as zlib from 'node:zlib';
+import type { BodyData, BodyKind, CapturedRequest, CapturedResponse } from '../model/index.js';
 import { Http, Json, Text } from '../shared/index.js';
 import { GraphqlDocument } from './graphql-document.js';
 import { MultipartParser } from './multipart-parser.js';
@@ -18,6 +19,11 @@ export interface UploadedFile {
 
 export interface BodyParserDeps {
   multipart?: MultipartParser;
+}
+
+export interface BodyParseOptions {
+  contentEncoding?: string | undefined;
+  formEncoding?: string | undefined;
 }
 
 export class BodyParser {
@@ -43,6 +49,10 @@ export class BodyParser {
     empty: '',
   };
   static readonly MULTIPART_FILE_TYPE = 'text/plain';
+  static readonly MAX_DECODED_BYTES = 64 * 1024 * 1024;
+  static readonly CHARSET_FIELD = '_charset_';
+  static readonly DEFAULT_FORM_ENCODING = 'utf-8';
+  static readonly GZIP_CODINGS: ReadonlySet<string> = new Set(['gzip', 'x-gzip']);
 
   readonly #multipart: MultipartParser;
 
@@ -89,10 +99,40 @@ export class BodyParser {
     return GraphqlDocument.operationName(typeof value.query === 'string' ? value.query : '', value.operationName);
   }
 
-  parse(body: BodyData | undefined, contentType?: string): ParsedBody {
+  request(request: CapturedRequest, formEncoding?: string): ParsedBody {
+    const contentEncoding = Http.getHeader(request.headers, 'content-encoding');
+    return this.parse(request.body, Http.getHeader(request.headers, 'content-type'), { contentEncoding, formEncoding });
+  }
+
+  response(response: CapturedResponse): ParsedBody {
+    return this.parse(response.body, Http.getHeader(response.headers, 'content-type'));
+  }
+
+  static decodeContent(body: BodyData, contentEncoding: string): BodyData | undefined {
+    const codings = contentEncoding
+      .split(',')
+      .map((coding) => coding.trim().toLowerCase())
+      .filter((coding) => coding !== '' && coding !== Http.IDENTITY_ENCODING);
+    let data: Uint8Array = Http.bodyBytes(body);
+    for (const coding of codings.reverse()) {
+      const next = BodyParser.#decodeCoding(coding, data, body.truncated === true);
+      if (!next) return undefined;
+      data = next;
+    }
+    const out: BodyData = { mimeType: body.mimeType, encoding: 'base64', data: Buffer.from(data).toString('base64'), size: data.length };
+    if (body.truncated) out.truncated = true;
+    return out;
+  }
+
+  parse(body: BodyData | undefined, contentType?: string, options: BodyParseOptions = {}): ParsedBody {
     const declared = contentType ?? body?.mimeType ?? '';
     const mime = Http.mimeEssence(declared);
     if (!body || body.data === '') return { kind: 'empty', mimeType: mime };
+    if (Http.isContentEncoded(options.contentEncoding)) {
+      const decoded = BodyParser.decodeContent(body, options.contentEncoding ?? '');
+      if (!decoded) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
+      return this.parse(decoded, declared, { formEncoding: options.formEncoding });
+    }
     if (mime === BodyParser.MULTIPART) return this.#multipartBody(body, declared, mime);
     const text = BodyParser.#text(body, declared);
     if (text === undefined) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
@@ -105,19 +145,20 @@ export class BodyParser {
     }
     const sniffed = BodyParser.#sniff(text);
     if (sniffed !== undefined) return BodyParser.#json(sniffed, mime);
-    if (mime === BodyParser.URLENCODED) return { kind: 'form', mimeType: mime, value: BodyParser.urlencoded(text) };
+    if (mime === BodyParser.URLENCODED) return { kind: 'form', mimeType: mime, value: BodyParser.urlencoded(text, BodyParser.#formCharset(text, declared, options.formEncoding)) };
     if (BodyParser.HTML_MIMES.has(mime)) return { kind: 'html', mimeType: mime, value: text };
     if (mime === '' || Http.isTextMime(mime)) return { kind: 'text', mimeType: mime || BodyParser.DEFAULT_MIMES.text, value: text };
     return { kind: 'binary', mimeType: mime };
   }
 
-  static urlencoded(text: string): Record<string, string | string[]> {
+  static urlencoded(text: string, encoding: string = BodyParser.DEFAULT_FORM_ENCODING): Record<string, string | string[]> {
+    const decoder = BodyParser.#decoder(encoding) ?? new TextDecoder(BodyParser.DEFAULT_FORM_ENCODING);
     const fields = new Map<string, string[]>();
     for (const sequence of text.split('&')) {
       if (sequence === '') continue;
       const eq = sequence.indexOf('=');
-      const name = BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq));
-      const value = BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1));
+      const name = BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq), decoder);
+      const value = BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1), decoder);
       const list = fields.get(name);
       if (list) list.push(value);
       else fields.set(name, [value]);
@@ -147,8 +188,7 @@ export class BodyParser {
   static #isGraphqlOperation(value: unknown): boolean {
     if (!Json.isPlainObject(value)) return false;
     if (typeof value.query === 'string') return GraphqlDocument.looksLikeDocument(value.query);
-    const extensions = value.extensions;
-    return value.query === undefined && Json.isPlainObject(extensions) && Json.isPlainObject(extensions.persistedQuery);
+    return value.query === undefined && GraphqlDocument.isPersistedQuery(value.extensions);
   }
 
   static #json(value: unknown, mime: string): ParsedBody {
@@ -209,7 +249,48 @@ export class BodyParser {
     return undefined;
   }
 
-  static #formDecode(value: string): string {
+  static #formCharset(text: string, declared: string, formEncoding: string | undefined): string {
+    const declaredCharset = Http.charsetOf(declared);
+    if (declaredCharset !== undefined && BodyParser.#decoder(declaredCharset)) return declaredCharset;
+    const field = BodyParser.urlencoded(text)[BodyParser.CHARSET_FIELD];
+    const named = Array.isArray(field) ? field[0] : field;
+    if (named !== undefined && BodyParser.#decoder(named)) return named;
+    if (formEncoding !== undefined && BodyParser.#decoder(formEncoding)) return formEncoding;
+    return BodyParser.DEFAULT_FORM_ENCODING;
+  }
+
+  static #decoder(label: string): TextDecoder | undefined {
+    try {
+      return new TextDecoder(label.trim());
+    } catch {
+      return undefined;
+    }
+  }
+
+  static #decodeCoding(coding: string, data: Uint8Array, truncated: boolean): Uint8Array | undefined {
+    const limit = { maxOutputLength: BodyParser.MAX_DECODED_BYTES };
+    const flush = truncated ? { finishFlush: zlib.constants.Z_SYNC_FLUSH } : {};
+    const zstd = (zlib as { zstdDecompressSync?: (data: Uint8Array, options: object) => Uint8Array }).zstdDecompressSync;
+    try {
+      if (BodyParser.GZIP_CODINGS.has(coding)) return zlib.gunzipSync(data, { ...limit, ...flush });
+      if (coding === 'deflate') return BodyParser.#inflate(data, { ...limit, ...flush });
+      if (coding === 'br') return zlib.brotliDecompressSync(data, { ...limit, ...(truncated ? { finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH } : {}) });
+      if (coding === 'zstd' && typeof zstd === 'function') return zstd(data, limit);
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
+  static #inflate(data: Uint8Array, options: { maxOutputLength: number; finishFlush?: number }): Uint8Array {
+    try {
+      return zlib.inflateSync(data, options);
+    } catch {
+      return zlib.inflateRawSync(data, options);
+    }
+  }
+
+  static #formDecode(value: string, decoder: TextDecoder): string {
     const bytes = Buffer.from(value.replace(/\+/g, ' '), 'utf8');
     const out: number[] = [];
     for (let i = 0; i < bytes.length; i++) {
@@ -224,6 +305,6 @@ export class BodyParser {
       }
       out.push(byte);
     }
-    return new TextDecoder('utf-8').decode(new Uint8Array(out));
+    return decoder.decode(new Uint8Array(out));
   }
 }

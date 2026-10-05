@@ -8,6 +8,7 @@ export interface HtmlPage {
   html: string;
   at: number;
   source: 'snapshot' | 'response';
+  encoding?: string;
 }
 
 export interface HtmlPagesDeps {
@@ -33,16 +34,26 @@ export class HtmlPages {
   }
 
   collect(capture: Capture): HtmlPage[] {
-    const pages: HtmlPage[] = capture.pages.map((page) => ({ url: page.url, html: page.html, at: Date.parse(page.capturedAt), source: 'snapshot' }));
+    const charsets = new Map<string, string>();
+    for (const exchange of capture.exchanges) {
+      const charset = exchange.resourceType === 'document' && exchange.response ? Http.charsetOf(Http.getHeader(exchange.response.headers, 'content-type')) : undefined;
+      if (charset !== undefined) charsets.set(HtmlPages.documentKey(exchange.request.url), charset);
+    }
+    const pages: HtmlPage[] = capture.pages.map((page) => HtmlPages.#page(page.url, page.html, Date.parse(page.capturedAt), 'snapshot', charsets.get(HtmlPages.documentKey(page.url))));
     const covered = new Set(pages.map((page) => HtmlPages.documentKey(page.url)));
     for (const exchange of capture.exchanges) {
       const response = exchange.response;
       if (exchange.resourceType !== 'document' || !response?.body || response.body.truncated) continue;
       if (covered.has(HtmlPages.documentKey(exchange.request.url))) continue;
-      const parsed = this.#body.parse(response.body, Http.getHeader(response.headers, 'content-type'));
+      const parsed = this.#body.response(response);
       if (parsed.kind !== 'html' || typeof parsed.value !== 'string') continue;
-      pages.push({ url: exchange.request.url, html: parsed.value, at: Helpers.startMs(exchange) + exchange.durationMs, source: 'response' });
+      const charset = Http.charsetOf(Http.getHeader(response.headers, 'content-type'));
+      pages.push(HtmlPages.#page(exchange.request.url, parsed.value, Helpers.startMs(exchange) + exchange.durationMs, 'response', charset));
     }
     return pages;
+  }
+
+  static #page(url: string, html: string, at: number, source: HtmlPage['source'], encoding: string | undefined): HtmlPage {
+    return encoding === undefined ? { url, html, at, source } : { url, html, at, source, encoding };
   }
 }

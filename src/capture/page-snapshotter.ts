@@ -1,47 +1,57 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { BrowserContext, Frame, Page } from 'playwright';
-import { Http } from '../shared/index.js';
+import type { BrowserContext, Page } from 'playwright';
+import { Json } from '../shared/index.js';
 import type { PageSnapshot } from '../model/index.js';
 import { Helpers } from './helpers.js';
 import { LiveDom } from './live-dom.js';
+import { PageWorld } from './page-world.js';
+import type { PageWorldFactory } from './page-world.js';
 
 export interface PageSnapshotterOptions {
   debounceMs?: number;
   timeoutMs?: number;
-  dom?: (page: Page) => LiveDom;
+  dom?: (page: Page, world: PageWorld | undefined) => LiveDom;
+  world?: PageWorldFactory;
 }
 
 interface TrackedPage {
   readonly onLoad: () => void;
   readonly onClose: () => void;
+  readonly world: Promise<PageWorld | undefined>;
+  hooked: boolean;
   timer?: NodeJS.Timeout;
 }
 
 export class PageSnapshotter {
   static readonly DEFAULT_DEBOUNCE_MS = 300;
   static readonly DEFAULT_TIMEOUT_MS = 10000;
+  static readonly WORLD_NAME = 'appii';
   static readonly HOOK_EVENTS: readonly { type: string; capture: boolean }[] = [
     { type: 'load', capture: false },
     { type: 'submit', capture: true },
     { type: 'pagehide', capture: false },
   ];
+  static readonly INSPECT_EVENTS: readonly string[] = ['focusin', 'pointerdown', 'keydown', 'input'];
 
   readonly #debounceMs: number;
   readonly #timeoutMs: number;
-  readonly #dom: (page: Page) => LiveDom;
-  readonly #binding = `__appiiSnapshot_${randomBytes(6).toString('hex')}`;
+  readonly #dom: (page: Page, world: PageWorld | undefined) => LiveDom;
+  readonly #world: PageWorldFactory;
+  readonly #token = randomBytes(6).toString('hex');
+  readonly #binding = `appiiSnapshot_${this.#token}`;
+  readonly #marks = `appiiSensitive_${this.#token}`;
   readonly #pages = new Map<Page, TrackedPage>();
   readonly #snapshots: PageSnapshot[] = [];
   readonly #seen = new Set<string>();
   readonly #pending = new Set<Promise<void>>();
   #context: BrowserContext | undefined;
   #ready: Promise<boolean> = Promise.resolve(false);
-  #hooked = false;
 
   constructor(options: PageSnapshotterOptions = {}) {
     this.#debounceMs = options.debounceMs ?? PageSnapshotter.DEFAULT_DEBOUNCE_MS;
     this.#timeoutMs = options.timeoutMs ?? PageSnapshotter.DEFAULT_TIMEOUT_MS;
-    this.#dom = options.dom ?? ((page) => new LiveDom(page));
+    this.#world = options.world ?? ((context, page, worldOptions) => PageWorld.open(context, page, worldOptions));
+    this.#dom = options.dom ?? ((page, world) => new LiveDom(page, world ? { evaluate: (expression) => world.evaluate(expression), marks: this.#marks } : {}));
   }
 
   get snapshots(): PageSnapshot[] {
@@ -49,19 +59,61 @@ export class PageSnapshotter {
   }
 
   hookScript(): string {
-    const listeners = PageSnapshotter.HOOK_EVENTS.map((e) => `window.addEventListener(${JSON.stringify(e.type)}, function () { send(); }, ${e.capture});`).join('\n  ');
+    const listeners = PageSnapshotter.HOOK_EVENTS.map((e) => `window.addEventListener(${JSON.stringify(e.type)}, send, ${e.capture});`).join('\n  ');
+    const inspectors = PageSnapshotter.INSPECT_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, inspect, true);`).join('\n  ');
     return `(function () {
   if (window.top !== window) return;
+  var marks = new WeakSet();
+  var watched = new WeakSet();
+  window[${JSON.stringify(this.#marks)}] = marks;
+  function isPassword(node) {
+    return node instanceof HTMLInputElement && node.type === 'password';
+  }
+  function markIn(node) {
+    if (isPassword(node)) marks.add(node);
+    if (!node || typeof node.querySelectorAll !== 'function') return;
+    var inputs = node.querySelectorAll('input');
+    for (var i = 0; i < inputs.length; i++) if (isPassword(inputs[i])) marks.add(inputs[i]);
+  }
+  function process(records) {
+    for (var i = 0; i < records.length; i++) {
+      var record = records[i];
+      if (record.type === 'attributes') {
+        var target = record.target;
+        if (target instanceof HTMLInputElement && ((record.oldValue || '').toLowerCase() === 'password' || isPassword(target))) marks.add(target);
+      } else {
+        for (var j = 0; j < record.addedNodes.length; j++) markIn(record.addedNodes[j]);
+      }
+    }
+  }
+  var observer = new MutationObserver(process);
   function send() {
     try {
-      var binding = window[${JSON.stringify(this.#binding)}];
-      if (typeof binding !== 'function') return;
-      var doc = ${LiveDom.expression()};
-      var pending = binding(doc.url, doc.title, doc.html);
-      if (pending && typeof pending.catch === 'function') pending.catch(function () {});
+      process(observer.takeRecords());
+      var call = window[${JSON.stringify(this.#binding)}];
+      if (typeof call !== 'function') return;
+      var doc = ${LiveDom.expression(this.#marks)};
+      call(JSON.stringify(doc));
     } catch (e) {}
   }
+  function watch(root) {
+    if (watched.has(root)) return;
+    watched.add(root);
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['type'], attributeOldValue: true });
+    markIn(root);
+    if (root !== document) root.addEventListener('submit', send, true);
+  }
+  function inspect(event) {
+    var path = event.composedPath();
+    for (var i = 0; i < path.length; i++) {
+      if (path[i] instanceof ShadowRoot) watch(path[i]);
+      else if (isPassword(path[i])) marks.add(path[i]);
+    }
+  }
+  watch(document);
+  ${inspectors}
   ${listeners}
+  if (document.readyState === 'complete') send();
 })();`;
   }
 
@@ -69,8 +121,8 @@ export class PageSnapshotter {
     if (this.#context) return this.#ready;
     this.#context = context;
     context.on('page', this.#onPage);
-    for (const page of context.pages()) this.#onPage(page);
-    this.#ready = this.#install(context);
+    const worlds = context.pages().map((page) => this.#onPage(page));
+    this.#ready = Promise.all(worlds).then((list) => list.every((world) => world !== undefined));
     return this.#ready;
   }
 
@@ -81,8 +133,14 @@ export class PageSnapshotter {
       clearTimeout(tracked.timer);
       page.off('load', tracked.onLoad);
       page.off('close', tracked.onClose);
+      void tracked.world.then((world) => world?.close());
     }
     this.#pages.clear();
+  }
+
+  prepare(page: Page): Promise<boolean> {
+    const tracked = this.#pages.get(page);
+    return tracked ? tracked.world.then((world) => world !== undefined) : Promise.resolve(false);
   }
 
   capture(page: Page): Promise<void> {
@@ -108,26 +166,21 @@ export class PageSnapshotter {
     while (this.#pending.size > 0) await Promise.allSettled([...this.#pending]);
   }
 
-  async #install(context: BrowserContext): Promise<boolean> {
-    try {
-      await context.exposeBinding(this.#binding, (source: { page: Page; frame: Frame }, url: unknown, title: unknown, html: unknown) => {
-        if (this.#context !== context || source.frame !== source.page.mainFrame()) return;
-        if (typeof url !== 'string' || typeof title !== 'string' || typeof html !== 'string') return;
-        if (!PageSnapshotter.#sameOrigin(url, source.frame.url())) return;
-        this.#add({ url, title, capturedAt: new Date().toISOString(), html });
-      });
-      await context.addInitScript({ content: this.hookScript() });
-      this.#hooked = true;
-      return true;
-    } catch {
-      this.#hooked = false;
-      return false;
-    }
-  }
-
-  readonly #onPage = (page: Page): void => {
-    if (this.#pages.has(page)) return;
+  readonly #onPage = (page: Page): Promise<PageWorld | undefined> => {
+    const existing = this.#pages.get(page);
+    if (existing) return existing.world;
+    const context = this.#context;
+    const world = context
+      ? this.#world(context, page, {
+          name: PageSnapshotter.WORLD_NAME,
+          binding: this.#binding,
+          source: this.hookScript(),
+          onCall: (payload) => this.#onHook(context, payload),
+        }).catch(() => undefined)
+      : Promise.resolve(undefined);
     const tracked: TrackedPage = {
+      world,
+      hooked: false,
       onLoad: () => this.#onLoad(page, tracked),
       onClose: () => {
         clearTimeout(tracked.timer);
@@ -135,15 +188,29 @@ export class PageSnapshotter {
         page.off('load', tracked.onLoad);
         page.off('close', tracked.onClose);
         this.#pages.delete(page);
+        void world.then((opened) => opened?.close());
       },
     };
+    void world.then((opened) => {
+      tracked.hooked = opened !== undefined;
+    });
     this.#pages.set(page, tracked);
     page.on('load', tracked.onLoad);
     page.on('close', tracked.onClose);
+    return world;
   };
 
+  #onHook(context: BrowserContext, payload: string): void {
+    if (this.#context !== context) return;
+    const parsed = Json.safeParse(payload);
+    if (!parsed.ok || !Json.isPlainObject(parsed.value)) return;
+    const { url, title, html } = parsed.value;
+    if (typeof url !== 'string' || typeof title !== 'string' || typeof html !== 'string') return;
+    this.#add({ url, title, capturedAt: new Date().toISOString(), html });
+  }
+
   #onLoad(page: Page, tracked: TrackedPage): void {
-    if (tracked.timer === undefined && !this.#hooked) void this.capture(page);
+    if (tracked.timer === undefined && !tracked.hooked) void this.capture(page);
     clearTimeout(tracked.timer);
     tracked.timer = setTimeout(() => {
       tracked.timer = undefined;
@@ -153,16 +220,9 @@ export class PageSnapshotter {
 
   async #take(page: Page): Promise<void> {
     if (page.isClosed()) return;
-    const snapshot = await Helpers.settle(this.#dom(page).snapshot(), this.#timeoutMs);
+    const world = await this.#pages.get(page)?.world;
+    const snapshot = await Helpers.settle(this.#dom(page, world).snapshot(), this.#timeoutMs);
     if (snapshot) this.#add(snapshot);
-  }
-
-  static #sameOrigin(a: string, b: string): boolean {
-    try {
-      return Http.originOf(a) === Http.originOf(b);
-    } catch {
-      return false;
-    }
   }
 
   #add(snapshot: PageSnapshot): void {

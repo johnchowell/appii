@@ -96,7 +96,7 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
     assert.deepEqual(endpoint(model, 'createItem').auth.csrf, [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }]);
     const login = endpoint(model, 'postLogin');
     assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${ORIGIN}/login` }]);
-    assert.equal(prop(login.requestBody?.schema, 'password').minLength, 8);
+    assert.equal(prop(login.requestBody?.schema, 'password')['x-html-minlength'], 8);
     const signup = endpoint(model, 'postSignup');
     assert.deepEqual(signup.auth.cookies, ['auth', 'csrf', 'sid', 'theme']);
     assert.equal(signup.requestBody?.mimeType, 'multipart/form-data');
@@ -271,6 +271,38 @@ describe('OriginSelector', () => {
     assert.equal(OriginSelector.primary(capture, ModelBuilder.firstPartyOrigins(capture)), 'https://www.example.org');
   });
 
+  test('an SSO redirect at the start URL does not make the identity provider first party (FB-23)', () => {
+    const f = new CaptureFactory('https://app.example.com');
+    const idp = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=1&redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Fcallback';
+    const start = f.exchange({ url: '/dashboard', resourceType: 'document', status: 302, responseHeaders: { location: idp } });
+    f.document(idp, '<form method=post action="/signin"><input name=identifier><button>Next</button></form>', { redirectedFrom: start.id });
+    f.json('POST', 'https://accounts.google.com/_/signin/challenge', 200, { ok: 1 }, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { a: 1 } } });
+    const callback = f.exchange({ url: '/auth/callback?code=abc', resourceType: 'document', status: 302, responseHeaders: { location: '/dashboard' } });
+    f.document('/dashboard', '<h1>Dashboard</h1>', { redirectedFrom: callback.id });
+    for (let i = 0; i < 5; i++) f.json('GET', `/api/projects/${i + 1}`, 200, { id: i + 1 });
+    f.json('GET', 'https://www.google.com/recaptcha/api2/anchor?k=x', 200, {});
+    f.json('POST', 'https://play.google.com/log?format=json', 200, {}, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: [1] } });
+    const capture = f.capture({ startUrl: 'https://app.example.com/dashboard' });
+    const model = ModelBuilder.create({ now: new Date(0) }).build(capture);
+    assert.equal(model.primaryOrigin, 'https://app.example.com');
+    assert.equal(model.name, 'app.example.com');
+    assert.deepEqual(model.origins, ['https://app.example.com']);
+    assert.deepEqual([...OriginSelector.referenceDomains(capture)], ['example.com']);
+    const all = ModelBuilder.create({ now: new Date(0), allOrigins: true }).build(capture);
+    assert.equal(all.primaryOrigin, 'https://app.example.com');
+    assert.ok(all.endpoints.filter((endpoint) => endpoint.origin.includes('google.com')).every((endpoint) => !endpoint.firstParty));
+  });
+
+  test('a temporary redirect to another domain is a move when the start domain never returns', () => {
+    const f = new CaptureFactory('https://old.example.com');
+    const start = f.exchange({ url: '/', resourceType: 'document', status: 302, responseHeaders: { location: 'https://www.newbrand.test/' } });
+    f.document('https://www.newbrand.test/', '<p>new</p>', { redirectedFrom: start.id });
+    f.json('GET', 'https://api.newbrand.test/v1/me', 200, {});
+    const capture = f.capture({ startUrl: 'https://old.example.com/' });
+    assert.deepEqual([...OriginSelector.referenceDomains(capture)].sort(), ['example.com', 'newbrand.test']);
+    assert.equal(OriginSelector.primary(capture, ModelBuilder.firstPartyOrigins(capture)), 'https://www.newbrand.test');
+  });
+
   test('without a start url the most frequent document origin decides', () => {
     const f = new CaptureFactory('https://app.example.net');
     f.document('/', '<p/>');
@@ -375,7 +407,7 @@ describe('ModelBuilder integration with a real browser capture', () => {
     assert.deepEqual(schema?.required, ['email', 'password', 'action']);
     assert.equal(prop(schema, 'email').format, 'email');
     assert.equal(prop(schema, 'email')['x-html-type'], 'email');
-    assert.equal(prop(schema, 'password').minLength, 8);
+    assert.equal(prop(schema, 'password')['x-html-minlength'], 8);
     assert.equal(prop(schema, 'csrf_token')['x-appii-token'], true);
     assert.deepEqual(login.responses.map((r) => [r.status, r.headers]), [[303, ['location', 'set-cookie: auth']]]);
     assert.ok(!JSON.stringify(model).includes(FIXTURE_USER.password));
@@ -386,16 +418,18 @@ describe('ModelBuilder integration with a real browser capture', () => {
     assert.equal(signup.count, 0);
     assert.equal(signup.requestBody?.mimeType, 'multipart/form-data');
     const schema = signup.requestBody?.schema;
-    assert.deepEqual(schema?.required, ['username', 'email', 'country', 'terms', 'intent']);
-    assert.equal(prop(schema, 'username').pattern, '^(?:[a-z0-9_]{3,16})$');
+    assert.deepEqual(schema?.required, ['intent']);
+    const create = schema?.then as JsonSchema;
+    assert.deepEqual(create.required, ['username', 'email', 'country', 'terms', 'intent']);
+    assert.equal(prop(create, 'username').pattern, '^(?:[a-z0-9_]{3,16})$');
     assert.equal(prop(schema, 'email').format, 'email');
-    assert.deepEqual([prop(schema, 'age').minimum, prop(schema, 'age').maximum], [13, 120]);
-    assert.equal(prop(schema, 'website').format, 'uri');
+    assert.deepEqual([prop(create, 'age').minimum, prop(create, 'age').maximum], [13, 120]);
+    assert.equal(prop(schema, 'website')['x-html-type'], 'url');
     assert.deepEqual([prop(schema, 'birthday')['x-html-min'], prop(schema, 'birthday')['x-html-max']], ['1900-01-01', '2026-12-31']);
-    assert.deepEqual(prop(schema, 'country').enum, ['us', 'ca']);
+    assert.deepEqual(prop(create, 'country').enum, ['us', 'ca']);
     assert.deepEqual(prop(schema, 'plan').enum, ['free', 'pro']);
     assert.deepEqual(prop(schema, 'interests').items, { type: 'string', enum: ['a', 'b', 'c'], 'x-html-labels': ['A', 'B', 'C'], 'x-html-type': 'select-multiple' });
-    assert.equal(prop(schema, 'bio').maxLength, 200);
+    assert.deepEqual([prop(schema, 'bio').maxLength, prop(schema, 'bio')['x-html-maxlength']], [400, 200]);
     assert.equal(prop(schema, 'terms')['x-html-required'], true);
     assert.equal(prop(schema, 'avatar')['x-html-accept'], 'image/*');
     assert.equal(prop(schema, 'readonly_field').readOnly, true);

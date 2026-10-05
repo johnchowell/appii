@@ -10,8 +10,13 @@ export interface FormSchema {
   mimeType: FormEnctype;
   method: 'GET' | 'POST';
   action: string;
+  charset: string;
   schema: JsonSchema;
   tokenFields: string[];
+}
+
+export interface FormBuildOptions {
+  documentEncoding?: string | undefined;
 }
 
 export interface FormTarget {
@@ -23,6 +28,7 @@ export interface FormTarget {
 export interface FieldSchemaContext {
   multipart?: boolean;
   validate?: boolean;
+  charset?: string;
 }
 
 export interface FormSchemaBuilderDeps {
@@ -60,7 +66,11 @@ export class FormSchemaBuilder {
     return { method, url: FormSchemaBuilder.#requestUrl(action, method), enctype };
   }
 
-  build(form: FormDescriptor, submitter?: FormField): FormSchema {
+  charset(form: FormDescriptor, options: FormBuildOptions = {}): string {
+    return ControlRules.submissionEncoding(form.acceptCharset, options.documentEncoding ?? ControlRules.CHARSET);
+  }
+
+  build(form: FormDescriptor, submitter?: FormField, options: FormBuildOptions = {}): FormSchema {
     const active = this.submitter(form, submitter);
     const target = this.target(form, active);
     if (target.method === 'DIALOG') {
@@ -69,10 +79,12 @@ export class FormSchemaBuilder {
       });
     }
     const tokens = this.tokenNames(form);
+    const charset = this.charset(form, options);
     const context: SlotContext = {
       multipart: target.method === 'POST' && target.enctype === 'multipart/form-data',
       validate: !form.noValidate && active?.formNoValidate !== true,
       tokens,
+      charset,
     };
     const entries = this.#entries(form, active, context);
     const properties: [string, JsonSchema][] = [];
@@ -90,6 +102,7 @@ export class FormSchemaBuilder {
       mimeType: target.enctype,
       method: target.method,
       action: target.url,
+      charset,
       schema,
       tokenFields: properties.map(([name]) => name).filter((name) => tokens.has(name)),
     };
@@ -104,11 +117,12 @@ export class FormSchemaBuilder {
       .filter((member) => member === field || (!member.disabled && member.name === field.name))
       .filter((member) => !ControlRules.isSubmitType(member.type))
       .sort((a, b) => a.order - b.order);
-    const tokens = new Set(members.filter((member) => member.type === 'hidden' && this.#tokens.isTokenField(member.name)).map((member) => member.name));
+    const tokens = new Set(members.filter((member) => member.type === 'hidden' && this.#tokens.isHiddenTokenField(member.name)).map((member) => member.name));
     const slots = this.#slots.slots(members, {
       multipart: context.multipart ?? true,
       validate: context.validate ?? true,
       tokens,
+      charset: context.charset ?? ControlRules.CHARSET,
     });
     return this.#composer.compose(slots).schema;
   }
@@ -116,7 +130,7 @@ export class FormSchemaBuilder {
   tokenNames(form: FormDescriptor): Set<string> {
     const names = new Set(form.tokenFields);
     for (const field of form.fields) {
-      if (field.type === 'hidden' && this.#tokens.isTokenField(field.name)) names.add(field.name);
+      if (field.type === 'hidden' && this.#tokens.isHiddenTokenField(field.name)) names.add(field.name);
     }
     return names;
   }

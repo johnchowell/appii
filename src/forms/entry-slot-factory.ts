@@ -25,6 +25,7 @@ export interface SlotContext {
   multipart: boolean;
   validate: boolean;
   tokens: ReadonlySet<string>;
+  charset?: string;
 }
 
 export interface NamedSlot {
@@ -52,9 +53,12 @@ export class EntrySlotFactory {
     month: '^\\d{4,}-(?:0[1-9]|1[0-2])$',
     week: '^\\d{4,}-W(?:0[1-9]|[1-4]\\d|5[0-3])$',
     'datetime-local': `^${EntrySlotFactory.DATE}T${EntrySlotFactory.TIME}$`,
+    date: `^${EntrySlotFactory.DATE}$`,
     color: '^#[0-9a-f]{6}$',
   };
-  static readonly FORMATS: Readonly<Record<string, string>> = { email: 'email', url: 'uri', date: 'date', time: 'time' };
+  static readonly FORMATS: Readonly<Record<string, string>> = { email: 'email' };
+  static readonly UTF16_UNITS_PER_CODE_POINT = 2;
+  static readonly WIRE_CHARACTERS_PER_NEWLINE = 2;
   static readonly DIRECTIONS: readonly string[] = ['ltr', 'rtl'];
   static readonly COORDINATES: readonly string[] = ['x', 'y'];
   static readonly MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/;
@@ -205,10 +209,12 @@ export class EntrySlotFactory {
     if (builtIn && (checks || !emailList)) schema.pattern = builtIn;
     const pattern = EntrySlotFactory.pattern(field.pattern);
     if (pattern.json && checks && !emailList) schema.pattern = pattern.json;
-    let minLength = checks ? field.minLength : undefined;
+    let minLength = checks && field.minLength !== undefined ? Math.ceil(field.minLength / EntrySlotFactory.UTF16_UNITS_PER_CODE_POINT) : undefined;
     if (checks && field.required) minLength = Math.max(minLength ?? 0, 1);
-    if (minLength !== undefined) schema.minLength = minLength;
-    if (field.maxLength !== undefined && !this.barred(field)) schema.maxLength = field.maxLength;
+    if (minLength !== undefined && minLength > 0) schema.minLength = minLength;
+    if (field.maxLength !== undefined && !this.barred(field)) {
+      schema.maxLength = type === 'textarea' ? field.maxLength * EntrySlotFactory.WIRE_CHARACTERS_PER_NEWLINE : field.maxLength;
+    }
     if (pattern.html !== undefined) schema['x-html-pattern'] = pattern.html;
     if (field.minLength !== undefined) schema['x-html-minlength'] = field.minLength;
     if (field.maxLength !== undefined) schema['x-html-maxlength'] = field.maxLength;
@@ -307,12 +313,13 @@ export class EntrySlotFactory {
 
   #hidden(field: FormField, context: SlotContext): EntrySlot {
     if (HtmlMicrosyntax.asciiLower(field.name) === ControlRules.CHARSET_FIELD) {
+      const charset = context.charset ?? ControlRules.CHARSET;
       return this.#create(field, {
-        schema: this.#annotate(field, { type: 'string', const: ControlRules.CHARSET }),
+        schema: this.#annotate(field, { type: 'string', const: charset }),
         min: 1,
         max: 1,
         required: false,
-        defaults: [ControlRules.CHARSET],
+        defaults: [charset],
       });
     }
     if (context.tokens.has(field.name)) {

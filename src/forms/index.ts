@@ -1,7 +1,7 @@
 export { FormExtractor } from './form-extractor.js';
 export type { FormExtractorDeps, FormExtractorOptions } from './form-extractor.js';
 export { FormSchemaBuilder } from './form-schema-builder.js';
-export type { FieldSchemaContext, FormSchema, FormSchemaBuilderDeps, FormTarget } from './form-schema-builder.js';
+export type { FieldSchemaContext, FormBuildOptions, FormSchema, FormSchemaBuilderDeps, FormTarget } from './form-schema-builder.js';
 export { TokenDetector } from './token-detector.js';
 export { HtmlDocument } from './html-document.js';
 export type { HtmlElement, HtmlNode } from './html-document.js';
@@ -23,3 +23,5 @@ export { EntrySlotFactory } from './entry-slot-factory.js';
 export type { CompiledPattern, EntrySlot, EntrySlotFactoryDeps, NamedSlot, SlotContext } from './entry-slot-factory.js';
 export { EntryGroupComposer } from './entry-group-composer.js';
 export type { ComposedProperty } from './entry-group-composer.js';
+export { HtmlTreeBuilder } from './html-tree-builder.js';
+export type { HtmlTree } from './html-tree-builder.js';

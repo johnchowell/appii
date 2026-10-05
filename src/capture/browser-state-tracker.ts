@@ -1,12 +1,15 @@
 import type { BrowserContext, Page } from 'playwright';
 import { Http } from '../shared/index.js';
 import type { Cookie, StorageSnapshot } from '../model/index.js';
+import { CdpCookieJar } from './cdp-cookie-jar.js';
+import type { CdpCookieJarFactory } from './cdp-cookie-jar.js';
 import { CookieParser } from './cookie-parser.js';
 import { Helpers } from './helpers.js';
 
 export interface BrowserStateTrackerOptions {
   intervalMs?: number;
   timeoutMs?: number;
+  cookieJar?: CdpCookieJarFactory;
 }
 
 interface StorageRead {
@@ -35,6 +38,7 @@ export class BrowserStateTracker {
 
   readonly #intervalMs: number;
   readonly #timeoutMs: number;
+  readonly #openJar: CdpCookieJarFactory;
   readonly #storage = new Map<string, StorageSnapshot>();
   readonly #pages = new Map<Page, () => void>();
   #cookies: Cookie[] = [];
@@ -42,11 +46,13 @@ export class BrowserStateTracker {
   #context: BrowserContext | undefined;
   #interval: NodeJS.Timeout | undefined;
   #queued: Promise<boolean> | undefined;
+  #jar: Promise<CdpCookieJar | undefined> | undefined;
   #tail: Promise<unknown> = Promise.resolve();
 
   constructor(options: BrowserStateTrackerOptions = {}) {
     this.#intervalMs = options.intervalMs ?? BrowserStateTracker.DEFAULT_INTERVAL_MS;
     this.#timeoutMs = options.timeoutMs ?? BrowserStateTracker.DEFAULT_TIMEOUT_MS;
+    this.#openJar = options.cookieJar ?? ((context, page) => CdpCookieJar.open(context, page));
   }
 
   get cookies(): Cookie[] {
@@ -79,6 +85,9 @@ export class BrowserStateTracker {
     for (const [page, listener] of this.#pages) page.off('load', listener);
     this.#pages.clear();
     this.#context = undefined;
+    const jar = this.#jar;
+    this.#jar = undefined;
+    void jar?.then((opened) => opened?.close());
   }
 
   refresh(): Promise<boolean> {
@@ -107,10 +116,10 @@ export class BrowserStateTracker {
     const context = this.#context;
     if (!context) return false;
     const startedAt = Date.now();
-    const raw = await Helpers.settle(context.cookies(), this.#timeoutMs);
-    const ok = raw !== undefined;
-    if (raw) {
-      this.#cookies = raw.map((c) => CookieParser.fromPlaywright(c));
+    const cookies = await this.#readCookies(context);
+    const ok = cookies !== undefined;
+    if (cookies) {
+      this.#cookies = cookies;
       this.#cookiesAt = startedAt;
     }
     const reads = await Promise.all(context.pages().map((page) => this.#readStorage(page)));
@@ -126,6 +135,26 @@ export class BrowserStateTracker {
     }
     for (const [origin, snapshot] of merged) this.#storage.set(origin, snapshot);
     return ok;
+  }
+
+  async #readCookies(context: BrowserContext): Promise<Cookie[] | undefined> {
+    const jar = await Helpers.settle(this.#cookieJar(context), this.#timeoutMs);
+    const exact = jar ? await Helpers.settle(jar.cookies(), this.#timeoutMs) : undefined;
+    if (exact) return exact.map((c) => CookieParser.fromCdp(c));
+    const raw = await Helpers.settle(context.cookies(), this.#timeoutMs);
+    return raw?.map((c) => CookieParser.fromPlaywright(c));
+  }
+
+  #cookieJar(context: BrowserContext): Promise<CdpCookieJar | undefined> {
+    if (this.#jar) return this.#jar;
+    const page = context.pages().find((p) => !p.isClosed());
+    if (!page) return Promise.resolve(undefined);
+    const jar = this.#openJar(context, page).catch(() => undefined);
+    this.#jar = jar;
+    void jar.then((opened) => {
+      if (!opened && this.#jar === jar) this.#jar = undefined;
+    });
+    return jar;
   }
 
   async #readStorage(page: Page): Promise<StorageRead | undefined> {

@@ -1,6 +1,7 @@
 import type { Endpoint, EndpointKind, EndpointResponse, EndpointSample, Exchange, Header, ResourceType } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
-import { Http } from '../shared/index.js';
+import { TokenDetector } from '../forms/index.js';
+import { Http, Json } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
@@ -9,9 +10,10 @@ import { ExchangeSignature } from './exchange-signature.js';
 import type { Signature } from './exchange-signature.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
+import { HtmlPages } from './html-pages.js';
 import { ParamInferrer } from './param-inferrer.js';
 import { PathTemplater } from './path-templater.js';
-import type { PathTemplate } from './path-templater.js';
+import type { PathEvidence, PathTemplate } from './path-templater.js';
 import { Redactor } from './redactor.js';
 import { SchemaInferrer } from './schema-inferrer.js';
 
@@ -34,6 +36,11 @@ export interface EndpointGrouperDeps {
   signatures?: ExchangeSignature;
   params?: ParamInferrer;
   shaper?: BodyShaper;
+}
+
+export interface GroupContext {
+  forms?: ReadonlyMap<string, PathEvidence>;
+  encodings?: ReadonlyMap<string, string>;
 }
 
 interface Member {
@@ -69,6 +76,7 @@ export class EndpointGrouper {
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
   static readonly KIND_PRIORITY: readonly EndpointKind[] = ['graphql', 'form', 'json', 'document', 'other'];
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
+  static readonly FIELD_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
 
   readonly #body: BodyParser;
   readonly #paths: PathTemplater;
@@ -94,8 +102,15 @@ export class EndpointGrouper {
 
   static create(options: EndpointGrouperCreateOptions = {}): EndpointGrouper {
     const { redact, ...rest } = options;
+    const tokens = new TokenDetector();
     return new EndpointGrouper(
-      { body: BodyParser.create(), schemas: SchemaInferrer.create(), paths: new PathTemplater(), redactor: new Redactor(redact ?? true) },
+      {
+        body: BodyParser.create(),
+        schemas: SchemaInferrer.create(),
+        paths: new PathTemplater(),
+        redactor: new Redactor(redact ?? true, { tokens }),
+        headers: new HeaderPolicy({ tokens }),
+      },
       { ...EndpointGrouper.DEFAULT_OPTIONS, ...rest },
     );
   }
@@ -127,14 +142,14 @@ export class EndpointGrouper {
     return e.request.method === 'OPTIONS' && Http.getHeader(e.request.headers, 'access-control-request-method') !== undefined;
   }
 
-  group(exchanges: Exchange[]): Endpoint[] {
+  group(exchanges: Exchange[], context: GroupContext = {}): Endpoint[] {
     const members: Member[] = [];
     for (const exchange of exchanges) {
       if (!this.#include(exchange)) continue;
-      const signature = this.#signatures.of(exchange);
+      const signature = this.#signatures.of(exchange, EndpointGrouper.#formEncoding(exchange, context.encodings));
       if (signature) members.push({ exchange, signature });
     }
-    const templates = this.#templates(members);
+    const templates = this.#templates(members, context.forms ?? new Map());
     const buckets = new Map<string, Bucket>();
     for (const member of members) {
       const { signature } = member;
@@ -148,6 +163,11 @@ export class EndpointGrouper {
     return [...buckets.values()].map((bucket) => this.#endpoint(bucket));
   }
 
+  static #formEncoding(exchange: Exchange, encodings: ReadonlyMap<string, string> | undefined): string | undefined {
+    if (!encodings || exchange.resourceType !== 'document' || exchange.pageUrl === undefined) return undefined;
+    return encodings.get(HtmlPages.documentKey(exchange.pageUrl));
+  }
+
   #include(e: Exchange): boolean {
     if (!Helpers.httpUrl(e.request.url)) return false;
     if (EndpointGrouper.SKIPPED_TYPES.has(e.resourceType) || this.isPreflight(e)) return false;
@@ -155,14 +175,33 @@ export class EndpointGrouper {
     return this.#options.includeDocuments || !this.isDocument(e);
   }
 
-  #templates(members: readonly Member[]): Map<string, Map<string, PathTemplate>> {
+  #templates(members: readonly Member[], forms: ReadonlyMap<string, PathEvidence>): Map<string, Map<string, PathTemplate>> {
     const paths = new Map<string, string[]>();
+    const evidence = new Map<string, Map<string, { forms: Set<string>; names: Set<string> }>>();
+    const entry = (origin: string, path: string): { forms: Set<string>; names: Set<string> } => {
+      const byPath = evidence.get(origin) ?? new Map<string, { forms: Set<string>; names: Set<string> }>();
+      evidence.set(origin, byPath);
+      const found = byPath.get(path) ?? { forms: new Set<string>(), names: new Set<string>() };
+      byPath.set(path, found);
+      return found;
+    };
     for (const { signature } of members) {
       const list = paths.get(signature.origin);
       if (list) list.push(signature.path);
       else paths.set(signature.origin, [signature.path]);
+      const body = signature.request;
+      if (Http.isSafeMethod(signature.method) || !EndpointGrouper.FIELD_BODY_KINDS.has(body.kind) || !Json.isPlainObject(body.value)) continue;
+      const names = entry(signature.origin, signature.path).names;
+      for (const name of Object.keys(body.value)) names.add(name);
     }
-    return new Map([...paths].map(([origin, list]) => [origin, this.#paths.template(list)]));
+    for (const [target, found] of forms) {
+      const url = Helpers.httpUrl(target);
+      if (!url || !paths.has(url.origin)) continue;
+      const known = entry(url.origin, url.pathname);
+      for (const form of found.forms) known.forms.add(form);
+      for (const name of found.names) known.names.add(name);
+    }
+    return new Map([...paths].map(([origin, list]) => [origin, this.#paths.template(list, evidence.get(origin) ?? new Map())]));
   }
 
   #endpoint(bucket: Bucket): Endpoint {
@@ -201,7 +240,7 @@ export class EndpointGrouper {
   #parseResponse(exchange: Exchange): ParsedBody | undefined {
     const response = exchange.response;
     if (!response) return undefined;
-    const parsed = this.#body.parse(response.body, Http.getHeader(response.headers, 'content-type'));
+    const parsed = this.#body.response(response);
     if (parsed.kind !== 'empty' || !this.isBodyUncaptured(exchange)) return parsed;
     return { kind: BodyParser.kindOf(parsed.mimeType), mimeType: parsed.mimeType };
   }

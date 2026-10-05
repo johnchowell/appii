@@ -296,3 +296,60 @@ describe('CookieParser.replay', () => {
     assert.deepEqual(parser.replay([], [base]), [base]);
   });
 });
+
+describe('CookieParser.replay same-site and partition rules (RFC 6265bis 5.7, CHIPS)', () => {
+  const SET = ['xlax=1; SameSite=Lax', 'xstrict=1; SameSite=Strict', 'xdefault=1', 'xnone=1; SameSite=None; Secure'];
+  const names = (cookies: Cookie[]) => cookies.map((c) => c.name).sort();
+
+  function from(url: string, pageUrl: string | undefined, resourceType: Exchange['resourceType'], setCookies: string[], requestHeaders: Record<string, string> = {}): Exchange {
+    const base = exchange(url, setCookies);
+    return {
+      ...base,
+      resourceType,
+      ...(pageUrl ? { pageUrl } : {}),
+      request: { ...base.request, headers: Object.entries(requestHeaders).map(([name, value]) => ({ name, value })) },
+    };
+  }
+
+  test('ignores SameSite Lax, Strict and unspecified cookies from cross-site subresource responses', () => {
+    const jar = parser.replay([from('http://localhost:8080/set', 'http://127.0.0.1:3000/', 'fetch', SET)]);
+    assert.deepEqual(names(jar), ['xnone']);
+  });
+
+  test('keeps every cookie from same-site requests and from top-level navigations', () => {
+    assert.deepEqual(names(parser.replay([from('http://localhost:8080/set', 'http://localhost:3000/', 'fetch', SET)])), ['xdefault', 'xlax', 'xnone', 'xstrict']);
+    assert.deepEqual(names(parser.replay([from('https://api.example.com/set', 'https://www.example.com/', 'xhr', SET)])), ['xdefault', 'xlax', 'xnone', 'xstrict']);
+    assert.deepEqual(names(parser.replay([from('http://localhost:8080/set', 'http://127.0.0.1:3000/', 'document', SET)])), ['xdefault', 'xlax', 'xnone', 'xstrict']);
+    assert.deepEqual(names(parser.replay([from('http://localhost:8080/set', undefined, 'fetch', SET)])), ['xdefault', 'xlax', 'xnone', 'xstrict']);
+  });
+
+  test('treats the scheme as part of the site and a cross-site frame navigation as a subresource', () => {
+    assert.deepEqual(names(parser.replay([from('https://example.com/set', 'http://example.com/', 'fetch', SET)])), ['xnone']);
+    const frame = from('https://widget.example.net/frame', 'https://shop.example.com/', 'document', SET, { 'Sec-Fetch-Dest': 'iframe' });
+    assert.deepEqual(names(parser.replay([frame])), ['xnone']);
+    const top = from('https://widget.example.net/frame', 'https://shop.example.com/', 'document', SET, { 'Sec-Fetch-Dest': 'document' });
+    assert.deepEqual(names(parser.replay([top])), ['xdefault', 'xlax', 'xnone', 'xstrict']);
+  });
+
+  test('keeps partitioned cookies of different top-level sites apart and rejects Partitioned without Secure', () => {
+    const widget = 'wid=1; Secure; SameSite=None; Partitioned';
+    const jar = parser.replay([
+      from('https://widget.example.net/set', 'https://shop.example.com/', 'fetch', [widget, 'bad=1; SameSite=None; Partitioned']),
+      from('https://widget.example.net/set', 'https://news.example.org/', 'fetch', [widget.replace('wid=1', 'wid=2')]),
+    ]);
+    assert.deepEqual(jar.map((c) => `${c.name}=${c.value}`).sort(), ['wid=1', 'wid=2']);
+  });
+});
+
+describe('CookieParser.fromCdp', () => {
+  test('keeps an unspecified SameSite as null and maps session cookies', () => {
+    assert.deepEqual(
+      CookieParser.fromCdp({ name: 'plain', value: '1', domain: '127.0.0.1', path: '/', expires: -1, size: 6, httpOnly: false, secure: false, session: true }),
+      { name: 'plain', value: '1', domain: '127.0.0.1', path: '/', expires: null, httpOnly: false, secure: false, sameSite: null, hostOnly: true },
+    );
+    assert.deepEqual(
+      CookieParser.fromCdp({ name: 'lax', value: '2', domain: '.example.com', path: '/a', expires: 1791169944.5, size: 4, httpOnly: true, secure: true, session: false, sameSite: 'Lax' }),
+      { name: 'lax', value: '2', domain: 'example.com', path: '/a', expires: 1791169944.5, httpOnly: true, secure: true, sameSite: 'Lax', hostOnly: false },
+    );
+  });
+});

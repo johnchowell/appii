@@ -1,3 +1,5 @@
+import { Json } from '../shared/index.js';
+
 export type GraphqlOperationType = 'query' | 'mutation' | 'subscription';
 
 export interface GraphqlOperation {
@@ -9,15 +11,61 @@ export class GraphqlDocument {
   static readonly OPERATION_TYPES: ReadonlySet<string> = new Set(['query', 'mutation', 'subscription']);
   static readonly DEFINITION_KEYWORDS: ReadonlySet<string> = new Set(['query', 'mutation', 'subscription', 'fragment']);
   static readonly IGNORED: RegExp = /[\s,\ufeff]/;
-  static readonly MAX_KEYWORD_LENGTH = 12;
+  static readonly FRAGMENT = 'fragment';
+  static readonly TYPE_CONDITION = 'on';
+  static readonly SPREAD = '...';
   static readonly NAME_START: RegExp = /[_A-Za-z]/;
   static readonly NAME_CONTINUE: RegExp = /[_0-9A-Za-z]/;
   static readonly BRACKETS_OPEN = '{([';
   static readonly BRACKETS_CLOSE = '})]';
 
   static looksLikeDocument(text: string): boolean {
+    let i = GraphqlDocument.#skipIgnored(text, 0);
+    if (text.charAt(i) === '{') {
+      i = GraphqlDocument.#skipIgnored(text, i + 1);
+      return GraphqlDocument.NAME_START.test(text.charAt(i)) || text.startsWith(GraphqlDocument.SPREAD, i);
+    }
+    const keyword = GraphqlDocument.#name(text, i);
+    if (keyword === undefined || !GraphqlDocument.DEFINITION_KEYWORDS.has(keyword)) return false;
+    i = GraphqlDocument.#skipIgnored(text, i + keyword.length);
+    if (keyword === GraphqlDocument.FRAGMENT) {
+      const name = GraphqlDocument.#name(text, i);
+      if (name === undefined || name === GraphqlDocument.TYPE_CONDITION) return false;
+      i = GraphqlDocument.#skipIgnored(text, i + name.length);
+      if (GraphqlDocument.#name(text, i) !== GraphqlDocument.TYPE_CONDITION) return false;
+      i = GraphqlDocument.#skipIgnored(text, i + GraphqlDocument.TYPE_CONDITION.length);
+      const type = GraphqlDocument.#name(text, i);
+      if (type === undefined) return false;
+      i = GraphqlDocument.#skipIgnored(text, i + type.length);
+    } else {
+      const name = GraphqlDocument.#name(text, i);
+      if (name !== undefined) i = GraphqlDocument.#skipIgnored(text, i + name.length);
+      if (text.charAt(i) === '(') {
+        const end = GraphqlDocument.#closing(text, i);
+        if (end < 0) return false;
+        i = GraphqlDocument.#skipIgnored(text, end + 1);
+      }
+    }
+    while (text.charAt(i) === '@') {
+      const directive = GraphqlDocument.#name(text, i + 1);
+      if (directive === undefined) return false;
+      i = GraphqlDocument.#skipIgnored(text, i + 1 + directive.length);
+      if (text.charAt(i) === '(') {
+        const end = GraphqlDocument.#closing(text, i);
+        if (end < 0) return false;
+        i = GraphqlDocument.#skipIgnored(text, end + 1);
+      }
+    }
+    return text.charAt(i) === '{';
+  }
+
+  static isPersistedQuery(extensions: unknown): boolean {
+    return Json.isPlainObject(extensions) && Json.isPlainObject(extensions.persistedQuery);
+  }
+
+  static #skipIgnored(text: string, start: number): number {
     const n = text.length;
-    let i = 0;
+    let i = start;
     while (i < n) {
       const ch = text.charAt(i);
       if (ch === '#') {
@@ -28,10 +76,36 @@ export class GraphqlDocument {
         break;
       }
     }
-    if (text.charAt(i) === '{') return true;
-    let j = i;
-    while (j < n && j - i <= GraphqlDocument.MAX_KEYWORD_LENGTH && GraphqlDocument.NAME_CONTINUE.test(text.charAt(j))) j++;
-    return GraphqlDocument.DEFINITION_KEYWORDS.has(text.slice(i, j));
+    return i;
+  }
+
+  static #name(text: string, start: number): string | undefined {
+    if (!GraphqlDocument.NAME_START.test(text.charAt(start))) return undefined;
+    let end = start + 1;
+    while (end < text.length && GraphqlDocument.NAME_CONTINUE.test(text.charAt(end))) end++;
+    return text.slice(start, end);
+  }
+
+  static #closing(text: string, open: number): number {
+    let depth = 0;
+    for (let i = open; i < text.length; ) {
+      const ch = text.charAt(i);
+      if (ch === '"') {
+        i = GraphqlDocument.#skipString(text, i);
+        continue;
+      }
+      if (ch === '#') {
+        i = GraphqlDocument.#skipIgnored(text, i);
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')') {
+        depth--;
+        if (depth === 0) return i;
+      }
+      i++;
+    }
+    return -1;
   }
 
   static operations(source: string): GraphqlOperation[] {

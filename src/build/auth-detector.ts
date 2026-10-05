@@ -7,12 +7,18 @@ import { CsrfSourceResolver } from './csrf-source-resolver.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
+import { HtmlPages } from './html-pages.js';
+import { PageDocuments } from './page-documents.js';
+import { Redactor } from './redactor.js';
+import type { TokenOrigin } from './csrf-source-resolver.js';
 
 export interface AuthDetectorDeps {
   extractor: FormExtractor;
   tokens: TokenDetector;
   body: BodyParser;
   headers?: HeaderPolicy;
+  documents?: PageDocuments;
+  redactor?: Redactor;
   sources?: (capture: Capture) => CsrfSourceResolver;
 }
 
@@ -20,6 +26,7 @@ interface TokenCandidate {
   location: CsrfToken['location'];
   name: string;
   value: string;
+  evidence: boolean;
 }
 
 interface EndpointAuthState {
@@ -36,19 +43,31 @@ export class AuthDetector {
   readonly #tokens: TokenDetector;
   readonly #body: BodyParser;
   readonly #headers: HeaderPolicy;
+  readonly #redactor: Redactor;
   readonly #sources: (capture: Capture) => CsrfSourceResolver;
 
   constructor(deps: AuthDetectorDeps) {
     this.#tokens = deps.tokens;
     this.#body = deps.body;
-    this.#headers = deps.headers ?? new HeaderPolicy();
+    this.#headers = deps.headers ?? new HeaderPolicy({ tokens: deps.tokens });
+    this.#redactor = deps.redactor ?? new Redactor(true, { tokens: deps.tokens });
     const headers = this.#headers;
-    this.#sources = deps.sources ?? ((capture) => new CsrfSourceResolver(capture, { extractor: deps.extractor, tokens: deps.tokens, body: deps.body, headers }));
+    const documents = deps.documents ?? new PageDocuments({ pages: new HtmlPages({ body: deps.body }), extractor: deps.extractor });
+    this.#sources = deps.sources ?? ((capture) => new CsrfSourceResolver(capture, { tokens: deps.tokens, body: deps.body, documents, headers }));
   }
 
-  static create(): AuthDetector {
+  static create(options: { redact?: boolean } = {}): AuthDetector {
     const tokens = new TokenDetector();
-    return new AuthDetector({ extractor: new FormExtractor({ tokens }), tokens, body: BodyParser.create() });
+    const body = BodyParser.create();
+    const extractor = new FormExtractor({ tokens });
+    return new AuthDetector({
+      extractor,
+      tokens,
+      body,
+      headers: new HeaderPolicy({ tokens }),
+      documents: new PageDocuments({ pages: new HtmlPages({ body }), extractor }),
+      redactor: new Redactor(options.redact ?? true, { tokens }),
+    });
   }
 
   detect(endpoints: Endpoint[], capture: Capture): void {
@@ -95,26 +114,46 @@ export class AuthDetector {
       const name = header.name.toLowerCase();
       if (this.#headers.isAuth(name)) state.headers.add(name);
       if (name === 'authorization' && AuthDetector.BEARER.test(header.value.trim())) state.bearer = true;
-      if (this.#headers.isCsrf(name)) candidates.push({ location: 'header', name, value: header.value });
+      if (this.#headers.isCsrf(name)) candidates.push({ location: 'header', name, value: header.value, evidence: !this.#tokens.isKnownCsrfHeader(name) });
     }
     const url = Helpers.httpUrl(exchange.request.url);
     if (url) {
-      for (const [name, value] of url.searchParams) if (this.#tokens.isTokenField(name)) candidates.push({ location: 'query', name, value });
+      for (const [name, value] of url.searchParams) this.#field(candidates, 'query', name, value);
     }
-    const body = this.#body.parse(exchange.request.body, Http.getHeader(headers, 'content-type'));
+    const body = this.#body.request(exchange.request);
     if (AuthDetector.BODY_FIELD_KINDS.has(body.kind) && Json.isPlainObject(body.value)) {
       for (const [name, value] of Object.entries(body.value)) {
         const first = Array.isArray(value) ? value[0] : value;
-        if (typeof first === 'string' && this.#tokens.isTokenField(name)) candidates.push({ location: 'body', name, value: first });
+        if (typeof first === 'string') this.#field(candidates, 'body', name, first);
       }
     }
     for (const candidate of candidates) {
       const key = `${candidate.location}\u0000${candidate.name}`;
       const existing = state.csrf.get(key);
       if (existing && existing.source !== 'unknown') continue;
-      const origin = candidate.value === '' ? { source: 'unknown' as const } : resolve().resolve(candidate.value, exchange);
-      state.csrf.set(key, { location: candidate.location, name: candidate.name, ...origin });
+      const origin: TokenOrigin = candidate.value === '' ? { source: 'unknown' } : resolve().resolve(candidate.value, exchange);
+      if (candidate.evidence && !this.#pageEvidence(candidate.name, origin)) continue;
+      state.csrf.set(key, this.#token(candidate, origin));
     }
+  }
+
+  #field(candidates: TokenCandidate[], location: CsrfToken['location'], name: string, value: string): void {
+    if (this.#tokens.isCsrfName(name)) candidates.push({ location, name, value, evidence: false });
+    else if (this.#tokens.isHiddenTokenField(name)) candidates.push({ location, name, value, evidence: true });
+  }
+
+  #pageEvidence(name: string, origin: TokenOrigin): boolean {
+    if (origin.source === 'meta') return true;
+    if (origin.source === 'hidden-field') return origin.sourceName === name || this.#tokens.isHiddenTokenField(origin.sourceName ?? '');
+    return origin.source === 'cookie' && this.#tokens.isCsrfName(origin.sourceName ?? '');
+  }
+
+  #token(candidate: TokenCandidate, origin: TokenOrigin): CsrfToken {
+    const token: CsrfToken = { location: candidate.location, name: candidate.name, source: origin.source };
+    if (origin.sourceName !== undefined) token.sourceName = origin.sourceName;
+    if (origin.sourceUrl !== undefined) token.sourceUrl = this.#redactor.url(origin.sourceUrl);
+    if (origin.sourceMethod !== undefined) token.sourceMethod = origin.sourceMethod;
+    return token;
   }
 
   #formTokens(state: EndpointAuthState, endpoint: Endpoint): void {
@@ -125,7 +164,7 @@ export class AuthDetector {
       const key = `${location}\u0000${name}`;
       const existing = state.csrf.get(key);
       if (existing && existing.source !== 'unknown') continue;
-      state.csrf.set(key, { location, name, source: 'hidden-field', sourceName: name, sourceUrl: form.pageUrl });
+      state.csrf.set(key, { location, name, source: 'hidden-field', sourceName: name, sourceUrl: this.#redactor.url(form.pageUrl) });
     }
   }
 }

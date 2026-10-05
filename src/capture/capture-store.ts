@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AppiiError, Fs, Json, Text } from '../shared/index.js';
 import type { Capture } from '../model/index.js';
@@ -16,6 +17,8 @@ export class CaptureStore {
   static readonly VERSION = CaptureValidator.VERSION;
   static readonly FILE_MODE = 0o600;
   static readonly SUMMARY_PROBLEMS = 3;
+  static readonly INDENT = 2;
+  static readonly READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
   readonly #har: HarConverter;
   readonly #validator: CaptureValidator;
@@ -35,7 +38,25 @@ export class CaptureStore {
   }
 
   static serialize(capture: Capture): string {
-    return Json.asciiJson(capture) + '\n';
+    return [...CaptureStore.chunks(capture)].join('') + '\n';
+  }
+
+  static *chunks(capture: Capture): Generator<string> {
+    const pad = ' '.repeat(CaptureStore.INDENT);
+    let first = true;
+    yield '{';
+    for (const [key, value] of Object.entries(capture) as [string, unknown][]) {
+      if (value === undefined) continue;
+      yield `${first ? '' : ','}\n${pad}${JSON.stringify(key)}: `;
+      first = false;
+      if (!Array.isArray(value) || value.length === 0) {
+        yield CaptureStore.#json(value, pad);
+        continue;
+      }
+      for (let i = 0; i < value.length; i++) yield `${i === 0 ? '[' : ','}\n${pad}${pad}${CaptureStore.#json(value[i] ?? null, pad + pad)}`;
+      yield `\n${pad}]`;
+    }
+    yield first ? '}' : '\n}';
   }
 
   static isHar(value: unknown): value is Har {
@@ -47,7 +68,24 @@ export class CaptureStore {
     if (problems.length > 0) {
       throw new AppiiError('BAD_INPUT', `Refusing to save an invalid capture: ${Text.summarize(problems, CaptureStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
-    await Fs.writeFileAtomic(path, CaptureStore.serialize(capture), { mode: CaptureStore.FILE_MODE });
+    const tmp = Fs.tempPath(path);
+    try {
+      await Fs.ensureDir(dirname(path));
+      await writeFile(tmp, CaptureStore.#lines(capture), { mode: CaptureStore.FILE_MODE });
+      await rename(tmp, path);
+    } catch (err) {
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw new AppiiError('IO', `Cannot write ${path}: ${Text.errorMessage(err)}`, { cause: err, details: { capture } });
+    }
+  }
+
+  static *#lines(capture: Capture): Generator<string> {
+    yield* CaptureStore.chunks(capture);
+    yield '\n';
+  }
+
+  static #json(value: unknown, pad: string): string {
+    return Json.asciiJson(value, CaptureStore.INDENT).replace(/\n/g, `\n${pad}`);
   }
 
   async load(path: string): Promise<Capture> {
@@ -100,11 +138,18 @@ export class CaptureStore {
 
   static async #attachment(holder: Record<string, unknown>, baseDir: string): Promise<string | undefined> {
     if (typeof holder._file !== 'string' || typeof holder.text === 'string') return undefined;
-    const target = resolve(baseDir, holder._file);
-    const rel = relative(baseDir, target);
-    if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
     try {
-      return (await readFile(target)).toString('base64');
+      const base = await realpath(baseDir);
+      const target = await realpath(resolve(baseDir, holder._file));
+      const rel = relative(base, target);
+      if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+      const handle = await open(target, CaptureStore.READ_FLAGS);
+      try {
+        if (!(await handle.stat()).isFile()) return undefined;
+        return (await handle.readFile()).toString('base64');
+      } finally {
+        await handle.close();
+      }
     } catch {
       return undefined;
     }

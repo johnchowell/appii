@@ -1,5 +1,5 @@
 import type { Exchange } from '../model/index.js';
-import { Http } from '../shared/index.js';
+import { Json } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { GraphqlDocument } from './graphql-document.js';
@@ -22,6 +22,7 @@ export interface ExchangeSignatureDeps {
 export class ExchangeSignature {
   static readonly QUERY_PARAM = 'query';
   static readonly OPERATION_PARAM = 'operationName';
+  static readonly EXTENSIONS_PARAM = 'extensions';
 
   readonly #body: BodyParser;
 
@@ -33,10 +34,10 @@ export class ExchangeSignature {
     return new ExchangeSignature({ body: BodyParser.create() });
   }
 
-  of(exchange: Exchange): Signature | undefined {
+  of(exchange: Exchange, formEncoding?: string): Signature | undefined {
     const url = Helpers.httpUrl(exchange.request.url);
     if (!url) return undefined;
-    const request = this.#body.parse(exchange.request.body, Http.getHeader(exchange.request.headers, 'content-type'));
+    const request = this.#body.request(exchange.request, formEncoding);
     const signature: Signature = {
       method: exchange.request.method,
       url,
@@ -51,10 +52,18 @@ export class ExchangeSignature {
     }
     if (request.kind !== 'empty') return signature;
     const query = url.searchParams.get(ExchangeSignature.QUERY_PARAM);
-    if (query === null || !GraphqlDocument.looksLikeDocument(query)) return signature;
+    const document = query !== null && GraphqlDocument.looksLikeDocument(query);
+    if (!document && !ExchangeSignature.#persisted(url)) return signature;
     signature.graphql = true;
-    const operationName = GraphqlDocument.operationName(query, url.searchParams.get(ExchangeSignature.OPERATION_PARAM) ?? undefined);
+    const operationName = GraphqlDocument.operationName(document ? (query ?? '') : '', url.searchParams.get(ExchangeSignature.OPERATION_PARAM) ?? undefined);
     if (operationName) signature.operationName = operationName;
     return signature;
+  }
+
+  static #persisted(url: URL): boolean {
+    const extensions = url.searchParams.get(ExchangeSignature.EXTENSIONS_PARAM);
+    if (extensions === null) return false;
+    const parsed = Json.safeParse(extensions);
+    return parsed.ok && GraphqlDocument.isPersistedQuery(parsed.value);
   }
 }

@@ -35,6 +35,10 @@ function only(capture: Capture, method: string, path: string): Exchange {
   return found[0]!;
 }
 
+function withoutLiveAttributes(html: string): string {
+  return html.replace(/ data-appii-[a-z-]+="[^"]*"/g, '');
+}
+
 function isAppiiError(code: string, pattern?: RegExp) {
   return (err: unknown): boolean => err instanceof AppiiError && err.code === code && (!pattern || pattern.test(err.message));
 }
@@ -297,6 +301,7 @@ describe('CaptureSession dependency injection and failures', () => {
         new Proxy(context, {
           get(target, prop) {
             if (prop === 'cookies') return async () => Promise.reject(new Error('cookie store unavailable'));
+            if (prop === 'browser') return () => null;
             const value: unknown = Reflect.get(target, prop, target);
             return typeof value === 'function' ? value.bind(target) : value;
           },
@@ -397,7 +402,7 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
         document.querySelector('form')!.append(hidden);
         hidden.value = 'js-set';
       });
-      const html = await new LiveDom(page).serialize();
+      const html = withoutLiveAttributes(await new LiveDom(page).serialize());
       assert.ok(html.startsWith('<!DOCTYPE html><html>'));
       assert.match(html, /<input type="text" name="username"[^>]*value="new_user"/);
       assert.match(html, /<input type="number" name="age"[^>]*value="42"/);
@@ -430,7 +435,7 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
       );
       await page.fill('[name=cc]', '4111111111111111');
       await page.fill('[name=plain]', 'visible');
-      const html = await new LiveDom(page).serialize();
+      const html = withoutLiveAttributes(await new LiveDom(page).serialize());
       assert.ok(html.includes('<option value="x" disabled="">X</option><option value="y">Y</option>'));
       assert.ok(!html.includes('4111'));
       assert.ok(html.includes('name="plain" value="visible"'));
@@ -445,6 +450,7 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
       const snapshotter = new PageSnapshotter({ debounceMs: 50 });
       snapshotter.attach(context);
       const page = await context.newPage();
+      assert.equal(await snapshotter.prepare(page), true);
       await page.goto(site.origin + '/products');
       await page.goto(site.origin + '/search?q=wid');
       await new Promise((r) => setTimeout(r, 200));
@@ -466,6 +472,7 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
       assert.equal(await snapshotter.attach(context), true);
       assert.match(snapshotter.hookScript(), /addEventListener\("submit"/);
       const page = await context.newPage();
+      assert.equal(await snapshotter.prepare(page), true);
       await page.goto(site.origin + '/login');
       await page.fill('#email', FIXTURE_USER.email);
       await page.fill('#password', FIXTURE_USER.password);
@@ -474,9 +481,9 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
       snapshotter.detach();
       const logins = snapshotter.snapshots.filter((s) => s.url === site.origin + '/login');
       assert.ok(logins.some((s) => s.html.includes(`value="${FIXTURE_USER.email}"`)), 'submit-time snapshot has the typed email');
-      assert.ok(logins.some((s) => /<input id="email" type="email" name="email" required="" autocomplete="username" value="">/.test(s.html)), 'load-time snapshot');
+      assert.ok(logins.some((s) => /<input id="email" type="email" name="email" required="" autocomplete="username" value="">/.test(withoutLiveAttributes(s.html))), 'load-time snapshot');
       assert.ok(snapshotter.snapshots.every((s) => !s.html.includes(FIXTURE_USER.password)));
-      assert.ok(logins.some((s) => /<input type="hidden" name="csrf_token" value="[0-9a-f]+">/.test(s.html)));
+      assert.ok(logins.some((s) => /<input type="hidden" name="csrf_token" value="[0-9a-f]+">/.test(withoutLiveAttributes(s.html))));
     } finally {
       await context.close();
     }

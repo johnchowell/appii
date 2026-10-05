@@ -5,6 +5,10 @@ import { Http } from '../shared/index.js';
 export class Helpers {
   static readonly NETWORK_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'ws:', 'wss:']);
   static readonly WEB_PAGE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:', 'file:']);
+  static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+  static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+  static readonly NO_CONTENT_STATUSES: ReadonlySet<number> = new Set([204, 205]);
+  static readonly NESTED_DESTINATIONS: ReadonlySet<string> = new Set(['iframe', 'frame', 'embed', 'object', 'fencedframe']);
 
   static stripPseudoHeaders(headers: readonly Header[]): Header[] {
     return headers.filter((h) => !h.name.startsWith(':')).map((h) => ({ name: h.name, value: h.value }));
@@ -14,6 +18,12 @@ export class Helpers {
     const d = domain.toLowerCase().replace(/\.$/, '');
     if (!d || Http.isIpAddress(d)) return false;
     return getPublicSuffix(d, { allowPrivateDomains: true }) === d;
+  }
+
+  static isTopLevelNavigation(exchange: Exchange): boolean {
+    if (exchange.resourceType !== 'document') return false;
+    const destination = (Http.getHeader(exchange.request.headers, 'sec-fetch-dest') ?? '').trim().toLowerCase();
+    return !Helpers.NESTED_DESTINATIONS.has(destination);
   }
 
   static isNetworkUrl(url: string): boolean {
