@@ -22,8 +22,18 @@ export function prettyJson(value: unknown, indent = 2): string {
   return JSON.stringify(value, null, indent);
 }
 
+export const UNESCAPED_CONTROL_SOURCE = '[\\x7f-\\x9f]';
+
+export function printableJson(value: unknown, indent = 2): string {
+  return (JSON.stringify(value, null, indent) ?? 'null').replace(new RegExp(UNESCAPED_CONTROL_SOURCE, 'g'), (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
 export function asciiJson(value: unknown, indent = 2): string {
-  return toAscii(JSON.stringify(value, null, indent) ?? 'null', 'escape');
+  return toAscii(printableJson(value, indent), 'escape');
+}
+
+export function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
 export function safeParse(text: string): { ok: true; value: unknown } | { ok: false; error: string } {

@@ -26,7 +26,7 @@ export class OpenApiSecurity {
     const headers = this.#authHeaders(endpoint).map((name) => this.#header(name));
     const alternatives: string[][] = [];
     if (endpoint.auth.bearer) alternatives.push([this.#bearer(), ...headers]);
-    if (cookies.length > 0) alternatives.push([...cookies, ...csrf, ...headers]);
+    for (const cookie of cookies) alternatives.push([cookie, ...csrf, ...headers]);
     if (!endpoint.auth.bearer && cookies.length === 0 && csrf.length + headers.length > 0) alternatives.push([...csrf, ...headers]);
     const seen = new Set<string>();
     const out: SecurityRequirement[] = [];
@@ -37,6 +37,7 @@ export class OpenApiSecurity {
       seen.add(key);
       out.push(requirement);
     }
+    if (out.length > 0 && endpoint.count === 0) out.push({});
     return out;
   }
 

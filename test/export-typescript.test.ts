@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { TsTypeWriter, TypeScriptExporter } from '../src/export/index.js';
 import { FormExtractor, FormSchemaBuilder } from '../src/forms/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
-import { Text } from '../src/shared/index.js';
+import { Http, Text } from '../src/shared/index.js';
+import { TsClientHarness } from './fixtures/export-ts-harness.js';
 import { FIXTURE_USER, startFixtureSite } from './fixtures/site.js';
 import type { FixtureSite } from './fixtures/site.js';
 import { ExportModel } from './helpers/export-model.js';
@@ -143,9 +144,9 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     assert.equal(TypeScriptExporter.clientName({ ...model, name: 'shop.example.com' }), 'ShopExampleComClient');
     assert.equal(TypeScriptExporter.clientName({ ...model, name: '' }), 'ApiClient');
     for (const endpoint of model.endpoints) assert.match(result.content, new RegExp(`\\n  async ${endpoint.name}\\(request: `));
-    assert.match(result.content, /\nexport function validatePostLogin\(input: Partial<PostLoginBody> = \{\}\): FieldError\[\] \{\n/);
+    assert.match(result.content, /\nexport function validatePostLogin\(input: Partial<PostLoginBody> = \{\}, options: ValidateOptions = \{\}\): FieldError\[\] \{\n/);
     assert.match(result.content, /\nexport function validatePostSignup\(/);
-    assert.match(result.content, /\nexport function validateGetSearch\(input: Partial<GetSearchQuery> = \{\}\)/);
+    assert.match(result.content, /\nexport function validateGetSearch\(input: Partial<GetSearchQuery> = \{\}, options: ValidateOptions = \{\}\)/);
   });
 
   test('the client compiles with tsc --strict and its response data is typed by status', async () => {
@@ -248,7 +249,7 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     const unchecked = new Client({ baseUrl: fresh.origin, validate: false });
     const response = await call(unchecked, 'postLogin', { body: { email: 'x', password: 'y' } });
     assert.equal(response.status, 422);
-    assert.equal(fresh.requests.length, before + 2);
+    assert.deepEqual(fresh.requests.slice(before).map((r) => `${r.method} ${r.path}`), ['GET /login', 'POST /login', 'GET /login', 'POST /login']);
   });
 
   test('typed JSON endpoints: getItem, listItems, GraphQL defaults and the GET search form', async () => {
@@ -350,7 +351,7 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     assert.deepEqual(validator(mod, 'validatePostLogin')({ email: 'user@example.com', password: 'correct-horse' }), []);
   });
 
-  test('a stale CSRF token is refreshed once after a 403', async () => {
+  test('a new session loads the token page again before the next form submission', async () => {
     const client = new Client({ baseUrl: fresh.origin });
     const wrong = await call(client, 'postLogin', { body: { email: FIXTURE_USER.email, password: 'wrong-password' } });
     assert.equal(wrong.status, 422);
@@ -358,7 +359,20 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     const start = fresh.requests.length;
     const login = await call(client, 'postLogin', { body: { email: FIXTURE_USER.email, password: FIXTURE_USER.password } });
     assert.equal(login.status, 200);
-    assert.deepEqual(fresh.requests.slice(start).map((r) => `${r.method} ${r.path}`), ['POST /login', 'GET /login', 'POST /login', 'GET /account']);
+    assert.deepEqual(fresh.requests.slice(start).map((r) => `${r.method} ${r.path}`), ['GET /login', 'POST /login', 'GET /account']);
+  });
+
+  test('the generated client compiles with lib DOM and also with only the Node.js types', async () => {
+    for (const dom of [true, false]) {
+      const result = await new Promise<{ code: number; output: string }>((done) => {
+        const args = [...TsClientHarness.STRICT, ...(dom ? TsClientHarness.WITH_DOM : TsClientHarness.WITHOUT_DOM), 'client.ts'];
+        execFile(TSC, args, { cwd: dir, timeout: 120_000 }, (err, stdout, stderr) => {
+          done({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, output: stdout + stderr });
+        });
+      });
+      assert.equal(result.output, '', dom ? 'lib DOM' : 'Node.js types');
+      assert.equal(result.code, 0);
+    }
   });
 
   test('redirect manual returns the 303 and the cookie store still records Set-Cookie', async () => {
@@ -533,7 +547,7 @@ describe('Generated runtime units', () => {
 });
 
 describe('CookieJar of the generated client', () => {
-  let Jar: new () => CookieJarShape;
+  let Jar: new (registrableDomain?: (host: string) => string | undefined) => CookieJarShape;
   let dir: string;
   const NOW = Date.parse('2026-06-01T00:00:00Z');
 
@@ -554,7 +568,7 @@ describe('CookieJar of the generated client', () => {
   });
 
   test('domain, path, secure, expiry and ordering rules', () => {
-    const jar = new Jar();
+    const jar = new Jar(Http.registrableDomain);
     const url = 'https://www.example.com/app/page';
     assert.equal(jar.set('sid=1; Path=/', url, NOW), true);
     assert.equal(jar.set('pref=a', url, NOW), true);

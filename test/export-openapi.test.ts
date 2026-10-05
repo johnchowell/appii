@@ -176,7 +176,7 @@ describe('OpenApiExporter on a real browser capture of the fixture site', () => 
     assert.deepEqual(create['x-appii-csrf'], [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }]);
     assert.ok(!params(create).some((p) => String(p.name).toLowerCase() === 'x-csrf-token'));
     const security = create.security as Record<string, unknown>[];
-    assert.deepEqual(security, [{ authCookie: [], sidCookie: [], xCsrfTokenHeader: [] }]);
+    assert.deepEqual(security, [{ authCookie: [], xCsrfTokenHeader: [] }, { sidCookie: [], xCsrfTokenHeader: [] }]);
     const schemes = obj(obj(doc.components).securitySchemes);
     assert.deepEqual(obj(schemes.xCsrfTokenHeader).in, 'header');
     assert.equal(obj(schemes.xCsrfTokenHeader).name, 'x-csrf-token');

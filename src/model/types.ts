@@ -252,6 +252,7 @@ export type EndpointKind = (typeof ENDPOINT_KINDS)[number];
 export interface EndpointSample {
   exchangeId: string;
   url: string;
+  pageUrl?: string;
   status?: number;
   startedAt: string;
 }

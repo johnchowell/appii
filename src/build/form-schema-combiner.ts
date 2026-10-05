@@ -11,6 +11,8 @@ interface Variant {
 export class FormSchemaCombiner {
   static readonly SUBMIT_TYPE = 'submit';
   static readonly NOVALIDATE = 'x-html-novalidate';
+  static readonly HTML_PREFIX = 'x-html-';
+  static readonly FIELDS = 'x-appii-fields';
   static readonly ANNOTATION_KEYS: ReadonlySet<string> = new Set([
     'title',
     'description',
@@ -100,6 +102,7 @@ export class FormSchemaCombiner {
       const all = present.length === schemas.length;
       const same = all && present.every((value) => Json.stableStringify(value, 0) === Json.stableStringify(present[0], 0));
       if (same) Helpers.setOwn(out, key, Json.clone(present[0]));
+      else if (key.startsWith(FormSchemaCombiner.HTML_PREFIX)) continue;
       else if (key.startsWith('x-') || FormSchemaCombiner.ANNOTATION_KEYS.has(key)) Helpers.setOwn(out, key, Json.clone(present[0]));
       else if (all && key === 'type') out.type = FormSchemaCombiner.#types(present);
       else if (all && FormSchemaCombiner.LOWER_BOUNDS.has(key) && present.every((value) => typeof value === 'number')) out[key] = Math.min(...(present as number[]));
@@ -173,6 +176,7 @@ export class FormSchemaCombiner {
     if (variant.required.size > 0) out.required = [...variant.required];
     if (properties.length > 0) out.properties = Object.fromEntries(properties);
     if (variant.schema[FormSchemaCombiner.NOVALIDATE] === true) out[FormSchemaCombiner.NOVALIDATE] = true;
+    if ([...top.keys()].some((name) => !variant.properties.has(name) && !foreign.has(name))) out[FormSchemaCombiner.FIELDS] = [...variant.properties.keys()];
     return out;
   }
 

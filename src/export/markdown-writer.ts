@@ -4,15 +4,15 @@ import { Helpers } from './helpers.js';
 export type MarkdownAlign = 'left' | 'right';
 
 export class MarkdownWriter {
-  static readonly EXTRA_PUNCTUATION: RegExp = /[*_[\]<>#~!&]/g;
   static readonly EMPTY_CELL = '-';
+  static readonly ESCAPE_LEGEND = 'In code, \\xNN shows a control character and \\uXXXX shows a non-ASCII character.';
 
   text(value: string): string {
-    return Text.escapeMarkdown(value).replace(MarkdownWriter.EXTRA_PUNCTUATION, (ch) => '\\' + ch);
+    return Text.escapeMarkdown(value);
   }
 
   code(value: string, inTable = false): string {
-    let clean = Text.toAscii(value.replace(/\r\n|\r|\n/g, ' '), 'escape');
+    let clean = Text.toAscii(Text.escapeControls(value.replace(new RegExp(Text.MARKDOWN_LINE_BREAK_SOURCE, 'g'), ' ')), 'escape');
     if (inTable) clean = clean.replace(/\|/g, '\\|');
     if (clean === '') return inTable ? MarkdownWriter.EMPTY_CELL : '` `';
     let longest = 0;
@@ -23,7 +23,7 @@ export class MarkdownWriter {
   }
 
   block(content: string, language = ''): string {
-    const body = Text.toAscii(content, 'escape');
+    const body = Text.toAscii(Text.escapeControls(content.replace(new RegExp(Text.NEWLINE_SOURCE, 'g'), '\n')), 'escape');
     const fence = Helpers.fence(body);
     return `${fence}${language}\n${body}\n${fence}`;
   }

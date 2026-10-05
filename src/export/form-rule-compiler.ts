@@ -1,5 +1,6 @@
 import type { JsonSchema, ParamInfo } from '../model/index.js';
 import { Json, Schema } from '../shared/index.js';
+import { TsPatternAudit } from './ts-pattern-audit.js';
 
 export interface FieldRule {
   name: string;
@@ -15,6 +16,7 @@ export interface FieldRule {
   options?: string[];
   constant?: string;
   pattern?: string;
+  unsafePattern?: boolean;
   minLength?: number;
   maxLength?: number;
   min?: string;
@@ -36,15 +38,77 @@ export interface CompiledForm {
   defaults: Record<string, unknown>;
 }
 
+export interface FormCondition {
+  name: string;
+  values?: string[];
+}
+
+export interface CompiledVariant extends CompiledForm {
+  when: FormCondition;
+  noValidate: boolean;
+}
+
+export interface CompiledSchema extends CompiledForm {
+  variants: CompiledVariant[];
+}
+
+export interface FormRuleCompilerDeps {
+  patterns?: TsPatternAudit;
+}
+
 export class FormRuleCompiler {
   static readonly BARRED_TYPES: ReadonlySet<string> = new Set(['hidden', 'submit', 'image', 'reset', 'button']);
   static readonly CHOICE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio', 'select-one', 'select-multiple']);
   static readonly RANGE_TYPES: ReadonlySet<string> = new Set(['number', 'range', 'date', 'month', 'week', 'time', 'datetime-local']);
   static readonly CONSTANT_DEFAULT_TYPES: ReadonlySet<string> = new Set(['submit', 'hidden']);
   static readonly DEFAULT_TYPE = 'text';
+  static readonly NOVALIDATE = 'x-html-novalidate';
+  static readonly FIELDS = 'x-appii-fields';
 
-  compileSchema(schema: JsonSchema | undefined): CompiledForm {
-    return this.compile(Object.entries(Schema.properties(schema)));
+  readonly #patterns: TsPatternAudit;
+
+  constructor(deps: FormRuleCompilerDeps = {}) {
+    this.#patterns = deps.patterns ?? new TsPatternAudit();
+  }
+
+  static create(): FormRuleCompiler {
+    return new FormRuleCompiler({ patterns: new TsPatternAudit() });
+  }
+
+  compileSchema(schema: JsonSchema | undefined): CompiledSchema {
+    const properties = Schema.properties(schema);
+    const variants: CompiledVariant[] = [];
+    for (const branch of Schema.branches(schema)) {
+      const variant = this.#variant(properties, branch.when, branch.then);
+      if (variant) variants.push(variant);
+    }
+    return { ...this.compile(Object.entries(properties)), variants };
+  }
+
+  #variant(top: Record<string, JsonSchema>, when: JsonSchema, then: JsonSchema): CompiledVariant | undefined {
+    const [name] = [...Schema.requiredSet(when)];
+    if (name === undefined) return undefined;
+    const condition: FormCondition = { name };
+    const values = FormRuleCompiler.#values(Schema.properties(when)[name]);
+    if (values !== undefined) condition.values = values;
+    const own = Json.isPlainObject(then.properties) ? then.properties : {};
+    const listed = then[FormRuleCompiler.FIELDS];
+    const names = Array.isArray(listed) ? listed.filter((item): item is string => typeof item === 'string') : Object.keys(top);
+    const entries: [string, JsonSchema][] = [];
+    for (const field of names) {
+      const restated = Object.hasOwn(own, field) ? own[field] : undefined;
+      if (restated === false) continue;
+      const schema = Json.isPlainObject(restated) ? restated : Object.hasOwn(top, field) ? top[field] : undefined;
+      if (schema) entries.push([field, schema]);
+    }
+    return { when: condition, noValidate: then[FormRuleCompiler.NOVALIDATE] === true, ...this.compile(entries) };
+  }
+
+  static #values(schema: JsonSchema | undefined): string[] | undefined {
+    if (!schema) return undefined;
+    const raw = 'const' in schema ? [schema.const] : Array.isArray(schema.enum) ? schema.enum : undefined;
+    if (raw === undefined) return undefined;
+    return raw.filter((value) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean').map(String);
   }
 
   compileParams(params: readonly ParamInfo[]): CompiledForm {
@@ -130,7 +194,10 @@ export class FormRuleCompiler {
     if (Array.isArray(schema.enum)) rule.options = schema.enum.filter((value): value is string => typeof value === 'string');
     if (typeof schema.const === 'string') rule.constant = schema.const;
     const pattern = schema['x-html-pattern'];
-    if (typeof pattern === 'string') rule.pattern = pattern;
+    if (typeof pattern === 'string') {
+      rule.pattern = pattern;
+      if (this.#patterns.unsafe(pattern)) rule.unsafePattern = true;
+    }
     const minLength = schema['x-html-minlength'];
     if (typeof minLength === 'number') rule.minLength = minLength;
     const maxLength = schema['x-html-maxlength'];

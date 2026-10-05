@@ -28,8 +28,7 @@ export class OpenApiOperationMerger {
     const body = this.requestBody(operations, info);
     if (body) out.requestBody = body;
     out.responses = this.responses(operations);
-    const security = this.security(operations);
-    if (security) out.security = security;
+    out.security = this.security(operations);
     for (const key of OpenApiOperationMerger.UNION_EXTENSIONS) {
       const values = OpenApiOperationMerger.#distinct(operations.flatMap((op) => OpenApiOperationMerger.#list(op[key])));
       if (values.length > 0) out[key] = values;
@@ -99,7 +98,11 @@ export class OpenApiOperationMerger {
           }
           continue;
         }
-        if (Json.isPlainObject(raw.headers)) existing.headers = { ...(Json.isPlainObject(existing.headers) ? existing.headers : {}), ...Json.clone(raw.headers) };
+        if (Json.isPlainObject(raw.headers)) {
+          const headers: OpenApiObject = Json.isPlainObject(existing.headers) ? existing.headers : {};
+          for (const [name, header] of Object.entries(raw.headers)) Json.setOwn(headers, name, Json.clone(header));
+          existing.headers = headers;
+        }
         if (!Json.isPlainObject(raw.content)) continue;
         const content: OpenApiObject = Json.isPlainObject(existing.content) ? existing.content : {};
         existing.content = content;
@@ -133,9 +136,9 @@ export class OpenApiOperationMerger {
     return out;
   }
 
-  security(operations: readonly OpenApiObject[]): unknown[] | undefined {
+  security(operations: readonly OpenApiObject[]): unknown[] {
     const lists = operations.map((op) => OpenApiOperationMerger.#list(op.security));
-    if (lists.every((list) => list.length === 0)) return undefined;
+    if (lists.every((list) => list.length === 0)) return [];
     const out = OpenApiOperationMerger.#distinct(lists.flat());
     if (lists.some((list) => list.length === 0)) out.push({});
     return OpenApiOperationMerger.#distinct(out);
@@ -151,10 +154,10 @@ export class OpenApiOperationMerger {
       refs.every((ref) => ref !== undefined) &&
       schemas.every((schema) => OpenApiSchemaAdapter.discriminable(components.resolve(schema)));
     if (!discriminable) return { anyOf: distinct };
-    const mapping: Record<string, string> = {};
+    const mapping: Record<string, unknown> = {};
     refs.forEach((ref, i) => {
       const name = names[i];
-      if (ref !== undefined && name !== undefined) mapping[name] = OpenApiComponents.SCHEMA_PREFIX + ref;
+      if (ref !== undefined && name !== undefined) Json.setOwn(mapping, name, OpenApiComponents.SCHEMA_PREFIX + ref);
     });
     return { oneOf: distinct, discriminator: { propertyName: OpenApiSchemaAdapter.GRAPHQL_OPERATION_FIELD, mapping } };
   }
@@ -164,7 +167,7 @@ export class OpenApiOperationMerger {
     for (const [name, example] of Object.entries(examples)) {
       let key = name;
       for (let i = 2; Object.hasOwn(target, key); i++) key = `${name}${i}`;
-      target[key] = Json.clone(example);
+      Json.setOwn(target, key, Json.clone(example));
     }
   }
 

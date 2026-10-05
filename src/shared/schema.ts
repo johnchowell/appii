@@ -1,5 +1,5 @@
 import type { JsonSchema } from '../model/index.js';
-import { isPlainObject } from './json.js';
+import { isPlainObject, setOwn, stableStringify } from './json.js';
 import { short } from './text.js';
 
 export function asSchema(value: unknown): JsonSchema | undefined {
@@ -167,7 +167,7 @@ export function constraintSummary(schema: JsonSchema | undefined): string[] {
   return out;
 }
 
-const FORMAT_SAMPLES: Record<string, unknown> = {
+export const FORMAT_SAMPLES: Readonly<Record<string, unknown>> = Object.freeze({
   email: 'user@example.com',
   uri: 'https://example.com/',
   url: 'https://example.com/',
@@ -180,42 +180,251 @@ const FORMAT_SAMPLES: Record<string, unknown> = {
   ipv6: '2001:db8::1',
   hostname: 'example.com',
   binary: '',
-};
+});
 
-export function sampleValue(schema: JsonSchema | undefined, name = '', depth = 0): unknown {
-  if (!schema || depth > 8) return null;
-  if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
-  if ('const' in schema) return schema.const;
-  if ('default' in schema) return schema.default;
-  if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
-  const vs = variants(schema);
-  if (vs.length) return sampleValue(vs[0], name, depth + 1);
-  const type = primaryType(schema);
-  switch (type) {
-    case 'object':
-      return Object.fromEntries(Object.entries(properties(schema)).map(([k, v]) => [k, sampleValue(v, k, depth + 1)]));
-    case 'array':
-      return [sampleValue(items(schema), name, depth + 1)];
-    case 'integer': {
-      const min = typeof schema.minimum === 'number' ? Math.ceil(schema.minimum) : undefined;
-      return min ?? 1;
+export const HTML_TYPE_SAMPLES: Readonly<Record<string, string>> = Object.freeze({
+  email: 'user@example.com',
+  url: 'https://example.com/',
+  tel: '+15555550100',
+  date: '2024-01-01',
+  month: '2024-01',
+  week: '2024-W01',
+  time: '12:00',
+  'datetime-local': '2024-01-01T12:00',
+  color: '#000000',
+});
+
+export const MAX_SAMPLE_DEPTH = 8;
+export const MAX_PATTERN_INPUT = 32;
+export const MAX_NAME_SAMPLE = 16;
+export const DEFAULT_SAMPLE_NAME = 'value';
+export const PADDING = 'x';
+export const PATTERN_FLAGS = 'u';
+export const HTML_PATTERN = 'x-html-pattern';
+export const HTML_PATTERN_FLAGS = 'v';
+
+export interface SampleValueOptions {
+  missing?: (name: string) => unknown;
+}
+
+export function sampleValue(schema: JsonSchema | undefined, name = '', options: SampleValueOptions = {}): unknown {
+  return sampleNode(schema, name, options, 0, false);
+}
+
+export function accepts(schema: JsonSchema | boolean | undefined, value: unknown): boolean {
+  if (schema === undefined || schema === true) return true;
+  if (schema === false) return false;
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !isPlainObject(value)) return true;
+  const types = declaredTypes(schema);
+  if (types.length > 0 && !types.some((type) => isType(type, value))) return false;
+  if ('const' in schema && !sameJson(schema.const, value)) return false;
+  if (Array.isArray(schema.enum) && !schema.enum.some((item) => sameJson(item, value))) return false;
+  if (typeof value === 'string' && !acceptsString(schema, value)) return false;
+  if (typeof value === 'number' && !acceptsNumber(schema, value)) return false;
+  if (Array.isArray(value) && !acceptsArray(schema, value)) return false;
+  if (isPlainObject(value)) {
+    for (const required of requiredSet(schema)) if (!Object.hasOwn(value, required)) return false;
+    const props = isPlainObject(schema.properties) ? schema.properties : {};
+    for (const [key, item] of Object.entries(value)) {
+      if (Object.hasOwn(props, key) && !accepts(props[key] as JsonSchema | boolean, item)) return false;
     }
-    case 'number':
-      return typeof schema.minimum === 'number' ? schema.minimum : 1;
-    case 'boolean':
-      return true;
-    case 'null':
-      return null;
-    case 'string': {
-      const format = typeof schema.format === 'string' ? schema.format : undefined;
-      if (format && format in FORMAT_SAMPLES) return FORMAT_SAMPLES[format];
-      const minLength = typeof schema.minLength === 'number' ? schema.minLength : 0;
-      const base = name ? name.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase() || 'value' : 'value';
-      return base.length >= minLength ? base : base.padEnd(minLength, 'x');
-    }
-    default:
-      return null;
   }
+  return true;
+}
+
+export function patternMatches(pattern: string, value: string): boolean {
+  if ([...value].length > MAX_PATTERN_INPUT) return false;
+  try {
+    return new RegExp(pattern, PATTERN_FLAGS).test(value);
+  } catch {
+    return false;
+  }
+}
+
+export function htmlPatternAccepts(schema: JsonSchema, value: unknown): boolean {
+  const pattern = schema[HTML_PATTERN];
+  if (typeof pattern !== 'string' || typeof schema.pattern === 'string' || typeof value !== 'string' || value === '') return true;
+  if ([...value].length > MAX_PATTERN_INPUT) return false;
+  try {
+    return new RegExp(`^(?:${pattern})$`, HTML_PATTERN_FLAGS).test(value);
+  } catch {
+    return true;
+  }
+}
+
+export function resolveConditions(schema: JsonSchema | undefined, instance: Record<string, unknown>): JsonSchema | undefined {
+  if (!schema) return schema;
+  let out: JsonSchema = withoutConditions(schema);
+  let node: JsonSchema | undefined = schema;
+  while (node && node.if !== undefined) {
+    const when = node.if === true || node.if === false ? node.if : asSchema(node.if);
+    const branch = accepts(when, instance) ? node.then : node.else;
+    if (branch === false) return out;
+    const next = asSchema(branch);
+    if (!next) break;
+    out = mergeBranch(out, withoutConditions(next));
+    node = next;
+  }
+  return out;
+}
+
+function withoutConditions(schema: JsonSchema): JsonSchema {
+  return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== 'if' && key !== 'then' && key !== 'else'));
+}
+
+function mergeBranch(base: JsonSchema, branch: JsonSchema): JsonSchema {
+  const out: JsonSchema = { ...base };
+  const props: Record<string, unknown> = { ...(isPlainObject(base.properties) ? base.properties : {}) };
+  const branchProps = isPlainObject(branch.properties) ? branch.properties : {};
+  for (const [key, item] of Object.entries(branchProps)) {
+    const current = asSchema(props[key]);
+    const next = item === false ? false : asSchema(item);
+    if (next === undefined) continue;
+    setOwn(props, key, next === false ? false : current ? { ...current, ...next } : next);
+  }
+  const forbidden = new Set(Object.entries(props).filter(([, item]) => item === false).map(([key]) => key));
+  out.properties = Object.fromEntries(Object.entries(props).filter(([key]) => !forbidden.has(key)));
+  const required = [...new Set([...requiredSet(base), ...requiredSet(branch)])].filter((key) => !forbidden.has(key));
+  if (required.length > 0) out.required = required;
+  for (const [key, item] of Object.entries(branch)) if (key !== 'properties' && key !== 'required' && !Object.hasOwn(out, key)) setOwn(out, key, item);
+  return out;
+}
+
+function sampleNode(schema: JsonSchema | undefined, name: string, options: SampleValueOptions, depth: number, required: boolean): unknown {
+  if (!schema || depth > MAX_SAMPLE_DEPTH) return null;
+  const fixed: unknown[] = [];
+  if (Array.isArray(schema.examples) && schema.examples.length > 0) fixed.push(schema.examples[0]);
+  if ('const' in schema) fixed.push(schema.const);
+  if ('default' in schema) fixed.push(schema.default);
+  if (Array.isArray(schema.enum)) {
+    const allowed = schema.enum.filter((item) => item !== '' || !required);
+    fixed.push(...allowed, ...schema.enum.filter((item) => !allowed.includes(item)));
+  }
+  for (const candidate of fixed) if (accepts(schema, candidate)) return candidate;
+  const vs = variants(schema);
+  if (vs.length > 0) return sampleNode(vs[0], name, options, depth + 1, required);
+  const type = primaryType(schema);
+  if (type === 'object') {
+    const req = requiredSet(schema);
+    return Object.fromEntries(Object.entries(properties(schema)).map(([key, item]) => [key, sampleNode(item, key, options, depth + 1, req.has(key))]));
+  }
+  if (type === 'array') return sampleArray(schema, name, options, depth);
+  if (type === 'null' || (type === undefined && !hasStringHints(schema))) return null;
+  for (const candidate of scalarCandidates(schema, type, name)) if (accepts(schema, candidate) && htmlPatternAccepts(schema, candidate)) return candidate;
+  return options.missing ? options.missing(name) : null;
+}
+
+function hasStringHints(schema: JsonSchema): boolean {
+  return ['x-html-type', 'format', 'pattern', 'minLength', 'maxLength'].some((key) => Object.hasOwn(schema, key));
+}
+
+function sampleArray(schema: JsonSchema, name: string, options: SampleValueOptions, depth: number): unknown[] {
+  const inner = items(schema);
+  const count = Math.max(1, typeof schema.minItems === 'number' ? Math.ceil(schema.minItems) : 1);
+  const allowed = Array.isArray(inner?.enum) ? inner.enum.filter((item) => item !== '' && accepts(inner, item)) : [];
+  if (allowed.length >= count) return allowed.slice(0, count);
+  const item = sampleNode(inner, name, options, depth + 1, true);
+  return Array.from({ length: count }, () => item);
+}
+
+function scalarCandidates(schema: JsonSchema, type: string | undefined, name: string): unknown[] {
+  if (type === 'boolean') return [true, false];
+  if (type === 'integer' || type === 'number') return numberCandidates(schema);
+  if (type !== 'string' && type !== undefined) return [];
+  const out: unknown[] = [];
+  const htmlType = typeof schema['x-html-type'] === 'string' ? schema['x-html-type'] : undefined;
+  const min = typeof schema['x-html-min'] === 'string' ? schema['x-html-min'] : undefined;
+  const max = typeof schema['x-html-max'] === 'string' ? schema['x-html-max'] : undefined;
+  const typed = htmlType === undefined ? undefined : HTML_TYPE_SAMPLES[htmlType];
+  if (typed !== undefined) out.push(...[min, typed, max].filter((value): value is string => value !== undefined));
+  const format = typeof schema.format === 'string' ? FORMAT_SAMPLES[schema.format] : undefined;
+  if (format !== undefined) out.push(format);
+  out.push(nameSample(schema, name));
+  return out;
+}
+
+function nameSample(schema: JsonSchema, name: string): string {
+  const base = (name.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase().replace(/^_+|_+$/g, '') || DEFAULT_SAMPLE_NAME).slice(0, MAX_NAME_SAMPLE);
+  const lengths = (keys: string[]): number[] => keys.map((key) => Number(schema[key])).filter((value) => Number.isInteger(value) && value >= 0);
+  const minLength = Math.max(0, ...lengths(['minLength', 'x-html-minlength']));
+  const maxLength = Math.min(Number.MAX_SAFE_INTEGER, ...lengths(['maxLength', 'x-html-maxlength']));
+  const padded = base.length >= minLength ? base : base.padEnd(minLength, PADDING);
+  return padded.slice(0, Math.max(maxLength, 0));
+}
+
+function numberCandidates(schema: JsonSchema): number[] {
+  const html = (key: string): number | undefined => {
+    const raw = schema[key];
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const step = typeof schema.multipleOf === 'number' && schema.multipleOf > 0 ? schema.multipleOf : 1;
+  const out: (number | undefined)[] = [];
+  const minimum = typeof schema.minimum === 'number' ? schema.minimum : html('x-html-min');
+  const maximum = typeof schema.maximum === 'number' ? schema.maximum : html('x-html-max');
+  if (minimum !== undefined) out.push(minimum, Math.ceil(minimum / step) * step);
+  if (typeof schema.exclusiveMinimum === 'number') out.push(Math.floor(schema.exclusiveMinimum / step) * step + step);
+  out.push(1, 0, step);
+  if (typeof schema.exclusiveMaximum === 'number') out.push(Math.ceil(schema.exclusiveMaximum / step) * step - step);
+  if (maximum !== undefined) out.push(maximum, Math.floor(maximum / step) * step);
+  return out.filter((value): value is number => value !== undefined && Number.isFinite(value));
+}
+
+function declaredTypes(schema: JsonSchema): string[] {
+  if (typeof schema.type === 'string') return [schema.type];
+  return Array.isArray(schema.type) ? schema.type.filter((type): type is string => typeof type === 'string') : [];
+}
+
+function isType(type: string, value: unknown): boolean {
+  switch (type) {
+    case 'string':
+      return typeof value === 'string';
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return isPlainObject(value);
+    case 'null':
+      return value === null;
+    default:
+      return true;
+  }
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return stableStringify(a, 0) === stableStringify(b, 0);
+}
+
+function acceptsString(schema: JsonSchema, value: string): boolean {
+  const length = [...value].length;
+  if (typeof schema.minLength === 'number' && length < schema.minLength) return false;
+  if (typeof schema.maxLength === 'number' && length > schema.maxLength) return false;
+  return typeof schema.pattern !== 'string' || patternMatches(schema.pattern, value);
+}
+
+function acceptsNumber(schema: JsonSchema, value: number): boolean {
+  if (typeof schema.minimum === 'number' && value < schema.minimum) return false;
+  if (typeof schema.maximum === 'number' && value > schema.maximum) return false;
+  if (typeof schema.exclusiveMinimum === 'number' && value <= schema.exclusiveMinimum) return false;
+  if (typeof schema.exclusiveMaximum === 'number' && value >= schema.exclusiveMaximum) return false;
+  if (typeof schema.multipleOf === 'number' && schema.multipleOf > 0) {
+    const quotient = value / schema.multipleOf;
+    if (Math.abs(quotient - Math.round(quotient)) > 1e-9 * Math.max(1, Math.abs(quotient))) return false;
+  }
+  return true;
+}
+
+function acceptsArray(schema: JsonSchema, value: readonly unknown[]): boolean {
+  if (typeof schema.minItems === 'number' && value.length < schema.minItems) return false;
+  if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) return false;
+  if (schema.uniqueItems === true && new Set(value.map((item) => stableStringify(item, 0))).size !== value.length) return false;
+  const inner = schema.items;
+  return inner === undefined || value.every((item) => accepts(inner as JsonSchema | boolean, item));
 }
 
 export function walkSchema(schema: JsonSchema | undefined, visit: (node: JsonSchema, path: string[]) => void, path: string[] = []): void {
@@ -227,6 +436,10 @@ export function walkSchema(schema: JsonSchema | undefined, visit: (node: JsonSch
   variants(schema).forEach((v, i) => walkSchema(v, visit, [...path, `|${i}`]));
   const extra = asSchema(schema.additionalProperties);
   if (extra) walkSchema(extra, visit, [...path, '*']);
+}
+
+export function isFileSchema(schema: JsonSchema | undefined): boolean {
+  return schema !== undefined && (schema.format === 'binary' || schema['x-html-type'] === 'file' || typeof schema.contentMediaType === 'string');
 }
 
 export function isTokenSchema(schema: JsonSchema | undefined): boolean {

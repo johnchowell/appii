@@ -51,11 +51,12 @@ test('requestSample fills path, query, csrf header and json body', () => {
   const literal = Curl.curlCommand(s);
   assert.match(literal, /^curl -sS -X POST 'https:\/\/api\.example\.com\/api\/items\/42\?page=1&q=a%20b' \\\n  -H 'x-csrf-token: \{\{csrf\}\}'/);
   const shell = Curl.curlCommand(s, { variables: 'shell', cookie: SampleText.placeholder('cookie'), multiline: false });
-  assert.ok(shell.includes(`-H "x-csrf-token: \${CSRF}"`), shell);
-  assert.ok(shell.includes(`--data-raw '{"name":"Thing","password":"'"\${PASSWORD}"'"}'`), shell);
-  assert.ok(shell.includes(`-b "\${COOKIE}"`), shell);
-  assert.deepEqual(Curl.placeholderNames(s), ['CSRF', 'PASSWORD']);
-  const out = execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; }; CSRF=t1 PASSWORD='p "q' COOKIE='sid=1'; ${shell}`]).toString();
+  assert.ok(shell.includes(`-H "x-csrf-token: \${APPII_CSRF}"`), shell);
+  assert.ok(shell.includes(`--data-raw '{"name":"Thing","password":"'"\${APPII_PASSWORD}"'"}'`), shell);
+  assert.ok(shell.includes(`-b "\${APPII_COOKIE}"`), shell);
+  assert.deepEqual(Curl.placeholderNames(s), ['APPII_CSRF', 'APPII_PASSWORD']);
+  assert.equal(String(s.cookie), 'csrf={{csrf}}');
+  const out = execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; }; APPII_CSRF=t1 APPII_PASSWORD='p "q' APPII_COOKIE='sid=1'; ${shell}`]).toString();
   assert.ok(out.includes('x-csrf-token: t1'));
   assert.ok(out.includes('{"name":"Thing","password":"p "q"}'));
   assert.ok(out.includes('sid=1'));
@@ -77,7 +78,7 @@ test('form and multipart samples become curl field flags', () => {
   const s = Samples.requestSample(form);
   assert.deepEqual(Samples.plainValue(s.body?.value), { email: 'user@example.com', remember: 'yes', csrf_token: '{{csrf_token}}' });
   const cmd = Curl.curlCommand(s, { multiline: false });
-  assert.ok(cmd.includes(`--data-urlencode 'email=user@example.com' --data-urlencode 'remember=yes' --data-urlencode 'csrf_token={{csrf_token}}'`));
+  assert.ok(cmd.includes(`--data-raw 'email=user%40example.com' --data-raw 'remember=yes' --data-urlencode 'csrf_token={{csrf_token}}'`), cmd);
   const mp = endpoint({
     method: 'POST',
     path: '/signup',
@@ -126,8 +127,8 @@ test('captured text that looks like a placeholder stays literal in every renderi
   const fs = Samples.requestSample(form);
   assert.deepEqual(Curl.placeholderNames(fs), []);
   const formArgs = runShell(Curl.curlCommand(fs, { variables: 'shell' }), leak);
-  assert.ok(formArgs.includes('c={{1}}'), formArgs.join('\n'));
-  assert.ok(formArgs.includes('d=a${HOME}b'), formArgs.join('\n'));
+  assert.ok(formArgs.includes('c=%7B%7B1%7D%7D'), formArgs.join('\n'));
+  assert.ok(formArgs.includes('d=a%24%7BHOME%7Db'), formArgs.join('\n'));
 });
 
 test('curl commands are ASCII and send the exact UTF-8 and control characters of each value', () => {
@@ -144,10 +145,10 @@ test('curl commands are ASCII and send the exact UTF-8 and control characters of
     assert.ok(Text.isAscii(cmd), cmd);
     assert.ok(!/[\x00-\x09\x0b-\x1f\x7f]/.test(cmd), cmd);
     const args = runShell(cmd);
-    assert.ok(args.includes('ville=Montr\u00e9al'), args.join('\n'));
-    assert.ok(args.includes('tab=a\tb'), args.join('\n'));
-    assert.ok(args.includes('cr=x\ry'), args.join('\n'));
-    assert.ok(args.includes('bang=hi!there'), args.join('\n'));
+    assert.ok(args.includes('ville=Montr%C3%A9al'), args.join('\n'));
+    assert.ok(args.includes('tab=a%09b'), args.join('\n'));
+    assert.ok(args.includes('cr=x%0Dy'), args.join('\n'));
+    assert.ok(args.includes('bang=hi%21there'), args.join('\n'));
     assert.ok(args.includes('x-note: caf\u00e9!'), args.join('\n'));
   }
 });
@@ -166,7 +167,7 @@ test('bearer and cookie-sourced CSRF placeholders are linked in the shared sampl
   const literal = Curl.curlCommand(s, { multiline: false });
   assert.ok(literal.includes(`-H 'Authorization: Bearer {{access_token}}'`), literal);
   assert.ok(literal.includes(`-H 'X-CSRF-Token: {{csrftoken}}'`), literal);
-  assert.deepEqual(Curl.placeholderNames(s), ['ACCESS_TOKEN', 'CSRFTOKEN']);
+  assert.deepEqual(Curl.placeholderNames(s), ['APPII_ACCESS_TOKEN', 'APPII_CSRFTOKEN']);
   const missing = Samples.requestSample(endpoint({ auth: { cookies: [], headers: [], bearer: true, csrf: [] } }));
   assert.ok(Curl.curlCommand(missing).includes(`'Authorization: Bearer {{access_token}}'`));
 });

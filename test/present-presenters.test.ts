@@ -492,14 +492,14 @@ describe('EndpointDetailPresenter', () => {
     const command = wide.slice(0, wide.indexOf(''));
     assert.deepEqual(command, [
       "curl -sS -X POST 'https://shop.example.com/api/items' \\",
-      '  -H "x-csrf-token: ${CSRF}" \\',
+      '  -H "x-csrf-token: ${APPII_CSRF}" \\',
       "  -H 'Content-Type: application/json' \\",
-      '  -b "auth=${AUTH}; csrf=${CSRF}; sid=${SID}; theme=${THEME}" \\',
+      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF}; sid=${APPII_SID}; theme=${APPII_THEME}" \\',
       `  --data-raw '{"name":"Thing","price":5}'`,
     ]);
-    assert.equal(wide[wide.length - 1], 'Variables: AUTH CSRF SID THEME');
+    assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF APPII_SID APPII_THEME');
     const argv = (script: string) =>
-      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', AUTH: 'a', CSRF: 'c c', SID: 's', THEME: 't' } }).toString();
+      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_SID: 's', APPII_THEME: 't' } }).toString();
     for (const ref of [4, 9, 12]) {
       const reference = section(detail(ref, { width: 400 }), 'Example request (curl)');
       const expected = argv(reference.slice(0, reference.indexOf('')).join('\n'));
@@ -514,13 +514,13 @@ describe('EndpointDetailPresenter', () => {
 
   test('bearer endpoints get a Bearer placeholder and multipart text fields are sent as literal strings', () => {
     const bearer = detail('createOrder', { width: 200 }, MIXED);
-    assert.match(bearer, /-H "authorization: Bearer \$\{ACCESS_TOKEN\}"/);
-    assert.match(bearer, /Variables: ACCESS_TOKEN/);
+    assert.match(bearer, /-H "authorization: Bearer \$\{APPII_ACCESS_TOKEN\}"/);
+    assert.match(bearer, /Variables: APPII_ACCESS_TOKEN/);
     const signup = detail(12, { width: 200 });
     assert.match(signup, /--form-string 'username=username'/);
     assert.match(signup, /--form-string 'interests=a' \\\n {2}--form-string 'interests=c'/);
     const login = detail(9, { width: 200 });
-    assert.match(login, /--data-urlencode "csrf_token=\$\{CSRF_TOKEN\}"/);
+    assert.match(login, /--data-urlencode "csrf_token=\$\{APPII_CSRF_TOKEN\}"/);
   });
 
   test('exampleRequest links double-submit cookies and leaves other placeholders alone', () => {
@@ -712,9 +712,9 @@ describe('EndpointDetailPresenter example requests', () => {
       const block = curlBlock(text);
       assert.ok(block.every((line) => line.length <= width), block.join('\n'));
       const args = argv(block.join('\n'));
-      assert.ok(args.includes('ville=Montr\u00e9al'), args.join('\n'));
-      assert.ok(args.includes('note=a\tb'), args.join('\n'));
-      assert.ok(args.includes('long=' + 'x'.repeat(70) + '\u00e9'), args.join('\n'));
+      assert.ok(args.includes('ville=Montr%C3%A9al'), args.join('\n'));
+      assert.ok(args.includes('note=a%09b'), args.join('\n'));
+      assert.ok(args.includes('long=' + 'x'.repeat(70) + '%C3%A9'), args.join('\n'));
     }
   });
 });

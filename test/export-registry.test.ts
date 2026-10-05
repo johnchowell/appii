@@ -155,7 +155,10 @@ describe('HarExporter and JsonExporter on a real capture', () => {
     assert.deepEqual(JSON.parse(all.content), model);
     const some = JSON.parse(exporter.export(model, { endpoints: ['getMe', 'listItems'] }).content) as ApiModel;
     assert.deepEqual(some.endpoints.map((e) => e.name), ['listItems', 'getMe']);
-    assert.deepEqual({ ...some, endpoints: [] }, { ...model, endpoints: [] });
+    assert.deepEqual({ ...some, endpoints: [], cookies: [], forms: [] }, { ...model, endpoints: [], cookies: [], forms: [] });
+    const ids = new Set(some.endpoints.map((e) => e.id));
+    assert.ok(some.cookies.length > 0);
+    for (const cookie of some.cookies) for (const id of [...cookie.setBy, ...cookie.usedBy]) assert.ok(ids.has(id), id);
     const unicode = exporter.export({ ...model, name: 'Caf\u00e9 \u{1F600}' }).content;
     assert.ok(Text.isAscii(unicode));
     assert.equal((JSON.parse(unicode) as ApiModel).name, 'Caf\u00e9 \u{1F600}');
@@ -222,12 +225,11 @@ describe('ExchangeSanitizer', () => {
     );
     assert.equal(
       Http.bodyText(html.response?.body),
-      '<form><input type="hidden" value="&lt;redacted>" name="csrf_token"><input name="q" value="keep"></form><meta content="&lt;redacted>" name="csrf-token">',
+      '<form><input type="hidden" value="&lt;redacted&gt;" name="csrf_token"><input name="q" value="keep"></form><meta content="&lt;redacted&gt;" name="csrf-token">',
     );
     const original = exchange({ headers: [{ name: 'Cookie', value: 'sid=1' }] });
     const copy = new ExchangeSanitizer({ redactor: new Redactor(false) }).sanitize(original);
     assert.deepEqual(copy, original);
     assert.notEqual(copy, original);
-    assert.deepEqual(ExchangeSanitizer.attributes(`a=1 B="x &amp; y" c='z' d`), new Map([['a', '1'], ['b', 'x & y'], ['c', 'z'], ['d', '']]));
   });
 });

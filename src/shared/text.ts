@@ -112,15 +112,26 @@ export function indent(text: string, spaces = 2): string {
     .join('\n');
 }
 
+export const HTML_ENTITIES: Readonly<Record<string, string>> = Object.freeze({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' });
+export const HTML_SPECIAL_SOURCE = '[&<>"\']';
+export const HTML_CARRIAGE_RETURN = '&#13;';
+export const MARKDOWN_SPECIAL_SOURCE = '[\\\\`|*_[\\]<>#~!&]';
+export const MARKDOWN_LINE_BREAK_SOURCE = '\\r\\n|[\\r\\n]';
+
 export function escapeHtml(input: string): string {
-  return toAscii(
-    input.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
-    'html',
-  );
+  const escaped = input
+    .replace(new RegExp(HTML_SPECIAL_SOURCE, 'g'), (ch) => HTML_ENTITIES[ch] ?? ch)
+    .replace(/\r/g, HTML_CARRIAGE_RETURN);
+  return toAscii(escapeControls(escaped), 'html');
 }
 
 export function escapeMarkdown(input: string): string {
-  return toAscii(input.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/`/g, '\\`').replace(/\r?\n/g, ' '), 'escape');
+  const flat = input.replace(new RegExp(MARKDOWN_LINE_BREAK_SOURCE, 'g'), ' ').replace(new RegExp(MARKDOWN_SPECIAL_SOURCE, 'g'), (ch) => '\\' + ch);
+  return toAscii(escapeControls(flat), 'html');
+}
+
+export function escapeControls(input: string, source: string = TEXT_CONTROL_SOURCE): string {
+  return input.replace(new RegExp(source, 'g'), controlEscape);
 }
 
 export function shellQuote(input: string): string {
@@ -159,6 +170,7 @@ export const LINE_BREAK_SOURCE = '\\r\\n|[\\r\\n\\t]';
 export const NEWLINE_SOURCE = '\\r\\n?';
 export const CONTROL_SOURCE = '[\\x00-\\x1f\\x7f-\\x9f]';
 export const BLOCK_CONTROL_SOURCE = '[\\x00-\\x09\\x0b-\\x1f\\x7f-\\x9f]';
+export const TEXT_CONTROL_SOURCE = '[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]';
 
 export function controlEscape(ch: string): string {
   return '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0');

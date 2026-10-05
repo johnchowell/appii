@@ -1,10 +1,11 @@
-import type { BodyKind, BodyShape, Endpoint, EndpointForm, FormEnctype, FormField, FormMethod, ParamInfo } from '../model/index.js';
+import type { BodyKind, BodyShape, Endpoint, EndpointForm, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
+import { CharsetEncoder } from './charset.js';
 import { EndpointIndex } from './endpoints.js';
 import { mimeEssence, parseUrl } from './http.js';
-import { isPlainObject } from './json.js';
+import { isPlainObject, setOwn } from './json.js';
 import { SampleText } from './sample-text.js';
 import type { SampleTextInput } from './sample-text.js';
-import { sampleValue } from './schema.js';
+import { isFileSchema, items, primaryType, properties, resolveConditions, sampleValue } from './schema.js';
 
 export const REDACTED = '<redacted>';
 export const SECRET_NAME = 'secret';
@@ -19,6 +20,10 @@ export const IMAGE_COORDINATE_VALUE = '0';
 export const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 export const JSON_MIME = 'application/json';
 export const BINARY_MIME = 'application/octet-stream';
+export const TEXT_PLAIN = 'text/plain';
+export const CRLF = '\r\n';
+export const NEWLINE_SOURCE = '\r\n|\r|\n';
+export const FORM_BODY_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>(['form', 'multipart', 'text']);
 
 export interface SampleEntry {
   readonly name: string;
@@ -35,6 +40,7 @@ export interface SampleBody {
   readonly kind: BodyKind;
   readonly mimeType: string;
   readonly value: SampleValue | undefined;
+  readonly charset?: string;
 }
 
 export interface RequestSample {
@@ -46,17 +52,21 @@ export interface RequestSample {
   readonly query: readonly SampleEntry[];
   readonly headers: readonly SampleEntry[];
   readonly body?: SampleBody;
+  readonly cookie?: SampleText;
 }
 
 export interface FormEntry {
   readonly name: string;
   readonly value: SampleText;
   readonly file: boolean;
+  readonly contentType?: SampleText;
 }
 
 export interface SampleOptions {
   baseUrl?: SampleTextInput;
   requiredOnly?: boolean;
+  cookie?: SampleText | false;
+  pathVariables?: boolean;
 }
 
 export interface JsonTextOptions {
@@ -108,6 +118,60 @@ export function bodySample(shape: BodyShape | undefined): SampleValue | undefine
   return capturedValue(sampleValue(shape.schema));
 }
 
+export function emptyFile(): SampleRecord {
+  return { filename: SampleText.literal(''), contentType: SampleText.literal(BINARY_MIME), size: 0 };
+}
+
+export function crlf(text: string): string {
+  return text.replace(new RegExp(NEWLINE_SOURCE, 'g'), CRLF);
+}
+
+export function normalizeNewlines(value: SampleValue | undefined): SampleValue | undefined {
+  if (value instanceof SampleText) return value.mapLiterals(crlf);
+  if (Array.isArray(value)) return value.map((item: SampleValue) => normalizeNewlines(item) ?? null);
+  if (isRecord(value) && !isFileValue(value)) return Object.fromEntries(Object.entries(value).map(([name, item]) => [crlf(name), normalizeNewlines(item) ?? null]));
+  return value;
+}
+
+export function textPlain(value: SampleValue | undefined): SampleText {
+  return SampleText.concat(...formEntries(value).flatMap((entry) => [entry.name, '=', entry.value, CRLF]));
+}
+
+export function parseTextPlain(text: string): Record<string, string | string[]> | undefined {
+  if (!text.endsWith(CRLF)) return undefined;
+  const out = new Map<string, string[]>();
+  for (const line of text.slice(0, -CRLF.length).split(CRLF)) {
+    const eq = line.indexOf('=');
+    if (eq < 0) return undefined;
+    const name = line.slice(0, eq);
+    out.set(name, [...(out.get(name) ?? []), line.slice(eq + 1)]);
+  }
+  return Object.fromEntries([...out].map(([name, values]) => [name, values.length === 1 ? (values[0] ?? '') : values]));
+}
+
+export function formSample(shape: BodyShape, submission: FormSubmission): SampleValue | undefined {
+  const example = shape.examples[0];
+  if (typeof example === 'string' && submission.enctype === TEXT_PLAIN) return capturedValue(parseTextPlain(example) ?? example);
+  if (example !== undefined) return capturedValue(example);
+  if (!shape.schema) return undefined;
+  const submitter = submission.submitter ? Object.fromEntries(submitterEntries(submission.submitter)) : {};
+  const schema = resolveConditions(shape.schema, submitter) ?? shape.schema;
+  const value = sampleValue(schema, '', { missing: (name) => placeholder(name) });
+  return capturedValue(shape.kind === 'multipart' ? withEmptyFiles(value, schema) : value);
+}
+
+function withEmptyFiles(value: unknown, schema: JsonSchema): unknown {
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = { ...value };
+  for (const [name, property] of Object.entries(properties(schema))) {
+    if (!Object.hasOwn(out, name)) continue;
+    const list = primaryType(property) === 'array';
+    if (!isFileSchema(list ? items(property) : property)) continue;
+    setOwn(out, name, list ? [emptyFile()] : emptyFile());
+  }
+  return out;
+}
+
 export function plainValue(value: SampleValue | undefined): unknown {
   if (value instanceof SampleText) return value.toString();
   if (Array.isArray(value)) return value.map((item: SampleValue) => plainValue(item));
@@ -118,7 +182,7 @@ export function plainValue(value: SampleValue | undefined): unknown {
 export function jsonText(value: SampleValue | undefined, options: JsonTextOptions = {}): SampleText {
   const pad = ' '.repeat(Math.max(0, Math.floor(options.indent ?? 0)));
   const escape = options.escape ?? ((content: string): string => content);
-  const quoted = (text: SampleText): SampleText => SampleText.concat('"', text.mapLiterals((literal) => escape(JSON.stringify(literal).slice(1, -1))), '"');
+  const quoted = (text: SampleText): SampleText => SampleText.concat('"', text.mapLiterals((literal) => escape(JSON.stringify(literal).slice(1, -1))).encoded('json'), '"');
   const write = (node: SampleValue | undefined, depth: number): SampleText => {
     if (node instanceof SampleText) return quoted(node);
     if (node === null || node === undefined) return SampleText.literal('null');
@@ -153,7 +217,9 @@ export function formEntries(value: SampleValue | undefined): FormEntry[] {
   const out: FormEntry[] = [];
   for (const [name, item] of Object.entries(value)) {
     for (const each of Array.isArray(item) ? (item as readonly SampleValue[]) : [item]) {
-      out.push(isFileValue(each) ? { name, value: each.filename, file: true } : { name, value: textValue(each), file: false });
+      if (!isFileValue(each)) out.push({ name, value: textValue(each), file: false });
+      else if (each.contentType instanceof SampleText) out.push({ name, value: each.filename, file: true, contentType: each.contentType });
+      else out.push({ name, value: each.filename, file: true });
     }
   }
   return out;
@@ -161,10 +227,26 @@ export function formEntries(value: SampleValue | undefined): FormEntry[] {
 
 export function placeholderNames(sample: RequestSample, extra: readonly SampleText[] = []): string[] {
   const names = new Set<string>();
-  const texts = [sample.url, ...sample.headers.map((header) => header.value), ...extra];
+  const texts = [sample.url, ...sample.headers.map((header) => header.value), ...(sample.cookie ? [sample.cookie] : []), ...extra];
   if (sample.body) texts.push(jsonText(sample.body.value));
   for (const text of texts) for (const name of text.placeholders()) names.add(name);
   return [...names].sort();
+}
+
+export function renamePlaceholders(sample: RequestSample, rename: (name: string) => string): RequestSample {
+  const text = (value: SampleText): SampleText => value.map((name) => placeholder(rename(name)));
+  const entry = (item: SampleEntry): SampleEntry => ({ name: item.name, value: text(item.value) });
+  const out: RequestSample = {
+    method: sample.method,
+    url: text(sample.url),
+    base: text(sample.base),
+    path: text(sample.path),
+    pathParams: sample.pathParams.map(entry),
+    query: sample.query.map(entry),
+    headers: sample.headers.map(entry),
+  };
+  const withBody = sample.body ? { ...out, body: { ...sample.body, value: linkValue(sample.body.value, text) } } : out;
+  return sample.cookie ? { ...withBody, cookie: text(sample.cookie) } : withBody;
 }
 
 export function cookieJar(endpoint: Endpoint): SampleText | undefined {
@@ -205,9 +287,11 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
   const links = csrfLinks(endpoint);
   const link = (text: SampleText): SampleText => text.map((name) => placeholder(links.get(name) ?? name));
   const base = typeof opts.baseUrl === 'string' || opts.baseUrl === undefined ? SampleText.literal((opts.baseUrl ?? endpoint.origin).replace(/\/+$/, '')) : opts.baseUrl;
-  const { path, params } = samplePath(endpoint);
+  const { path, params } = samplePath(endpoint, opts.pathVariables === true);
   const query = sampleQuery(endpoint, submission, opts).map((entry) => ({ name: entry.name, value: link(entry.value) }));
-  const search = query.map((entry) => SampleText.concat(`${encodeURIComponent(entry.name)}=`, entry.value.mapLiterals(encodeURIComponent)));
+  const encoder = submission?.method === 'GET' ? CharsetEncoder.for(submission.form.charset) : undefined;
+  const component = (text: string): string => (encoder ? encoder.formComponent(text) : encodeURIComponent(text));
+  const search = query.map((entry) => SampleText.concat(`${component(entry.name)}=`, entry.value.mapLiterals(component).encoded('component')));
   const url = SampleText.concat(base, link(path), search.length > 0 ? SampleText.concat('?', SampleText.join(search, '&')) : '');
   const headers = sampleHeaders(endpoint, opts);
   const body = sampleBody(endpoint, submission);
@@ -223,14 +307,16 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
     query,
     headers: headers.map((header) => ({ name: header.name, value: link(header.value) })),
   };
-  return body ? { ...sample, body: { ...body, value: linkValue(body.value, link) } } : sample;
+  const cookie = opts.cookie === false ? undefined : (opts.cookie ?? cookieJar(endpoint));
+  const withCookie = cookie === undefined ? sample : { ...sample, cookie };
+  return body ? { ...withCookie, body: { ...body, value: linkValue(body.value, link) } } : withCookie;
 }
 
 function paramValue(param: ParamInfo): SampleText {
   const example = param.examples.find((e) => !isRedacted(e));
   if (example !== undefined) return SampleText.literal(example);
   if (param.examples.length) return placeholder(param.name);
-  const v = sampleValue(param.schema, param.name);
+  const v = sampleValue(param.schema, param.name, { missing: () => undefined });
   if (v === null || v === undefined) return placeholder(param.name);
   return SampleText.literal(typeof v === 'string' ? v : JSON.stringify(v));
 }
@@ -251,7 +337,7 @@ function linkValue(value: SampleValue | undefined, link: (text: SampleText) => S
   return value;
 }
 
-function samplePath(endpoint: Endpoint): { path: SampleText; params: SampleEntry[] } {
+function samplePath(endpoint: Endpoint, variables: boolean): { path: SampleText; params: SampleEntry[] } {
   const byName = new Map(endpoint.pathParams.map((param) => [param.name, param]));
   const params: SampleEntry[] = [];
   const parts: SampleTextInput[] = [];
@@ -261,7 +347,7 @@ function samplePath(endpoint: Endpoint): { path: SampleText; params: SampleEntry
     const param = byName.get(name);
     const value = param ? paramValue(param) : placeholder(name);
     params.push({ name, value });
-    parts.push(endpoint.path.slice(last, match.index), value.mapLiterals(encodeURIComponent));
+    parts.push(endpoint.path.slice(last, match.index), variables ? placeholder(name).encoded('component') : value.mapLiterals(encodeURIComponent).encoded('component'));
     last = match.index + match[0].length;
   }
   parts.push(endpoint.path.slice(last));
@@ -278,7 +364,7 @@ function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined,
     }
   } else {
     for (const param of endpoint.queryParams) {
-      if (param.required || (!opts.requiredOnly && param.examples.length > 0)) entries.set(param.name, paramValue(param));
+      if (param.required || (!opts.requiredOnly && (param.examples.length > 0 || submission !== undefined))) entries.set(param.name, paramValue(param));
     }
     if (submission) applySubmitter(entries, submission);
   }
@@ -331,13 +417,16 @@ function sampleHeaders(endpoint: Endpoint, opts: SampleOptions): SampleEntry[] {
 function sampleBody(endpoint: Endpoint, submission: FormSubmission | undefined): SampleBody | undefined {
   const shape = endpoint.requestBody;
   if (!shape || shape.kind === 'empty' || BODYLESS_METHODS.has(endpoint.method)) return undefined;
-  let value = bodySample(shape);
+  const form = submission !== undefined && FORM_BODY_KINDS.has(shape.kind) ? submission : undefined;
+  let value = form ? formSample(shape, form) : bodySample(shape);
   if (isRecord(value)) {
     const entries = new Map<string, SampleValue>(Object.entries(value));
     if (submission) applySubmitter(entries, submission);
     for (const token of endpoint.auth.csrf) if (token.location === 'body') entries.set(token.name, placeholder(token.name));
     value = Object.fromEntries(entries);
+    if (form) value = normalizeNewlines(value);
+    if (form?.enctype === TEXT_PLAIN) value = textPlain(value);
   }
   const mimeType = shape.mimeType || (shape.kind === 'json' || shape.kind === 'graphql' ? JSON_MIME : BINARY_MIME);
-  return { kind: shape.kind, mimeType, value };
+  return form ? { kind: shape.kind, mimeType, value, charset: form.form.charset } : { kind: shape.kind, mimeType, value };
 }

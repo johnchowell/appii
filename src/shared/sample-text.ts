@@ -5,16 +5,19 @@ export interface LiteralPart {
   readonly text: string;
 }
 
+export type PlaceholderEncoding = 'component' | 'json';
+
 export interface PlaceholderPart {
   readonly kind: 'placeholder';
   readonly name: string;
+  readonly encoding?: PlaceholderEncoding;
 }
 
 export type SamplePart = LiteralPart | PlaceholderPart;
 
 export interface SampleRenderer {
   literal(text: string): string;
-  placeholder(name: string): string;
+  placeholder(name: string, part: PlaceholderPart): string;
 }
 
 export type SampleTextInput = SampleText | string;
@@ -44,8 +47,9 @@ export class SampleText {
     return new SampleText([{ kind: 'literal', text }]);
   }
 
-  static placeholder(name: string): SampleText {
-    return new SampleText([{ kind: 'placeholder', name: SampleText.placeholderName(name) }]);
+  static placeholder(name: string, encoding?: PlaceholderEncoding): SampleText {
+    const part: PlaceholderPart = encoding === undefined ? { kind: 'placeholder', name: SampleText.placeholderName(name) } : { kind: 'placeholder', name: SampleText.placeholderName(name), encoding };
+    return new SampleText([part]);
   }
 
   static placeholderName(name: string): string {
@@ -76,7 +80,17 @@ export class SampleText {
   }
 
   map(rename: (name: string) => SampleTextInput): SampleText {
-    return SampleText.concat(...this.parts.map((part) => (part.kind === 'placeholder' ? SampleText.of(rename(part.name)) : SampleText.literal(part.text))));
+    return SampleText.concat(
+      ...this.parts.map((part) => {
+        if (part.kind === 'literal') return SampleText.literal(part.text);
+        const next = SampleText.of(rename(part.name));
+        return part.encoding === undefined ? next : next.encoded(part.encoding);
+      }),
+    );
+  }
+
+  encoded(encoding: PlaceholderEncoding): SampleText {
+    return new SampleText(this.parts.map((part): SamplePart => (part.kind === 'placeholder' && part.encoding === undefined ? { ...part, encoding } : part)));
   }
 
   mapLiterals(transform: (text: string) => string): SampleText {
@@ -84,7 +98,7 @@ export class SampleText {
   }
 
   render(renderer: SampleRenderer): string {
-    return this.parts.map((part) => (part.kind === 'literal' ? renderer.literal(part.text) : renderer.placeholder(part.name))).join('');
+    return this.parts.map((part) => (part.kind === 'literal' ? renderer.literal(part.text) : renderer.placeholder(part.name, part))).join('');
   }
 
   toString(): string {

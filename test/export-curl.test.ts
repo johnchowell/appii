@@ -56,11 +56,11 @@ describe('CurlExporter against the fixture site', () => {
     assert.ok(Text.isAscii(content));
     assert.ok(content.startsWith('#!/usr/bin/env bash\n'));
     assert.match(content, /\nset -euo pipefail\n/);
-    assert.match(content, new RegExp(`\\nDEFAULT_BASE_URL='${fixture.site.origin.replace(/\./g, '\\.')}'\\nBASE_URL="\\$\\{BASE_URL:-\\$DEFAULT_BASE_URL\\}"\\n`));
-    assert.match(content, /\nDEFAULT_COOKIE='theme=dark'\nCOOKIE="\$\{COOKIE-\$DEFAULT_COOKIE\}"\n/);
-    for (const name of ['CSRF', 'CSRF_TOKEN', 'PASSWORD']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
+    assert.match(content, new RegExp(`\\nappii_default_base_url='${fixture.site.origin.replace(/\./g, '\\.')}'\\nAPPII_BASE_URL="\\$\\{APPII_BASE_URL:-\\$appii_default_base_url\\}"\\n`));
+    assert.match(content, /\nappii_default_cookie='theme=dark'\nAPPII_COOKIE="\$\{APPII_COOKIE-\$appii_default_cookie\}"\n/);
+    for (const name of ['APPII_CSRF', 'APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
     assert.ok(!content.includes('X_CSRF_TOKEN'));
-    assert.match(content, /\ncreateItem\(\) \{\n {2}local CSRF="\$\{CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}curl -sS -X POST "\$\{BASE_URL\}\/api\/items" \\\n/);
+    assert.match(content, /\ncreateItem\(\) \{\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
     );
@@ -71,13 +71,13 @@ describe('CurlExporter against the fixture site', () => {
     const result = await run(script, []);
     assert.equal(result.code, 0);
     const lines = result.stdout.trimEnd().split('\n');
-    assert.match(lines[0] ?? '', /^ #\s+METHOD\s+PATH\s+FUNCTION$/);
+    assert.match(lines[0] ?? '', /^ #\s+METHOD\s+PATH\s+FUNCTION\s+ARGUMENTS$/);
     assert.equal(lines.length, model.endpoints.length + 1);
-    assert.match(result.stdout, /\n 5 {2}GET {5}\/api\/items\/\{itemId\} {2}getItem\n/);
+    assert.match(result.stdout, /\n 5 {2}GET {5}\/api\/items\/\{itemId\} {2}getItem +\[ITEM_ID\]\n/);
   });
 
   test('endpoint functions run against the site by name and by number', async () => {
-    const env = { BASE_URL: fixture.site.origin };
+    const env = { APPII_BASE_URL: fixture.site.origin };
     const item = await run(script, ['getItem'], env);
     assert.equal(item.code, 0, item.stderr);
     assert.deepEqual(JSON.parse(item.stdout), fixture.site.items[0]);
@@ -93,8 +93,11 @@ describe('CurlExporter against the fixture site', () => {
   });
 
   test('extra arguments are passed to curl and unknown endpoints fail with status 2', async () => {
-    const env = { BASE_URL: fixture.site.origin };
+    const env = { APPII_BASE_URL: fixture.site.origin };
     const head = await run(script, ['getItem', '-i'], env);
+    const second = await run(script, ['getItem', '2'], env);
+    assert.deepEqual(JSON.parse(second.stdout), fixture.site.items[1]);
+    assert.equal(fixture.site.requests.at(-1)?.path, '/api/items/2');
     assert.match(head.stdout, /^HTTP\/1\.1 200 OK\r\n/);
     const unknown = await run(script, ['nope'], env);
     assert.equal(unknown.code, 2);
@@ -103,17 +106,17 @@ describe('CurlExporter against the fixture site', () => {
     assert.match(help.stdout, /^Usage: bash endpoints\.sh/);
   });
 
-  test('a CSRF header sourced from a cookie is taken from COOKIE', async () => {
+  test('a CSRF header sourced from a cookie is taken from APPII_COOKIE', async () => {
     const before = fixture.site.items.length;
-    const result = await run(script, ['createItem'], { BASE_URL: fixture.site.origin, COOKIE: 'theme=dark; csrf=0123456789abcdef' });
+    const result = await run(script, ['createItem'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: 'theme=dark; csrf=0123456789abcdef' });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).name, 'Thing');
     assert.equal(fixture.site.items.length, before + 1);
     const request = fixture.site.requests.at(-1);
     assert.equal(request?.headers['x-csrf-token'], '0123456789abcdef');
-    const explicit = await run(script, ['createItem'], { BASE_URL: fixture.site.origin, COOKIE: 'csrf=aaaaaaaaaaaa', CSRF: 'bbbbbbbbbbbb' });
+    const explicit = await run(script, ['createItem'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: 'csrf=aaaaaaaaaaaa', APPII_CSRF: 'bbbbbbbbbbbb' });
     assert.equal(JSON.parse(explicit.stdout).error, 'csrf token mismatch');
-    const empty = await run(script, ['getMe'], { BASE_URL: fixture.site.origin, COOKIE: '' });
+    const empty = await run(script, ['getMe'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: '' });
     assert.equal(JSON.parse(empty.stdout).error, 'unauthorized');
     assert.equal(fixture.site.requests.at(-1)?.headers.cookie, undefined);
   });
@@ -140,10 +143,10 @@ describe('CurlExporter against the fixture site', () => {
     assert.match(text, /\ntestEndpoint\(\) \{\n/);
     const file = join(dir, 'echo.sh');
     await writeFile(file, text);
-    const json = await run(file, ['testEndpoint'], { BASE_URL: fixture.site.origin });
+    const json = await run(file, ['testEndpoint'], { APPII_BASE_URL: fixture.site.origin });
     assert.equal(json.code, 0, json.stderr);
     assert.deepEqual(JSON.parse(JSON.parse(json.stdout).body), { name: 'Caf\u00e9 \u{1F600}', note: "it's \"quoted\" $HOME `x`" });
-    const urlencoded = await run(file, ['putEcho'], { BASE_URL: fixture.site.origin });
+    const urlencoded = await run(file, ['putEcho'], { APPII_BASE_URL: fixture.site.origin });
     const echoed = JSON.parse(urlencoded.stdout) as { method: string; body: string };
     assert.equal(echoed.method, 'PUT');
     assert.deepEqual([...new URLSearchParams(echoed.body)], [
@@ -185,8 +188,8 @@ describe('CurlExporter keeps captured text literal', () => {
         'https://evil.example.com/api/search?q=%7B%7Baws_secret_access_key%7D%7D',
         'x-trace: {{github_token}}',
         '{"note":"{{home}}","n2":"x{{path}}y"}',
-        'comment={{user}}',
-        'c={{1}}',
+        'comment=%7B%7Buser%7D%7D',
+        'c=%7B%7B1%7D%7D',
       ]) {
         assert.ok(all.includes(`ARG[${arg}]`), arg);
       }
@@ -197,7 +200,7 @@ describe('CurlExporter keeps captured text literal', () => {
 });
 
 describe('CurlExporter request variables agree with the other renderers', () => {
-  test('a bearer endpoint reads ACCESS_TOKEN and a cookie-sourced CSRF header reads the cookie variable', () => {
+  test('a bearer endpoint reads APPII_ACCESS_TOKEN and a cookie-sourced CSRF header reads the cookie variable', () => {
     const me = ExportModel.endpoint({
       method: 'POST',
       path: '/api/me',
@@ -208,10 +211,10 @@ describe('CurlExporter request variables agree with the other renderers', () => 
       auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
     });
     const text = new CurlExporter().export(ExportModel.model([me])).content;
-    assert.ok(text.includes(': "${ACCESS_TOKEN:=}"\n'), text);
-    assert.ok(text.includes('-H "authorization: Bearer ${ACCESS_TOKEN}"'), text);
-    assert.ok(text.includes(`local CSRFTOKEN="\${CSRFTOKEN:-$(appii_cookie 'csrftoken')}"`), text);
-    assert.ok(text.includes('-H "x-csrf-token: ${CSRFTOKEN}"'), text);
+    assert.ok(text.includes(': "${APPII_ACCESS_TOKEN:=}"\n'), text);
+    assert.ok(text.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), text);
+    assert.ok(text.includes(`local APPII_CSRFTOKEN="\${APPII_CSRFTOKEN:-$(appii_cookie 'csrftoken')}"`), text);
+    assert.ok(text.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN}"'), text);
     assert.ok(!text.includes('AUTHORIZATION'));
     assert.ok(!text.includes('X_CSRF_TOKEN'));
   });

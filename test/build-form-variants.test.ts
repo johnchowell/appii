@@ -64,6 +64,53 @@ describe('several forms or submitters posting to one endpoint (FB-14)', () => {
   });
 });
 
+describe('forms with different HTML rules posting to one endpoint (EXP2-3)', () => {
+  function comments(): ApiModel {
+    const f = new CaptureFactory('https://var.example.com');
+    f.document('/long', CaptureFactory.page('Long', '<form id="long" action="/comments" method="post"><textarea name="body" required minlength="10"></textarea><button name="action" value="post">Post</button></form>'));
+    f.exchange({ url: '/comments', method: 'POST', pageUrl: f.url('/long'), requestType: 'application/x-www-form-urlencoded', requestBody: 'body=hello+world+long&action=post', status: 200, responseType: 'text/plain', responseBody: 'ok' });
+    f.document('/quick', CaptureFactory.page('Quick', '<form id="quick" action="/comments" method="post"><input name="body" maxlength="5"><button name="action" value="quick">Quick</button></form>'));
+    f.exchange({ url: '/comments', method: 'POST', pageUrl: f.url('/quick'), requestType: 'application/x-www-form-urlencoded', requestBody: 'body=hi&action=quick', status: 200, responseType: 'text/plain', responseBody: 'ok' });
+    return build(f);
+  }
+
+  test('the top level keeps only the HTML attributes that every form agrees on', () => {
+    const schema = endpoint(comments(), 'POST', '/comments').requestBody?.schema;
+    const body = Schema.properties(schema).body ?? {};
+    assert.deepEqual(Object.keys(body).filter((key) => key.startsWith('x-html-')), []);
+    const branches = Schema.branches(schema);
+    assert.deepEqual(branches.map((branch) => branch.condition), ['action=post', 'action=quick']);
+    const long = Schema.properties(branches[0]?.then).body ?? {};
+    const quick = Schema.properties(branches[1]?.then).body ?? {};
+    assert.deepEqual([long['x-html-type'], long['x-html-required'], long['x-html-minlength'], long['x-html-maxlength']], ['textarea', true, 10, undefined]);
+    assert.deepEqual([quick['x-html-type'], quick['x-html-required'], quick['x-html-minlength'], quick['x-html-maxlength']], ['text', undefined, undefined, 5]);
+    assert.deepEqual(SchemaCheck.errors(schema, { body: 'hello world!', action: 'post' }), []);
+    assert.deepEqual(SchemaCheck.errors(schema, { body: 'abc', action: 'quick' }), []);
+  });
+
+  test('a branch lists its own fields when the top level has fields of another form', () => {
+    const f = new CaptureFactory();
+    f.snapshot(
+      '/cart',
+      'Cart',
+      `<form method="post" action="/cart"><input type="number" name="quantity" required value="1"><button name="update" value="1">Update</button></form>
+       <form method="post" action="/cart"><input name="discount" required><button name="apply" value="1">Apply</button></form>`,
+    );
+    const schema = endpoint(build(f), 'POST', '/cart').requestBody?.schema;
+    assert.deepEqual(
+      Schema.branches(schema).map((branch) => branch.then['x-appii-fields']),
+      [
+        ['quantity', 'update'],
+        ['discount', 'apply'],
+      ],
+    );
+    const admin = new CaptureFactory();
+    admin.snapshot('/add', 'Add', '<form method="post" action="/add"><input name="title" required><input type="submit" name="_save" value="Save"><input type="submit" name="_more" value="More"></form>');
+    const single = endpoint(build(admin), 'POST', '/add').requestBody?.schema;
+    assert.deepEqual(Schema.branches(single).map((branch) => branch.then['x-appii-fields']), [undefined, undefined]);
+  });
+});
+
 describe('distinct actions under a plural parent (FB-15)', () => {
   test('django-allauth login, signup and logout stay three endpoints with their own forms', () => {
     const f = new CaptureFactory();

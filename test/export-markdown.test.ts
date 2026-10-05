@@ -115,7 +115,7 @@ describe('MarkdownExporter', () => {
       }),
     ).content;
     assert.ok(Text.isAscii(hostile));
-    assert.ok(hostile.startsWith('# \\<script\\>x\\</script\\> \\| Caf\\u00e9\n'));
+    assert.ok(hostile.startsWith('# \\<script\\>x\\</script\\> \\| Caf&#233;\n'));
     assert.match(hostile, /\| 1 \| GET \| ``\/a\\\|b\/`tick`\/<x>`` \| \[get\\\*Weird\\\*\\_\\\[x\\\]\(y\)\]\(#1-get-weird-x-y\) \|/);
     assert.match(hostile, /\n`````\n```\nnot a fence end\n````\n`````\n/);
     assert.match(hostile, /\| `c\\\|1` \|/);
@@ -128,7 +128,7 @@ describe('MarkdownWriter', () => {
 
   test('text escapes Markdown syntax and non-ASCII characters', () => {
     assert.equal(md.text('a*b_c [d](e) <f> #g ~h !i &j | k `l` \\m\nn'), 'a\\*b\\_c \\[d\\](e) \\<f\\> \\#g \\~h \\!i \\&j \\| k \\`l\\` \\\\m n');
-    assert.equal(md.text('Caf\u00e9'), 'Caf\\u00e9');
+    assert.equal(md.text('Caf\u00e9'), 'Caf&#233;');
   });
 
   test('code spans pick a safe fence and escape pipes only in tables', () => {

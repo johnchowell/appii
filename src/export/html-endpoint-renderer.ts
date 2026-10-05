@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse, ParamInfo } from '../model/index.js';
-import { Curl, EndpointIndex, Http, Schema, Text } from '../shared/index.js';
+import { Curl, EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { SchemaFieldList } from './schema-field-list.js';
@@ -112,7 +112,7 @@ export class HtmlEndpointRenderer {
     const curl = Curl.curlCommand(Helpers.sample(ctx.model, endpoint, ctx.options));
     out.push(
       '<h3>Example request</h3>',
-      `<div class="copy-block"><button type="button" class="copy" data-target="curl-${number}">Copy</button><pre id="curl-${number}">${esc(curl)}</pre></div>`,
+      `<div class="copy-block"><button type="button" class="copy" data-target="curl-${number}">Copy</button><pre id="curl-${number}">\n${esc(curl)}</pre></div>`,
     );
     return out.join('');
   }
@@ -137,10 +137,10 @@ export class HtmlEndpointRenderer {
       );
       out.push(`<div class="scroll"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Constraints</th><th>Label</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
     }
-    if (shape.schema) out.push(`<details class="raw"><summary>JSON Schema</summary><pre id="${esc(id)}-schema">${esc(HtmlEndpointRenderer.#json(shape.schema))}</pre></details>`);
+    if (shape.schema) out.push(`<details class="raw"><summary>JSON Schema</summary><pre id="${esc(id)}-schema">\n${esc(HtmlEndpointRenderer.#json(shape.schema))}</pre></details>`);
     shape.examples.forEach((example, i) => {
       const text = typeof example === 'string' ? example : HtmlEndpointRenderer.#json(example);
-      out.push(`<details class="raw"><summary>Example ${i + 1}</summary><pre id="${esc(id)}-example-${i + 1}">${esc(text)}</pre></details>`);
+      out.push(`<details class="raw"><summary>Example ${i + 1}</summary><pre id="${esc(id)}-example-${i + 1}">\n${esc(text)}</pre></details>`);
     });
     return out.join('');
   }
@@ -154,6 +154,6 @@ export class HtmlEndpointRenderer {
   }
 
   static #json(value: unknown): string {
-    return Text.truncate(JSON.stringify(value, null, 2) ?? 'null', HtmlEndpointRenderer.MAX_JSON_CHARS);
+    return Text.truncate(Json.printableJson(value), HtmlEndpointRenderer.MAX_JSON_CHARS);
   }
 }

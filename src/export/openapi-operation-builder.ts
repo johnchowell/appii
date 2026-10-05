@@ -61,8 +61,7 @@ export class OpenApiOperationBuilder {
     const body = this.requestBody(endpoint, ctx);
     if (body) operation.requestBody = body;
     operation.responses = this.responses(endpoint, ctx);
-    const security = ctx.security.requirements(endpoint);
-    if (security.length > 0) operation.security = security;
+    operation.security = ctx.security.requirements(endpoint);
     if (endpoint.auth.csrf.length > 0) operation['x-appii-csrf'] = Json.clone(endpoint.auth.csrf);
     if (endpoint.form) operation['x-appii-form'] = { pageUrl: endpoint.form.pageUrl, selector: endpoint.form.selector, enctype: endpoint.form.enctype };
     if (endpoint.kind === 'graphql' && endpoint.operationName !== undefined) operation['x-appii-graphql-operations'] = [endpoint.operationName];
@@ -138,10 +137,10 @@ export class OpenApiOperationBuilder {
     for (const [name, property] of Object.entries(Schema.properties(schema))) {
       const array = Schema.primaryType(property) === 'array';
       const element = array ? (Schema.items(property) ?? {}) : property;
-      if (multipart && OpenApiOperationBuilder.#isFile(element)) {
-        out[name] = { contentType: OpenApiOperationBuilder.fileContentType(element) ?? OpenApiOperationBuilder.fileContentType(property) ?? 'application/octet-stream' };
+      if (multipart && Schema.isFileSchema(element)) {
+        Json.setOwn(out, name, { contentType: OpenApiOperationBuilder.fileContentType(element) ?? OpenApiOperationBuilder.fileContentType(property) ?? 'application/octet-stream' });
       } else if (array) {
-        out[name] = multipart ? { contentType: 'text/plain' } : { style: 'form', explode: true };
+        Json.setOwn(out, name, multipart ? { contentType: 'text/plain' } : { style: 'form', explode: true });
       }
     }
     return out;
@@ -197,7 +196,7 @@ export class OpenApiOperationBuilder {
     const out: OpenApiObject = {};
     shape.examples.forEach((value, i) => {
       const key = name !== undefined && shape.examples.length === 1 ? name : `${name ?? 'example'}${i + 1}`;
-      out[key] = { value: Json.clone(value) };
+      Json.setOwn(out, key, { value: Json.clone(value) });
     });
     return out;
   }
@@ -219,7 +218,7 @@ export class OpenApiOperationBuilder {
       }
       if (name === 'content-type' || name === 'set-cookie') continue;
       if (name === 'location') out.Location = { description: 'Redirect target.', schema: { type: 'string', format: 'uri-reference' } };
-      else out[raw] = { schema: { type: 'string' } };
+      else Json.setOwn(out, raw, { schema: { type: 'string' } });
     }
     if (cookies.length > 0 || names.some((name) => name.toLowerCase() === 'set-cookie')) {
       out['Set-Cookie'] = { description: cookies.length > 0 ? `Sets the cookies ${cookies.join(', ')}.` : 'Sets cookies.', schema: { type: 'string' } };
@@ -232,9 +231,5 @@ export class OpenApiOperationBuilder {
     if (kind === 'json' || kind === 'graphql') return {};
     if (kind === 'form' || kind === 'multipart') return { type: 'object' };
     return undefined;
-  }
-
-  static #isFile(schema: JsonSchema): boolean {
-    return schema.format === 'binary' || schema['x-html-type'] === 'file' || typeof schema.contentMediaType === 'string';
   }
 }

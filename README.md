@@ -74,11 +74,21 @@ block per submission gives the fields that it requires, the fields that it does
 not send, and its stricter rules.
 
 The example curl command uses a shell variable only for a value that appii does
-not know: a redacted secret, a CSRF token, a bearer token (`${ACCESS_TOKEN}`) or
-a cookie. The `Variables:` line names these variables. A CSRF token that comes
-from a cookie uses the variable of that cookie. Captured values are always sent
-as literal text, also when they contain text such as `{{name}}` or `${NAME}`.
-The `curl` script and the Postman collection use the same variables.
+not know: a redacted secret, a CSRF token, a bearer token
+(`${APPII_ACCESS_TOKEN}`) or a cookie. The `Variables:` line names these
+variables. All of them start with `APPII_`, so a field with the name `path` or
+`home` cannot read a variable of your shell. A CSRF token that comes from a
+cookie uses the variable of that cookie. Captured values are always sent as
+literal text, also when they contain text such as `{{name}}` or `${NAME}`. The
+`curl` script uses the same variables.
+
+The example request is the request that the browser sends. For an HTML form,
+appii uses the rules of the first submit button, and gives each field a value
+that agrees with the form constraints. If appii cannot make a valid value, it
+uses a variable. A file input without a file becomes an empty file part. The
+example encodes the form in its charset and changes line breaks to CRLF. A
+`text/plain` form sends `name=value` lines. The example also sends the cookies
+of the endpoint. The Markdown and HTML exports show the same command.
 
 ### export: write a spec, client, script or report
 
@@ -101,6 +111,21 @@ list the formats:
 | `html` | `.html` | `report` | Self-contained HTML report with charts, a searchable endpoint list and details |
 | `markdown` | `.md` | `md` | Markdown documentation with endpoint tables, details and cookies |
 | `json` | `.json` | `model` | The API model (api.json) as pretty-printed JSON |
+
+The `curl` script has one function for each endpoint. Run it without arguments
+to list the endpoints. The `ARGUMENTS` column shows the path parameters of an
+endpoint. Give their values after the endpoint name or number, for example
+`bash endpoints.sh getItem 2`. If you do not give a value, the script uses the
+`APPII_<NAME>` variable or the captured example. The script encodes each value
+for its position in the URL or JSON body. All other arguments go to curl.
+`APPII_BASE_URL` sets the base URL and `APPII_COOKIE` sets the Cookie header.
+
+For a subset of the endpoints, the `json` export keeps only the cookies and
+forms of the selected endpoints, and `setBy` and `usedBy` name only selected
+endpoints. The site data (`origins`, `source` and `websockets`) does not change.
+The `har` export redacts secrets also in compressed request bodies. If appii
+cannot read a body completely, for example a truncated JSON body, the HAR keeps
+the size and the truncated mark but not the body text.
 
 ### All in one
 

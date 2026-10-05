@@ -3,10 +3,13 @@ export class TsClientRuntime {
     'HttpStatus',
     'ApiResponse',
     'ClientOptions',
+    'ValidateOptions',
     'RequestInput',
     'ValidityCode',
     'FieldError',
     'ValidationError',
+    'MissingToken',
+    'MissingTokenError',
     'StoredCookie',
     'CookieJar',
     'BaseApiClient',
@@ -14,11 +17,22 @@ export class TsClientRuntime {
     'FieldEntry',
     'FormEntry',
     'SubmitterSpec',
+    'FormCondition',
+    'FormVariant',
+    'FormIdentity',
+    'FormCharset',
     'FormSpec',
     'CsrfSpec',
     'BodySpec',
     'EndpointSpec',
+    'ScannedForm',
+    'ScannedInput',
+    'HtmlScan',
+    'HtmlTag',
     'FetchedDocument',
+    'StoredDocument',
+    'TokenState',
+    'RequestContext',
     'Exchanged',
     'Problem',
     'AppiiRuntime',
@@ -26,6 +40,7 @@ export class TsClientRuntime {
     'AppiiForms',
     'PRIMARY_ORIGIN',
     'DEFAULT_BASE_URL',
+    'REGISTRABLE_DOMAINS',
   ];
 
   static readonly CLIENT_MEMBERS: readonly string[] = ['constructor', 'cookies', 'base', 'resolve', 'clearTokens', 'send'];
@@ -46,8 +61,15 @@ export interface ClientOptions {
   cookies?: string;
   fetch?: typeof fetch;
   validate?: boolean;
+  unsafePatterns?: boolean;
   redirect?: 'follow' | 'manual';
   maxRedirects?: number;
+  encoders?: Record<string, (text: string) => ArrayLike<number>>;
+  registrableDomain?: (host: string) => string | undefined;
+}
+
+export interface ValidateOptions {
+  unsafePatterns?: boolean;
 }
 
 export interface RequestInput {
@@ -86,6 +108,29 @@ export class ValidationError extends Error {
     this.errors = errors;
     this.fields = Object.fromEntries([...errors].reverse().map((error) => [error.field, error.message]));
   }
+}
+
+export interface MissingToken {
+  token: string;
+  source: string;
+  call?: string;
+}
+
+export class MissingTokenError extends Error {
+  readonly response: ApiResponse;
+  readonly missing: MissingToken[];
+
+  constructor(response: ApiResponse, missing: MissingToken[]) {
+    const steps = missing.map(
+      (item) =>
+        'The client did not send the token ' + item.token + '. This token comes from the response of ' + item.source + '. ' +
+        (item.call === undefined ? 'Send that request first.' : 'Call ' + item.call + '() first.'),
+    );
+    super(['The server rejected the request with status ' + response.status + '.', ...steps].join(' '));
+    this.name = 'MissingTokenError';
+    this.response = response;
+    this.missing = missing;
+  }
 }`;
 
   static readonly SPEC_TYPES = String.raw`interface FieldRule {
@@ -102,6 +147,7 @@ export class ValidationError extends Error {
   options?: string[];
   constant?: string;
   pattern?: string;
+  unsafePattern?: boolean;
   minLength?: number;
   maxLength?: number;
   min?: string;
@@ -130,14 +176,41 @@ interface SubmitterSpec {
   query?: Record<string, string>;
 }
 
+interface FormCondition {
+  name: string;
+  values?: string[];
+}
+
+interface FormVariant {
+  when: FormCondition;
+  noValidate: boolean;
+  rules: FieldRule[];
+  fields: FieldEntry[];
+  defaults: Record<string, unknown>;
+}
+
+interface FormIdentity {
+  index?: number;
+  id?: string;
+  name?: string;
+}
+
+interface FormCharset {
+  name: string;
+  high?: string;
+}
+
 interface FormSpec {
   target: 'body' | 'query';
   noValidate: boolean;
+  enctype: string;
+  charset: FormCharset;
   page?: string;
-  selector?: string;
+  form?: FormIdentity;
   rules: FieldRule[];
   fields: FieldEntry[];
   submitters: SubmitterSpec[];
+  variants?: FormVariant[];
 }
 
 interface CsrfSpec {
@@ -146,6 +219,9 @@ interface CsrfSpec {
   source: string;
   sourceName?: string;
   sourceUrl?: string;
+  sourceMethod?: string;
+  sourceKey?: string;
+  sourceCall?: string;
   seed?: string;
 }
 
@@ -160,6 +236,9 @@ interface EndpointSpec {
   method: string;
   origin: string;
   path: string;
+  mode: 'navigate' | 'cors' | 'no-cors';
+  page?: string;
+  tokenKey?: string;
   headers: Record<string, string>;
   query: Record<string, unknown>;
   body?: BodySpec;
@@ -167,9 +246,51 @@ interface EndpointSpec {
   form?: FormSpec;
 }
 
+interface ScannedForm {
+  index: number;
+  id?: string;
+  name?: string;
+}
+
+interface ScannedInput {
+  name: string;
+  value?: string;
+  owner: number;
+  ownerId?: string;
+}
+
+interface HtmlScan {
+  forms: ScannedForm[];
+  inputs: ScannedInput[];
+  metas: [string, string][];
+}
+
+interface HtmlTag {
+  name: string;
+  attributes: Map<string, string>;
+  end: number;
+}
+
 interface FetchedDocument {
   headers: Headers;
   text: string;
+  scan?: HtmlScan;
+}
+
+interface StoredDocument {
+  cookie: string;
+  document: FetchedDocument;
+}
+
+interface TokenState {
+  page: boolean;
+  missing: MissingToken[];
+}
+
+interface RequestContext {
+  mode: string;
+  page?: string;
+  explicit: ReadonlySet<string>;
 }
 
 interface Exchanged {
@@ -201,6 +322,15 @@ export class CookieJar {
 
   #cookies: StoredCookie[] = [];
   #sequence = 0;
+  readonly #site: (host: string) => string | undefined;
+
+  constructor(registrableDomain: (host: string) => string | undefined = CookieJar.knownSite) {
+    this.#site = registrableDomain;
+  }
+
+  static knownSite(host: string): string | undefined {
+    return Object.hasOwn(REGISTRABLE_DOMAINS, host) ? REGISTRABLE_DOMAINS[host] : undefined;
+  }
 
   list(now: number = Date.now()): StoredCookie[] {
     this.#evict(now);
@@ -260,6 +390,7 @@ export class CookieJar {
     let maxAge: number | undefined;
     let domain = '';
     let path: string | undefined;
+    let pathAttribute = false;
     let secure = false;
     let httpOnly = false;
     let sameSite: StoredCookie['sameSite'];
@@ -276,6 +407,7 @@ export class CookieJar {
       } else if (key === 'domain') {
         if (raw !== '') domain = raw.replace(/^\./, '').toLowerCase();
       } else if (key === 'path') {
+        pathAttribute = true;
         path = raw.startsWith('/') ? raw : undefined;
       } else if (key === 'secure') {
         secure = true;
@@ -296,11 +428,16 @@ export class CookieJar {
     if (domain !== '') {
       if (CookieJar.#isIp(host)) {
         if (domain !== host && '[' + domain + ']' !== host) return false;
-      } else if (!CookieJar.domainMatches(host, domain) || (!domain.includes('.') && domain !== host)) {
+      } else if (!CookieJar.domainMatches(host, domain)) {
         return false;
       } else {
-        hostOnly = false;
-        cookieDomain = domain;
+        const site = this.#site(host);
+        const registrable = site !== undefined && (domain === site || domain.endsWith('.' + site));
+        if (!registrable && domain !== host) return false;
+        if (registrable) {
+          hostOnly = false;
+          cookieDomain = domain;
+        }
       }
     }
     const cookiePath = path ?? CookieJar.defaultPath(target.pathname);
@@ -310,7 +447,7 @@ export class CookieJar {
     const lower = name.toLowerCase();
     if (name === '' && /^__(?:secure|host)-/i.test(value)) return false;
     if (lower.startsWith('__secure-') && !secure) return false;
-    if (lower.startsWith('__host-') && !(secure && domain === '' && cookiePath === '/')) return false;
+    if (lower.startsWith('__host-') && !(secure && domain === '' && pathAttribute && cookiePath === '/')) return false;
     if (!secure && !secureOrigin) {
       for (const existing of this.#cookies) {
         if (existing.name !== name || !existing.secure) continue;
@@ -447,6 +584,23 @@ export class CookieJar {
 
   static readonly HELPERS = String.raw`class AppiiRuntime {
   static readonly REQUEST_BODY_HEADERS = ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location'];
+  static readonly NO_BODY_STATUSES = [204, 205, 304];
+  static readonly REFERRER_POLICIES = [
+    'no-referrer',
+    'no-referrer-when-downgrade',
+    'same-origin',
+    'origin',
+    'strict-origin',
+    'origin-when-cross-origin',
+    'strict-origin-when-cross-origin',
+    'unsafe-url',
+  ];
+  static readonly DEFAULT_POLICY = 'strict-origin-when-cross-origin';
+  static readonly DOWNGRADE_POLICIES = ['no-referrer-when-downgrade', 'strict-origin', 'strict-origin-when-cross-origin'];
+  static readonly MAX_REFERRER_LENGTH = 4096;
+  static readonly UTF8 = 'utf-8';
+  static readonly FIRST_HIGH_BYTE = 0x80;
+  static readonly UNMAPPED = 0xfffd;
 
   static isRecord(value: unknown): value is Record<string, unknown> {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -475,6 +629,14 @@ export class CookieJar {
     return String(value);
   }
 
+  static url(value: string, base?: string): URL | undefined {
+    try {
+      return new URL(value, base);
+    } catch {
+      return undefined;
+    }
+  }
+
   static crlf(value: string): string {
     return value.replace(/\r\n|\r|\n/g, '\r\n');
   }
@@ -489,26 +651,94 @@ export class CookieJar {
     return params.toString();
   }
 
-  static urlencoded(entries: readonly FormEntry[]): string {
-    const params = new URLSearchParams();
-    for (const entry of entries) params.append(AppiiRuntime.crlf(entry.name), typeof entry.value === 'string' ? AppiiRuntime.crlf(entry.value) : '');
-    return params.toString();
+  static bytes(source: ArrayLike<number>) {
+    return Uint8Array.from(source);
   }
 
-  static multipart(entries: readonly FormEntry[]): { body: Blob; contentType: string } {
+  static ascii(text: string) {
+    return AppiiRuntime.bytes(new TextEncoder().encode(text));
+  }
+
+  static encoder(charset: FormCharset | undefined, custom: Record<string, (text: string) => ArrayLike<number>> | undefined): (text: string) => ArrayLike<number> {
+    const name = charset?.name ?? AppiiRuntime.UTF8;
+    const lower = name.toLowerCase();
+    if (lower === AppiiRuntime.UTF8) return (text) => new TextEncoder().encode(text);
+    const own = Object.entries(custom ?? {}).find(([key]) => key.toLowerCase() === lower)?.[1];
+    if (own !== undefined) return own;
+    const high = charset?.high;
+    if (high === undefined) {
+      throw new TypeError('The form sends text in the ' + name + ' character encoding. This client has no table for ' + name + '. Give an encoder in options.encoders["' + name + '"].');
+    }
+    const table = new Map<number, number>();
+    for (let i = 0; i < high.length; i++) {
+      const code = high.charCodeAt(i);
+      if (code !== AppiiRuntime.UNMAPPED && !table.has(code)) table.set(code, AppiiRuntime.FIRST_HIGH_BYTE + i);
+    }
+    return (text) => {
+      const out: number[] = [];
+      for (const ch of text) {
+        let cp = ch.codePointAt(0) ?? 0;
+        if (cp >= 0xd800 && cp <= 0xdfff) cp = AppiiRuntime.UNMAPPED;
+        const byte = cp < AppiiRuntime.FIRST_HIGH_BYTE ? cp : table.get(cp);
+        if (byte !== undefined) out.push(byte);
+        else for (const unit of '&#' + cp + ';') out.push(unit.charCodeAt(0));
+      }
+      return out;
+    };
+  }
+
+  static percent(bytes: ArrayLike<number>): string {
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      const byte = bytes[i] ?? 0;
+      if (byte === 0x20) out += '+';
+      else if ((byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || byte === 0x2a || byte === 0x2d || byte === 0x2e || byte === 0x5f) {
+        out += String.fromCharCode(byte);
+      } else out += '%' + (byte < 0x10 ? '0' : '') + byte.toString(16).toUpperCase();
+    }
+    return out;
+  }
+
+  static urlencoded(entries: readonly FormEntry[], normalize: boolean, encode: (text: string) => ArrayLike<number>): string {
+    return entries
+      .map((entry) => {
+        const name = normalize ? AppiiRuntime.crlf(entry.name) : entry.name;
+        const raw = typeof entry.value === 'string' ? entry.value : '';
+        const value = normalize ? AppiiRuntime.crlf(raw) : raw;
+        return AppiiRuntime.percent(encode(name)) + '=' + AppiiRuntime.percent(encode(value));
+      })
+      .join('&');
+  }
+
+  static multipart(entries: readonly FormEntry[], encode: (text: string) => ArrayLike<number>): { body: Blob; contentType: string } {
     const boundary = '----WebKitFormBoundary' + AppiiRuntime.random(16);
-    const parts: (string | Blob)[] = [];
+    const parts: (ReturnType<typeof AppiiRuntime.bytes> | Blob)[] = [];
     for (const entry of entries) {
-      const disposition = '--' + boundary + '\r\nContent-Disposition: form-data; name="' + AppiiRuntime.escapeName(AppiiRuntime.crlf(entry.name)) + '"';
+      parts.push(
+        AppiiRuntime.ascii('--' + boundary + '\r\nContent-Disposition: form-data; name="'),
+        AppiiRuntime.bytes(encode(AppiiRuntime.escapeName(AppiiRuntime.crlf(entry.name)))),
+      );
       if (typeof entry.value === 'string') {
-        parts.push(disposition + '\r\n\r\n' + AppiiRuntime.crlf(entry.value) + '\r\n');
+        parts.push(AppiiRuntime.ascii('"\r\n\r\n'), AppiiRuntime.bytes(encode(AppiiRuntime.crlf(entry.value))), AppiiRuntime.ascii('\r\n'));
       } else {
         const type = entry.value.type === '' ? 'application/octet-stream' : entry.value.type;
-        parts.push(disposition + '; filename="' + AppiiRuntime.escapeName(entry.filename ?? 'blob') + '"\r\nContent-Type: ' + type + '\r\n\r\n', entry.value, '\r\n');
+        parts.push(
+          AppiiRuntime.ascii('"; filename="'),
+          AppiiRuntime.bytes(encode(AppiiRuntime.escapeName(entry.filename ?? 'blob'))),
+          AppiiRuntime.ascii('"\r\nContent-Type: ' + type + '\r\n\r\n'),
+          entry.value,
+          AppiiRuntime.ascii('\r\n'),
+        );
       }
     }
-    parts.push('--' + boundary + '--\r\n');
+    parts.push(AppiiRuntime.ascii('--' + boundary + '--\r\n'));
     return { body: new Blob(parts), contentType: 'multipart/form-data; boundary=' + boundary };
+  }
+
+  static textPlain(entries: readonly FormEntry[], encode: (text: string) => ArrayLike<number>) {
+    let text = '';
+    for (const entry of entries) text += AppiiRuntime.crlf(entry.name) + '=' + (typeof entry.value === 'string' ? AppiiRuntime.crlf(entry.value) : '') + '\r\n';
+    return AppiiRuntime.bytes(encode(text));
   }
 
   static escapeName(value: string): string {
@@ -553,15 +783,26 @@ export class CookieJar {
     return undefined;
   }
 
-  static async data(response: Response, method: string): Promise<unknown> {
-    if (method === 'HEAD' || response.status === 204 || response.status === 205 || response.status === 304) {
+  static async read(response: Response, method: string): Promise<Uint8Array | undefined> {
+    if (method === 'HEAD' || AppiiRuntime.NO_BODY_STATUSES.includes(response.status)) {
       await response.arrayBuffer().catch(() => undefined);
       return undefined;
     }
-    const type = (response.headers.get('content-type') ?? '').toLowerCase();
-    const essence = (type.split(';')[0] ?? '').trim();
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0) return undefined;
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  static decode(bytes: Uint8Array, contentType: string): string {
+    const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType)?.[1] ?? AppiiRuntime.UTF8;
+    try {
+      return new TextDecoder(charset).decode(bytes);
+    } catch {
+      return new TextDecoder(AppiiRuntime.UTF8).decode(bytes);
+    }
+  }
+
+  static data(bytes: Uint8Array | undefined, contentType: string): unknown {
+    if (bytes === undefined || bytes.byteLength === 0) return undefined;
+    const essence = (contentType.toLowerCase().split(';')[0] ?? '').trim();
     const json = essence === 'application/json' || essence === 'text/json' || essence.endsWith('+json');
     const textual =
       json ||
@@ -572,14 +813,7 @@ export class CookieJar {
       essence === 'application/javascript' ||
       essence === 'application/x-www-form-urlencoded';
     if (!textual) return bytes;
-    const charset = /;\s*charset\s*=\s*"?([^";\s]+)/.exec(type)?.[1];
-    let decoder: TextDecoder;
-    try {
-      decoder = new TextDecoder(charset ?? 'utf-8');
-    } catch {
-      decoder = new TextDecoder('utf-8');
-    }
-    const text = decoder.decode(bytes);
+    const text = AppiiRuntime.decode(bytes, contentType);
     if (!json) return text;
     try {
       return JSON.parse(text) as unknown;
@@ -587,65 +821,271 @@ export class CookieJar {
       return text;
     }
   }
+
+  static referrerPolicy(header: string | null): string | undefined {
+    if (header === null) return undefined;
+    let policy: string | undefined;
+    for (const token of header.split(',')) {
+      const value = token.trim().toLowerCase();
+      if (AppiiRuntime.REFERRER_POLICIES.includes(value)) policy = value;
+    }
+    return policy;
+  }
+
+  static referrer(page: URL, target: URL, policy: string): string | undefined {
+    const stripped = new URL(page.href);
+    stripped.hash = '';
+    stripped.username = '';
+    stripped.password = '';
+    const origin = page.origin + '/';
+    const full = stripped.href.length > AppiiRuntime.MAX_REFERRER_LENGTH ? origin : stripped.href;
+    const same = page.origin === target.origin;
+    const downgrade = CookieJar.isSecure(page) && !CookieJar.isSecure(target);
+    switch (policy) {
+      case 'no-referrer':
+        return undefined;
+      case 'origin':
+        return origin;
+      case 'unsafe-url':
+        return full;
+      case 'same-origin':
+        return same ? full : undefined;
+      case 'strict-origin':
+        return downgrade ? undefined : origin;
+      case 'origin-when-cross-origin':
+        return same ? full : origin;
+      case 'no-referrer-when-downgrade':
+        return downgrade ? undefined : full;
+      default:
+        return same ? full : downgrade ? undefined : origin;
+    }
+  }
+
+  static originHeader(page: URL, target: URL, method: string, mode: string, policy: string, tainted: boolean, cors: boolean): string | undefined {
+    const serialized = tainted ? 'null' : page.origin;
+    if (cors) return serialized;
+    if (method === 'GET' || method === 'HEAD') return undefined;
+    if (mode !== 'cors') {
+      if (policy === 'no-referrer') return 'null';
+      if (AppiiRuntime.DOWNGRADE_POLICIES.includes(policy) && page.protocol === 'https:' && target.protocol !== 'https:') return 'null';
+      if (policy === 'same-origin' && page.origin !== target.origin) return 'null';
+    }
+    return serialized;
+  }
 }
 
 class AppiiHtml {
-  static readonly TAG = /<(input|meta|form)\b((?:[^>"']|"[^"]*"|'[^']*')*)>|<\/form\s*>/gi;
-  static readonly ATTRIBUTE = /([^\s"'>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+)))?/g;
-  static readonly FORM_ID = /^form#((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\r\n\f0-9a-fA-F]|[A-Za-z0-9_-]|[^\x00-\x7f])+)$/;
+  static readonly RAW_TEXT = new Set(['script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'textarea', 'title']);
   static readonly ENTITIES: Record<string, string> = { amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'", nbsp: '\u00a0' };
+  static readonly LEGACY_ENTITIES = new Set(['amp', 'AMP', 'lt', 'LT', 'gt', 'GT', 'quot', 'QUOT', 'nbsp']);
+  static readonly C1 = [
+    0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f,
+    0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178,
+  ];
 
-  static attributes(source: string): Map<string, string> {
-    const out = new Map<string, string>();
-    for (const match of source.matchAll(AppiiHtml.ATTRIBUTE)) {
-      const name = (match[1] ?? '').toLowerCase();
-      if (name !== '' && !out.has(name)) out.set(name, AppiiHtml.decode(match[2] ?? match[3] ?? match[4] ?? ''));
+  static scan(html: string): HtmlScan {
+    const forms: ScannedForm[] = [];
+    const inputs: ScannedInput[] = [];
+    const metas: [string, string][] = [];
+    const ids = new Map<string, number>();
+    let pointer = -1;
+    let template = 0;
+    let i = 0;
+    while (i < html.length) {
+      const open = html.indexOf('<', i);
+      if (open < 0) break;
+      const next = html.charAt(open + 1);
+      if (next === '!') {
+        i = AppiiHtml.#markup(html, open);
+        continue;
+      }
+      if (next === '?') {
+        i = AppiiHtml.#past(html, '>', open + 2);
+        continue;
+      }
+      if (next === '/') {
+        const first = html.charAt(open + 2);
+        if (!AppiiHtml.#letter(first)) {
+          i = first === '>' ? open + 3 : AppiiHtml.#past(html, '>', open + 2);
+          continue;
+        }
+        const closing = AppiiHtml.#tag(html, open + 2);
+        if (closing === undefined) break;
+        if (closing.name === 'form' && template === 0) pointer = -1;
+        else if (closing.name === 'template' && template > 0) template--;
+        i = closing.end;
+        continue;
+      }
+      if (!AppiiHtml.#letter(next)) {
+        i = open + 1;
+        continue;
+      }
+      const tag = AppiiHtml.#tag(html, open + 1);
+      if (tag === undefined) break;
+      i = tag.end;
+      const attributes = tag.attributes;
+      if (template === 0 && tag.name === 'form') {
+        if (pointer < 0) {
+          pointer = forms.length;
+          const form: ScannedForm = { index: pointer };
+          const id = attributes.get('id');
+          const name = attributes.get('name');
+          if (id !== undefined) form.id = id;
+          if (name !== undefined) form.name = name;
+          forms.push(form);
+          AppiiHtml.#identify(ids, attributes, pointer);
+        }
+      } else if (template === 0) {
+        AppiiHtml.#identify(ids, attributes, -1);
+        if (tag.name === 'input') {
+          const input: ScannedInput = { name: attributes.get('name') ?? '', owner: pointer };
+          const value = attributes.get('value');
+          const owner = attributes.get('form');
+          if (value !== undefined) input.value = value;
+          if (owner !== undefined) input.ownerId = owner;
+          inputs.push(input);
+        } else if (tag.name === 'meta') {
+          const name = attributes.get('name');
+          const content = attributes.get('content');
+          if (name !== undefined && content !== undefined) metas.push([name, content]);
+        }
+      }
+      if (tag.name === 'template') template++;
+      else if (tag.name === 'plaintext') break;
+      else if (AppiiHtml.RAW_TEXT.has(tag.name)) i = AppiiHtml.#rawText(html, i, tag.name);
     }
-    return out;
+    for (const input of inputs) if (input.ownerId !== undefined) input.owner = ids.get(input.ownerId) ?? -1;
+    return { forms, inputs, metas };
+  }
+
+  static form(scan: HtmlScan, identity: FormIdentity): ScannedForm | undefined {
+    if (identity.id !== undefined) {
+      const found = scan.forms.find((form) => form.id === identity.id);
+      if (found !== undefined || identity.name === undefined) return found;
+    }
+    if (identity.name !== undefined) return scan.forms.find((form) => form.name === identity.name);
+    return identity.index === undefined ? undefined : scan.forms[identity.index];
+  }
+
+  static input(scan: HtmlScan, name: string, identity: FormIdentity | undefined): string | undefined {
+    const form = identity === undefined ? undefined : AppiiHtml.form(scan, identity);
+    if (form !== undefined) {
+      const owned = scan.inputs.find((input) => input.owner === form.index && input.name === name);
+      return owned === undefined ? undefined : (owned.value ?? '');
+    }
+    return scan.inputs.find((input) => input.name === name && input.value !== undefined)?.value;
+  }
+
+  static meta(scan: HtmlScan, name: string): string | undefined {
+    const key = AppiiHtml.#lower(name);
+    return scan.metas.find(([candidate]) => AppiiHtml.#lower(candidate) === key)?.[1];
   }
 
   static decode(value: string): string {
-    return value.replace(/&(?:#([xX][0-9a-fA-F]+|[0-9]+);?|([A-Za-z][A-Za-z0-9]*);)/g, (whole: string, numeric: string | undefined, named: string | undefined) => {
-      if (numeric !== undefined) {
-        const code = numeric.charAt(0) === 'x' || numeric.charAt(0) === 'X' ? parseInt(numeric.slice(1), 16) : parseInt(numeric, 10);
-        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
-      }
-      return (named !== undefined ? AppiiHtml.ENTITIES[named] : undefined) ?? whole;
-    });
-  }
-
-  static formId(selector: string | undefined): string | undefined {
-    const match = selector === undefined ? null : AppiiHtml.FORM_ID.exec(selector);
-    if (!match) return undefined;
-    return (match[1] ?? '').replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([^\r\n\f])/g, (_whole: string, hex: string | undefined, ch: string | undefined) =>
-      hex !== undefined ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : (ch ?? ''),
+    if (!value.includes('&')) return value;
+    return value.replace(
+      /&(?:#[xX]([0-9a-fA-F]+);?|#([0-9]+);?|([A-Za-z][A-Za-z0-9]*)(;?))/g,
+      (whole: string, hex: string | undefined, decimal: string | undefined, named: string | undefined, semicolon: string | undefined, offset: number, source: string) => {
+        if (hex !== undefined) return AppiiHtml.#numeric(parseInt(hex, 16));
+        if (decimal !== undefined) return AppiiHtml.#numeric(parseInt(decimal, 10));
+        if (named === undefined || !Object.hasOwn(AppiiHtml.ENTITIES, named)) return whole;
+        const replacement = AppiiHtml.ENTITIES[named] ?? whole;
+        if (semicolon === ';') return replacement;
+        return AppiiHtml.LEGACY_ENTITIES.has(named) && source.charAt(offset + whole.length) !== '=' ? replacement : whole;
+      },
     );
   }
 
-  static find(html: string, element: 'input' | 'meta', key: string, valueAttribute: string, selector?: string): string | undefined {
-    const formId = AppiiHtml.formId(selector);
-    let inScope = formId === undefined;
-    let fallback: string | undefined;
-    for (const match of html.matchAll(AppiiHtml.TAG)) {
-      const tag = (match[1] ?? '').toLowerCase();
-      if (tag === '') {
-        if (formId !== undefined) inScope = false;
-        continue;
-      }
-      const attributes = AppiiHtml.attributes(match[2] ?? '');
-      if (tag === 'form') {
-        if (formId !== undefined) inScope = attributes.get('id') === formId;
-        continue;
-      }
-      if (tag !== element) continue;
-      const name = attributes.get('name') ?? '';
-      if (element === 'meta' ? name.toLowerCase() !== key.toLowerCase() : name !== key) continue;
-      const value = attributes.get(valueAttribute);
-      if (value === undefined) continue;
-      if (inScope || (formId !== undefined && attributes.get('form') === formId)) return value;
-      if (fallback === undefined) fallback = value;
+  static #numeric(code: number): string {
+    if (!Number.isFinite(code) || code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '\ufffd';
+    if (code >= 0x80 && code <= 0x9f) return String.fromCodePoint(AppiiHtml.C1[code - 0x80] ?? code);
+    return String.fromCodePoint(code);
+  }
+
+  static #identify(ids: Map<string, number>, attributes: Map<string, string>, index: number): void {
+    const id = attributes.get('id');
+    if (id !== undefined && id !== '' && !ids.has(id)) ids.set(id, index);
+  }
+
+  static #markup(html: string, open: number): number {
+    if (!html.startsWith('<!--', open)) return AppiiHtml.#past(html, '>', open + 2);
+    const start = open + 4;
+    if (html.charAt(start) === '>') return start + 1;
+    if (html.startsWith('->', start)) return start + 2;
+    let at = start;
+    for (;;) {
+      const dashes = html.indexOf('--', at);
+      if (dashes < 0) return html.length;
+      if (html.charAt(dashes + 2) === '>') return dashes + 3;
+      if (html.startsWith('!>', dashes + 2)) return dashes + 4;
+      at = dashes + 1;
     }
-    return fallback;
+  }
+
+  static #rawText(html: string, from: number, name: string): number {
+    let at = from;
+    for (;;) {
+      const close = html.indexOf('</', at);
+      if (close < 0) return html.length;
+      const after = html.charAt(close + 2 + name.length);
+      if (AppiiHtml.#lower(html.slice(close + 2, close + 2 + name.length)) === name && (AppiiHtml.#space(after) || after === '/' || after === '>')) {
+        const tag = AppiiHtml.#tag(html, close + 2);
+        return tag === undefined ? html.length : tag.end;
+      }
+      at = close + 2;
+    }
+  }
+
+  static #tag(html: string, start: number): HtmlTag | undefined {
+    const length = html.length;
+    let i = start;
+    while (i < length && !AppiiHtml.#space(html.charAt(i)) && html.charAt(i) !== '/' && html.charAt(i) !== '>') i++;
+    const name = AppiiHtml.#lower(html.slice(start, i));
+    const attributes = new Map<string, string>();
+    for (;;) {
+      while (i < length && (AppiiHtml.#space(html.charAt(i)) || html.charAt(i) === '/')) i++;
+      if (i >= length) return undefined;
+      if (html.charAt(i) === '>') return { name, attributes, end: i + 1 };
+      const keyStart = i;
+      i++;
+      while (i < length && !AppiiHtml.#space(html.charAt(i)) && html.charAt(i) !== '/' && html.charAt(i) !== '>' && html.charAt(i) !== '=') i++;
+      const key = AppiiHtml.#lower(html.slice(keyStart, i));
+      while (i < length && AppiiHtml.#space(html.charAt(i))) i++;
+      let value = '';
+      if (html.charAt(i) === '=') {
+        i++;
+        while (i < length && AppiiHtml.#space(html.charAt(i))) i++;
+        const quote = html.charAt(i);
+        if (quote === '"' || quote === "'") {
+          const close = html.indexOf(quote, i + 1);
+          if (close < 0) return undefined;
+          value = html.slice(i + 1, close);
+          i = close + 1;
+        } else {
+          const valueStart = i;
+          while (i < length && !AppiiHtml.#space(html.charAt(i)) && html.charAt(i) !== '>') i++;
+          value = html.slice(valueStart, i);
+        }
+      }
+      if (!attributes.has(key)) attributes.set(key, AppiiHtml.decode(value));
+    }
+  }
+
+  static #past(html: string, ch: string, from: number): number {
+    const at = html.indexOf(ch, from);
+    return at < 0 ? html.length : at + 1;
+  }
+
+  static #letter(ch: string): boolean {
+    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+  }
+
+  static #space(ch: string): boolean {
+    return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
+  }
+
+  static #lower(text: string): string {
+    return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
   }
 }`;
 
@@ -684,14 +1124,33 @@ class AppiiHtml {
     'datetime-local': [-62135596800000, 8640000000000000],
   };
 
-  static validate(spec: EndpointSpec, input: unknown): FieldError[] {
+  static validate(spec: EndpointSpec, input: unknown, unsafePatterns: boolean): FieldError[] {
     const form = spec.form;
-    if (!form || form.noValidate) return [];
+    if (form === undefined || form.noValidate) return [];
     const user = AppiiRuntime.isRecord(input) ? input : {};
-    const defaults = form.target === 'query' ? spec.query : (spec.body?.defaults ?? {});
+    const variant = form.target === 'body' ? AppiiForms.variant(spec, user) : undefined;
+    const defaults = variant !== undefined ? variant.defaults : form.target === 'query' ? spec.query : (spec.body?.defaults ?? {});
     const values: Record<string, unknown> = { ...AppiiRuntime.clone(defaults), ...user };
+    const dirty = new Set(Object.keys(user));
+    if (variant !== undefined) return variant.noValidate ? [] : AppiiForms.check(variant.rules, values, dirty, unsafePatterns);
     if (AppiiForms.submitter(form, values)?.noValidate === true) return [];
-    return AppiiForms.check(form.rules, values, new Set(Object.keys(user)));
+    return AppiiForms.check(form.rules, values, dirty, unsafePatterns);
+  }
+
+  static variant(spec: EndpointSpec, user: Record<string, unknown>): FormVariant | undefined {
+    const variants = spec.form?.variants ?? [];
+    if (variants.length === 0) return undefined;
+    return AppiiForms.#pick(variants, user) ?? AppiiForms.#pick(variants, spec.body?.defaults ?? {});
+  }
+
+  static #pick(variants: readonly FormVariant[], values: Record<string, unknown>): FormVariant | undefined {
+    return variants.find((variant) => {
+      const name = variant.when.name;
+      const value = Object.hasOwn(values, name) ? values[name] : undefined;
+      if (value === undefined || value === null) return false;
+      const allowed = variant.when.values;
+      return allowed === undefined || allowed.includes(AppiiRuntime.text(value));
+    });
   }
 
   static submitter(form: FormSpec, values: Record<string, unknown>): SubmitterSpec | undefined {
@@ -701,11 +1160,12 @@ class AppiiHtml {
     return form.submitters[0];
   }
 
-  static check(rules: readonly FieldRule[], values: Record<string, unknown>, dirty: ReadonlySet<string>): FieldError[] {
+  static check(rules: readonly FieldRule[], values: Record<string, unknown>, dirty: ReadonlySet<string>, unsafePatterns: boolean): FieldError[] {
     const errors: FieldError[] = [];
     for (const rule of rules) {
       const raw = Object.hasOwn(values, rule.name) ? values[rule.name] : undefined;
-      const problem = rule.list ? AppiiForms.#list(rule, raw, dirty.has(rule.name)) : AppiiForms.#scalar(rule, raw, dirty.has(rule.name));
+      const changed = dirty.has(rule.name);
+      const problem = rule.list ? AppiiForms.#list(rule, raw, changed, unsafePatterns) : AppiiForms.#scalar(rule, raw, changed, unsafePatterns);
       if (!problem) continue;
       const error: FieldError = { field: rule.name, code: problem[0], message: problem[1] };
       if (rule.label !== undefined) error.label = rule.label;
@@ -797,7 +1257,7 @@ class AppiiHtml {
     }
   }
 
-  static #list(rule: FieldRule, raw: unknown, dirty: boolean): Problem | undefined {
+  static #list(rule: FieldRule, raw: unknown, dirty: boolean, unsafePatterns: boolean): Problem | undefined {
     const items: unknown[] = raw === undefined || raw === null ? [] : Array.isArray(raw) ? raw : [raw];
     const present = items.filter((item) => !AppiiForms.#empty(item));
     if (present.length === 0 && rule.required === true) return AppiiForms.#missing(rule.type);
@@ -817,13 +1277,13 @@ class AppiiHtml {
     }
     const single: FieldRule = { ...rule, list: false, required: rule.itemRequired === true };
     for (const item of items) {
-      const problem = AppiiForms.#scalar(single, item, dirty);
+      const problem = AppiiForms.#scalar(single, item, dirty, unsafePatterns);
       if (problem) return problem;
     }
     return undefined;
   }
 
-  static #scalar(rule: FieldRule, raw: unknown, dirty: boolean): Problem | undefined {
+  static #scalar(rule: FieldRule, raw: unknown, dirty: boolean, unsafePatterns: boolean): Problem | undefined {
     const type = rule.type;
     if (AppiiForms.CHOICE_TYPES.has(type)) {
       const value = raw === true && rule.constant !== undefined ? rule.constant : raw;
@@ -857,7 +1317,7 @@ class AppiiHtml {
     if (type === 'url' && !AppiiForms.#isUrl(value)) return ['typeMismatch', 'Please enter a URL.'];
     if (type === 'color' && !/^#[0-9a-fA-F]{6}$/.test(value)) return ['typeMismatch', 'Please enter a color such as #000000.'];
     if (rule.options !== undefined && !rule.options.includes(value)) return ['typeMismatch', "'" + value + "' is not one of the options: " + rule.options.join(', ') + '.'];
-    if (rule.pattern !== undefined && AppiiForms.PATTERN_TYPES.has(type)) {
+    if (rule.pattern !== undefined && AppiiForms.PATTERN_TYPES.has(type) && (rule.unsafePattern !== true || unsafePatterns)) {
       const regex = AppiiForms.pattern(rule.pattern);
       const values = type === 'email' && rule.multiple === true ? value.split(',') : [value];
       if (regex && values.some((each) => !regex.test(each))) return ['patternMismatch', 'Please match the requested format.'];
@@ -1119,22 +1579,26 @@ class AppiiHtml {
 
   static readonly CLIENT = String.raw`export class BaseApiClient {
   static readonly REDIRECT_STATUSES: readonly number[] = [301, 302, 303, 307, 308];
-  static readonly PAGE_SOURCES: readonly string[] = ['hidden-field', 'meta', 'response'];
-  static readonly RETRY_STATUSES: readonly number[] = [403, 419];
+  static readonly RETRY_STATUSES: readonly number[] = [400, 403, 419, 422];
+  static readonly HTTP_SCHEMES: readonly string[] = ['http:', 'https:'];
+  static readonly DOCUMENT_ACCEPT = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
+  static readonly CLIENT_ERROR = 400;
 
-  readonly cookies: CookieJar = new CookieJar();
+  readonly cookies: CookieJar;
   readonly #options: ClientOptions;
   readonly #primary: string;
   readonly #defaultBase: string;
   readonly #fetch: (input: string, init: RequestInit) => Promise<Response>;
-  readonly #documents = new Map<string, Promise<FetchedDocument>>();
+  readonly #documents = new Map<string, Promise<StoredDocument>>();
+  readonly #responses = new Map<string, FetchedDocument>();
 
   constructor(options: ClientOptions, primaryOrigin: string, defaultBaseUrl: string) {
     this.#options = { ...options };
     this.#primary = primaryOrigin;
     this.#defaultBase = defaultBaseUrl;
+    this.cookies = new CookieJar(options.registrableDomain ?? CookieJar.knownSite);
     const impl = options.fetch ?? (typeof fetch === 'function' ? fetch : undefined);
-    if (impl === undefined) throw new TypeError('No fetch implementation is available; pass options.fetch');
+    if (impl === undefined) throw new TypeError('No fetch implementation is available. Pass options.fetch.');
     this.#fetch = (input, init) => impl(input, init);
     if (options.cookies !== undefined) this.cookies.load(options.cookies, this.base(primaryOrigin) + '/');
   }
@@ -1145,27 +1609,25 @@ class AppiiHtml {
   }
 
   resolve(url: string): string {
-    let origin: string;
-    try {
-      origin = new URL(url).origin;
-    } catch {
-      return url;
-    }
-    return url.startsWith(origin) ? this.base(origin) + url.slice(origin.length) : url;
+    const parsed = AppiiRuntime.url(url);
+    if (parsed === undefined) return url;
+    return url.startsWith(parsed.origin) ? this.base(parsed.origin) + url.slice(parsed.origin.length) : url;
   }
 
   clearTokens(): void {
     this.#documents.clear();
+    this.#responses.clear();
   }
 
   protected async send(spec: EndpointSpec, input: RequestInput = {}): Promise<ApiResponse> {
     const params: Record<string, unknown> = { ...input.params };
     const userQuery: Record<string, unknown> = { ...input.query };
-    const query: Record<string, unknown> = { ...AppiiRuntime.clone(spec.query), ...userQuery };
-    const body = AppiiRuntime.merge(spec.body?.defaults, input.body);
     const form = spec.form;
-    if (form && this.#options.validate !== false) {
-      const errors = AppiiForms.validate(spec, form.target === 'query' ? input.query : input.body);
+    const variant = form !== undefined && form.target === 'body' ? AppiiForms.variant(spec, AppiiRuntime.isRecord(input.body) ? input.body : {}) : undefined;
+    const query: Record<string, unknown> = { ...AppiiRuntime.clone(spec.query), ...userQuery };
+    const body = AppiiRuntime.merge(variant !== undefined ? variant.defaults : spec.body?.defaults, input.body);
+    if (form !== undefined && this.#options.validate !== false) {
+      const errors = AppiiForms.validate(spec, form.target === 'query' ? input.query : input.body, this.#options.unsafePatterns === true);
       if (errors.length > 0) throw new ValidationError(errors);
     }
     const path = spec.path.replace(/\{([^}]+)\}/g, (_whole: string, name: string) => {
@@ -1173,98 +1635,127 @@ class AppiiHtml {
       if (value === undefined || value === null || value === '') throw new TypeError('Missing path parameter "' + name + '" for ' + spec.name);
       return encodeURIComponent(AppiiRuntime.text(value));
     });
-    if (form && form.target === 'body' && AppiiRuntime.isRecord(body)) {
+    if (form !== undefined && form.target === 'body' && AppiiRuntime.isRecord(body)) {
       const submitter = AppiiForms.submitter(form, body);
       for (const [name, value] of Object.entries(submitter?.query ?? {})) if (!Object.hasOwn(userQuery, name)) query[name] = value;
     }
+    const fields = variant?.fields ?? form?.fields ?? [];
     const address = this.base(spec.origin) + path;
+    const page = spec.page ?? form?.page;
     for (let attempt = 0; ; attempt++) {
-      const headers = this.#headers(spec, input);
+      const explicit = new Set<string>();
+      const headers = this.#headers(spec, input, explicit);
+      const state: TokenState = { page: false, missing: [] };
       const currentQuery: Record<string, unknown> = { ...query };
       const currentBody: unknown = AppiiRuntime.isRecord(body) ? { ...body } : body;
-      for (const token of spec.csrf) await this.#fill(token, address, headers, currentQuery, currentBody, form);
-      const search = form && form.target === 'query' ? AppiiRuntime.urlencoded(AppiiForms.entries(form.fields, currentQuery, false)) : AppiiRuntime.query(currentQuery);
+      for (const token of spec.csrf) await this.#fill(token, address, headers, currentQuery, currentBody, form, state);
+      const search =
+        form !== undefined && form.target === 'query'
+          ? AppiiRuntime.urlencoded(AppiiForms.entries(form.fields, currentQuery, false), true, this.#encoder(form))
+          : AppiiRuntime.query(currentQuery);
       const url = address + (search === '' ? '' : '?' + search);
-      const encoded = this.#encode(spec, currentBody, headers);
-      if (form?.page !== undefined) {
-        const page = this.resolve(form.page);
-        if (headers['referer'] === undefined) headers['referer'] = page;
-        if (spec.method !== 'GET' && spec.method !== 'HEAD' && headers['origin'] === undefined) {
-          try {
-            headers['origin'] = new URL(page).origin;
-          } catch {
-            delete headers['origin'];
-          }
-        }
-      }
-      const exchanged = await this.#exchange(spec.method, url, headers, encoded);
+      const encoded = this.#encode(spec, currentBody, headers, fields);
+      const context: RequestContext = { mode: spec.mode, explicit };
+      if (page !== undefined) context.page = this.resolve(page);
+      const exchanged = await this.#exchange(spec.method, url, headers, encoded, context);
       const status = exchanged.response.status;
-      if (attempt === 0 && BaseApiClient.RETRY_STATUSES.includes(status) && spec.csrf.some((token) => BaseApiClient.PAGE_SOURCES.includes(token.source))) {
+      if (attempt === 0 && state.page && BaseApiClient.RETRY_STATUSES.includes(status)) {
         await exchanged.response.arrayBuffer().catch(() => undefined);
-        this.clearTokens();
+        this.#documents.clear();
         continue;
       }
-      const data = await AppiiRuntime.data(exchanged.response, spec.method);
-      return { status, ok: exchanged.response.ok, url: exchanged.url, redirected: exchanged.redirected, headers: exchanged.response.headers, data };
+      const bytes = await AppiiRuntime.read(exchanged.response, spec.method);
+      const type = exchanged.response.headers.get('content-type') ?? '';
+      if (spec.tokenKey !== undefined && exchanged.response.ok) {
+        this.#responses.set(spec.tokenKey, { headers: exchanged.response.headers, text: bytes === undefined ? '' : AppiiRuntime.decode(bytes, type) });
+      }
+      const response: ApiResponse = {
+        status,
+        ok: exchanged.response.ok,
+        url: exchanged.url,
+        redirected: exchanged.redirected,
+        headers: exchanged.response.headers,
+        data: AppiiRuntime.data(bytes, type),
+      };
+      if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
+      return response;
     }
   }
 
-  #headers(spec: EndpointSpec, input: RequestInput): Record<string, string> {
+  #headers(spec: EndpointSpec, input: RequestInput, explicit: Set<string>): Record<string, string> {
     const out: Record<string, string> = {};
-    const sources: (Record<string, string | undefined> | undefined)[] = [spec.headers, this.#options.headers, input.headers];
-    for (const source of sources) {
+    const sources: [Record<string, string | undefined> | undefined, boolean][] = [
+      [spec.headers, false],
+      [this.#options.headers, true],
+      [input.headers, true],
+    ];
+    for (const [source, own] of sources) {
       for (const [name, value] of Object.entries(source ?? {})) {
-        if (value === undefined) delete out[name.toLowerCase()];
-        else out[name.toLowerCase()] = value;
+        const lower = name.toLowerCase();
+        if (own) explicit.add(lower);
+        if (value === undefined) delete out[lower];
+        else out[lower] = value;
       }
     }
     return out;
   }
 
-  #encode(spec: EndpointSpec, body: unknown, headers: Record<string, string>): BodyInit | undefined {
+  #encoder(form: FormSpec | undefined): (text: string) => ArrayLike<number> {
+    return AppiiRuntime.encoder(form?.charset, this.#options.encoders);
+  }
+
+  #encode(spec: EndpointSpec, body: unknown, headers: Record<string, string>, fields: readonly FieldEntry[]): NonNullable<RequestInit['body']> | undefined {
     if (body === undefined || spec.method === 'GET' || spec.method === 'HEAD') return undefined;
     const kind = spec.body?.kind ?? (AppiiRuntime.isRecord(body) || Array.isArray(body) ? 'json' : 'text');
     const mimeType = spec.body?.mimeType ?? '';
+    const form = spec.form;
     const setType = (type: string): void => {
       if (headers['content-type'] === undefined && type !== '') headers['content-type'] = type;
     };
-    const fields = spec.form?.fields ?? [];
     if (kind === 'form' && AppiiRuntime.isRecord(body)) {
       setType('application/x-www-form-urlencoded');
-      return AppiiRuntime.urlencoded(AppiiForms.entries(fields, body, false));
+      return AppiiRuntime.urlencoded(AppiiForms.entries(fields, body, false), form !== undefined, this.#encoder(form));
     }
     if (kind === 'multipart' && AppiiRuntime.isRecord(body)) {
-      const encoded = AppiiRuntime.multipart(AppiiForms.entries(fields, body, true));
+      const encoded = AppiiRuntime.multipart(AppiiForms.entries(fields, body, true), this.#encoder(form));
       headers['content-type'] = encoded.contentType;
       return encoded.body;
     }
+    if (kind === 'text' && form !== undefined && form.enctype === 'text/plain' && AppiiRuntime.isRecord(body)) {
+      setType('text/plain');
+      return AppiiRuntime.textPlain(AppiiForms.entries(fields, body, false), this.#encoder(form));
+    }
     if (kind === 'json' || kind === 'graphql') {
-      if (typeof body === 'string') {
-        setType(mimeType || 'application/json');
-        return body;
-      }
       setType(mimeType || 'application/json');
-      return JSON.stringify(body);
+      return typeof body === 'string' ? body : JSON.stringify(body);
     }
     setType(mimeType);
     if (typeof body === 'string' || body instanceof Blob || body instanceof ArrayBuffer || body instanceof Uint8Array || body instanceof URLSearchParams || body instanceof FormData) {
-      return body as BodyInit;
+      return body as NonNullable<RequestInit['body']>;
     }
     return AppiiRuntime.text(body);
   }
 
-  async #fill(token: CsrfSpec, url: string, headers: Record<string, string>, query: Record<string, unknown>, body: unknown, form: FormSpec | undefined): Promise<void> {
+  async #fill(
+    token: CsrfSpec,
+    url: string,
+    headers: Record<string, string>,
+    query: Record<string, unknown>,
+    body: unknown,
+    form: FormSpec | undefined,
+    state: TokenState,
+  ): Promise<void> {
     if (token.location === 'header' && !AppiiRuntime.blank(headers[token.name.toLowerCase()])) return;
     if (token.location === 'query' && !AppiiRuntime.blank(query[token.name])) return;
     if (token.location === 'body' && (!AppiiRuntime.isRecord(body) || !AppiiRuntime.blank(body[token.name]))) return;
-    const value = await this.#token(token, url, form);
+    const value = await this.#token(token, url, form, state);
     if (value === undefined) return;
     if (token.location === 'header') headers[token.name.toLowerCase()] = value;
     else if (token.location === 'query') query[token.name] = value;
     else if (AppiiRuntime.isRecord(body)) body[token.name] = value;
   }
 
-  async #token(token: CsrfSpec, url: string, form: FormSpec | undefined): Promise<string | undefined> {
+  async #token(token: CsrfSpec, url: string, form: FormSpec | undefined, state: TokenState): Promise<string | undefined> {
     const name = token.sourceName ?? token.name;
     if (token.source === 'cookie') {
       let value = this.cookies.get(name, url);
@@ -1274,45 +1765,88 @@ class AppiiHtml {
       }
       return value === undefined ? undefined : AppiiRuntime.decodeCookie(value);
     }
+    if (token.sourceKey !== undefined) {
+      const stored = this.#responses.get(token.sourceKey);
+      if (stored !== undefined) return BaseApiClient.#extract(stored, token, name, undefined);
+      const missing: MissingToken = { token: token.name, source: token.sourceKey };
+      if (token.sourceCall !== undefined) missing.call = token.sourceCall;
+      state.missing.push(missing);
+      return undefined;
+    }
     const source = token.sourceUrl ?? form?.page;
     if (source === undefined) return undefined;
     const document = await this.#document(this.resolve(source));
-    if (token.source === 'hidden-field') {
-      return AppiiHtml.find(document.text, 'input', name, 'value', source === form?.page ? form.selector : undefined);
-    }
-    if (token.source === 'meta') return AppiiHtml.find(document.text, 'meta', name, 'content');
-    if (token.source === 'response') {
-      const header = document.headers.get(name);
-      if (header !== null && header !== '') return header;
-      try {
-        return AppiiRuntime.find(JSON.parse(document.text) as unknown, name);
-      } catch {
-        return AppiiHtml.find(document.text, 'input', name, 'value') ?? AppiiHtml.find(document.text, 'meta', name, 'content');
-      }
-    }
-    return undefined;
+    const value = BaseApiClient.#extract(document, token, name, form !== undefined && source === form.page ? form.form : undefined);
+    if (value !== undefined) state.page = true;
+    return value;
   }
 
-  #document(url: string): Promise<FetchedDocument> {
+  static #extract(document: FetchedDocument, token: CsrfSpec, name: string, identity: FormIdentity | undefined): string | undefined {
+    if (token.source === 'hidden-field') return AppiiHtml.input(BaseApiClient.#scan(document), name, identity);
+    if (token.source === 'meta') return AppiiHtml.meta(BaseApiClient.#scan(document), name);
+    if (token.source !== 'response') return undefined;
+    const header = document.headers.get(name);
+    if (header !== null && header !== '') return header;
+    try {
+      return AppiiRuntime.find(JSON.parse(document.text) as unknown, name);
+    } catch {
+      const scan = BaseApiClient.#scan(document);
+      return AppiiHtml.input(scan, name, undefined) ?? AppiiHtml.meta(scan, name);
+    }
+  }
+
+  static #scan(document: FetchedDocument): HtmlScan {
+    if (document.scan === undefined) document.scan = AppiiHtml.scan(document.text);
+    return document.scan;
+  }
+
+  async #document(url: string): Promise<FetchedDocument> {
     const cached = this.#documents.get(url);
-    if (cached) return cached;
-    const loaded = this.#exchange('GET', url, { accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8' }, undefined).then(async (exchanged) => ({
-      headers: exchanged.response.headers,
-      text: await exchanged.response.text(),
-    }));
-    this.#documents.set(url, loaded);
-    loaded.catch(() => this.#documents.delete(url));
-    return loaded;
+    if (cached !== undefined) {
+      const entry = await cached.catch(() => undefined);
+      if (entry !== undefined && entry.cookie === this.cookies.header(url)) return entry.document;
+    }
+    const context: RequestContext = { mode: 'navigate', explicit: new Set<string>() };
+    const loading = this.#exchange('GET', url, { accept: BaseApiClient.DOCUMENT_ACCEPT }, undefined, context).then(async (exchanged): Promise<StoredDocument> => {
+      const bytes = await AppiiRuntime.read(exchanged.response, 'GET');
+      const type = exchanged.response.headers.get('content-type') ?? '';
+      const document: FetchedDocument = { headers: exchanged.response.headers, text: bytes === undefined ? '' : AppiiRuntime.decode(bytes, type) };
+      return { cookie: this.cookies.header(url), document };
+    });
+    this.#documents.set(url, loading);
+    loading.catch(() => {
+      if (this.#documents.get(url) === loading) this.#documents.delete(url);
+    });
+    return (await loading).document;
   }
 
-  async #exchange(method: string, url: string, headers: Record<string, string>, body: BodyInit | undefined): Promise<Exchanged> {
+  async #exchange(
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    body: NonNullable<RequestInit['body']> | undefined,
+    context: RequestContext,
+  ): Promise<Exchanged> {
     let current = url;
     let currentMethod = method;
     let currentBody = body;
     const currentHeaders: Record<string, string> = { ...headers };
+    const page = context.page === undefined ? undefined : AppiiRuntime.url(context.page);
+    let policy = AppiiRuntime.DEFAULT_POLICY;
+    let tainted = false;
+    let cors = false;
     let redirected = false;
     const limit = this.#options.maxRedirects ?? 20;
     for (let hop = 0; ; hop++) {
+      const target = AppiiRuntime.url(current);
+      if (target === undefined) throw new TypeError('The request URL ' + current + ' is not a valid URL.');
+      if (page !== undefined) {
+        cors = cors || (context.mode === 'cors' && target.origin !== page.origin);
+        if (!context.explicit.has('referer')) BaseApiClient.#set(currentHeaders, 'referer', AppiiRuntime.referrer(page, target, policy));
+        if (!context.explicit.has('origin')) {
+          BaseApiClient.#set(currentHeaders, 'origin', AppiiRuntime.originHeader(page, target, currentMethod, context.mode, policy, tainted, cors));
+        }
+      }
       const sent = new Headers();
       for (const [name, value] of Object.entries(currentHeaders)) sent.set(name, value);
       const jar = this.cookies.header(current);
@@ -1328,20 +1862,32 @@ class AppiiHtml {
       if (this.#options.redirect === 'manual' || location === null || !BaseApiClient.REDIRECT_STATUSES.includes(response.status)) {
         return { response, url: current, redirected };
       }
-      if (hop >= limit) throw new TypeError('Too many redirects for ' + url);
+      if (hop >= limit) throw new TypeError('The server sent more than ' + limit + ' redirects for ' + url + '.');
       await response.arrayBuffer().catch(() => undefined);
-      const next = new URL(location, current);
+      const next = AppiiRuntime.url(location, current);
+      if (next === undefined || !BaseApiClient.HTTP_SCHEMES.includes(next.protocol)) {
+        throw new TypeError('The server redirected ' + current + ' to a location that is not an http or https URL. A browser stops this redirect with a network error.');
+      }
+      if (context.mode === 'cors' && (next.username !== '' || next.password !== '') && (cors || page === undefined || next.origin !== page.origin)) {
+        throw new TypeError('The server redirected ' + current + ' to a URL that contains credentials. A browser stops this redirect with a network error.');
+      }
+      policy = AppiiRuntime.referrerPolicy(response.headers.get('referrer-policy')) ?? policy;
+      if (page !== undefined && next.origin !== target.origin && page.origin !== target.origin) tainted = true;
       const status = response.status;
       if ((status === 303 && currentMethod !== 'GET' && currentMethod !== 'HEAD') || ((status === 301 || status === 302) && currentMethod === 'POST')) {
         currentMethod = 'GET';
         currentBody = undefined;
         for (const name of AppiiRuntime.REQUEST_BODY_HEADERS) delete currentHeaders[name];
-        delete currentHeaders['origin'];
       }
-      if (next.origin !== new URL(current).origin) delete currentHeaders['authorization'];
+      if (next.origin !== target.origin) delete currentHeaders['authorization'];
       current = next.href;
       redirected = true;
     }
+  }
+
+  static #set(headers: Record<string, string>, name: string, value: string | undefined): void {
+    if (value === undefined) delete headers[name];
+    else headers[name] = value;
   }
 }`;
 

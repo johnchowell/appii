@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse } from '../model/index.js';
-import { EndpointIndex, Http, Json, SampleText, Samples, Schema, Text } from '../shared/index.js';
+import { CharsetEncoder, EndpointIndex, Http, Json, SampleText, Samples, Schema, Text } from '../shared/index.js';
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -25,7 +25,7 @@ export class PostmanRequestBuilder {
   });
 
   item(endpoint: Endpoint, ctx: PostmanItemContext): PostmanObject {
-    const sample = Samples.requestSample(endpoint);
+    const sample = Samples.requestSample(endpoint, { cookie: false });
     const request = this.request(endpoint, sample, ctx);
     const responses = endpoint.responses
       .filter((response) => Helpers.isHttpStatus(response.status))
@@ -160,6 +160,9 @@ export class PostmanRequestBuilder {
     if (endpoint.count === 0) lines.push('Inferred from an HTML form; no request was captured.');
     else lines.push(`Observed ${endpoint.count} time${endpoint.count === 1 ? '' : 's'}; statuses ${EndpointIndex.statuses(endpoint).join(', ') || 'none'}.`);
     if (endpoint.form) lines.push(`Form \`${endpoint.form.selector}\` on ${Helpers.mapUrl(ctx.model, endpoint.form.pageUrl, ctx.options)}.`);
+    if (endpoint.form && !CharsetEncoder.for(endpoint.form.charset).utf8) {
+      lines.push(`The website encodes this form in ${endpoint.form.charset}. Postman uses UTF-8, so the bytes of non-ASCII values are different.`);
+    }
     for (const token of endpoint.auth.csrf) {
       const source = token.sourceName ? `${token.source} \`${token.sourceName}\`` : token.source;
       lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}${token.sourceUrl ? ` on ${Helpers.mapUrl(ctx.model, token.sourceUrl, ctx.options)}` : ''}.`);

@@ -15,6 +15,23 @@ export class EndpointIndex {
     return new EndpointIndex(model.endpoints);
   }
 
+  static subset(model: ApiModel, selected: readonly Endpoint[]): ApiModel {
+    const chosen = new Set(selected);
+    const endpoints = model.endpoints.filter((endpoint) => chosen.has(endpoint));
+    if (endpoints.length === model.endpoints.length) return model;
+    const ids = new Set(endpoints.map((endpoint) => endpoint.id));
+    const sent = new Set(endpoints.flatMap((endpoint) => endpoint.auth.cookies));
+    const forms = new Set(endpoints.flatMap((endpoint) => (endpoint.form ? [EndpointIndex.#formKey(endpoint.form.pageUrl, endpoint.form.selector)] : [])));
+    const cookies = model.cookies
+      .map((cookie) => ({ ...cookie, setBy: cookie.setBy.filter((id) => ids.has(id)), usedBy: cookie.usedBy.filter((id) => ids.has(id)) }))
+      .filter((cookie) => sent.has(cookie.name) || cookie.setBy.length > 0 || cookie.usedBy.length > 0);
+    return { ...model, endpoints, cookies, forms: model.forms.filter((form) => forms.has(EndpointIndex.#formKey(form.pageUrl, form.selector))) };
+  }
+
+  static #formKey(pageUrl: string, selector: string): string {
+    return JSON.stringify([pageUrl, selector]);
+  }
+
   static statuses(endpoint: Endpoint): number[] {
     return [...new Set(endpoint.responses.map((response) => response.status))].sort((a, b) => a - b);
   }

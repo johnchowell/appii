@@ -99,7 +99,7 @@ describe('HtmlExporter', () => {
     assert.match(html, /<span class="badge csrf">csrf<\/span>/);
     assert.match(html, /<dt>CSRF<\/dt><dd><code>x-csrf-token<\/code> in the header, from cookie <code>csrf<\/code><\/dd>/);
     assert.match(html, /<td><code>password<\/code><\/td><td>string<\/td><td>yes<\/td><td>html password; length 8\.\.<\/td><td>Password<\/td>/);
-    assert.match(html, /<pre id="curl-4">curl -sS -X POST &#39;http:\/\/127\.0\.0\.1:\d+\/api\/items&#39; \\\n {2}-H &#39;x-csrf-token: \{\{csrf\}\}&#39;/);
+    assert.match(html, /<pre id="curl-4">\ncurl -sS -X POST &#39;http:\/\/127\.0\.0\.1:\d+\/api\/items&#39; \\\n {2}-H &#39;x-csrf-token: \{\{csrf\}\}&#39;/);
     assert.match(html, /<button type="button" class="copy" data-target="curl-4">Copy<\/button>/);
     assert.match(html, /<td><code>sid<\/code><\/td><td><code>127\.0\.0\.1<\/code><\/td><td><code>\/<\/code><\/td><td>session<\/td><td>yes<\/td>/);
     assert.match(html, /<td><code>form#login<\/code><\/td><td>POST<\/td>/);

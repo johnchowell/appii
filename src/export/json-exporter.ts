@@ -1,5 +1,5 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Json } from '../shared/index.js';
+import { EndpointIndex, Json } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 
@@ -10,7 +10,7 @@ export class JsonExporter extends BaseExporter {
   readonly description = 'The API model (api.json) as pretty-printed JSON';
 
   model(model: ApiModel, endpoints: readonly Endpoint[]): ApiModel {
-    return { ...model, endpoints: [...endpoints] };
+    return EndpointIndex.subset(model, endpoints);
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], _options: ExportOptions): string {

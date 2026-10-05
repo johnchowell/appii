@@ -12,7 +12,7 @@ import { PostmanExporter } from './postman-exporter.js';
 import { TypeScriptExporter } from './typescript-exporter.js';
 
 export class ExporterRegistry {
-  static readonly ALIASES: Readonly<Record<string, string>> = {
+  static readonly ALIASES: Readonly<Record<string, string>> = Object.freeze({
     oas: 'openapi',
     'openapi-json': 'openapi',
     swagger: 'openapi',
@@ -28,7 +28,7 @@ export class ExporterRegistry {
     report: 'html',
     model: 'json',
     'postman-collection': 'postman',
-  };
+  });
 
   readonly #exporters = new Map<string, Exporter>();
 
@@ -47,7 +47,7 @@ export class ExporterRegistry {
 
   static normalize(format: string): string {
     const lower = format.trim().toLowerCase();
-    return ExporterRegistry.ALIASES[lower] ?? lower;
+    return Object.hasOwn(ExporterRegistry.ALIASES, lower) ? (ExporterRegistry.ALIASES[lower] ?? lower) : lower;
   }
 
   register(exporter: Exporter): this {

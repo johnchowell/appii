@@ -178,7 +178,7 @@ export class HtmlExporter extends BaseExporter {
     const esc = HtmlEndpointRenderer.esc;
     if (model.websockets.length === 0) return '<section id="websockets"><h2>WebSockets</h2><p class="empty">No WebSocket connections were captured.</p></section>';
     const items = model.websockets.map((socket) => {
-      const examples = socket.examples.map((example) => `<pre>${esc(Text.truncate(example, HtmlEndpointRenderer.MAX_JSON_CHARS))}</pre>`).join('');
+      const examples = socket.examples.map((example) => `<pre>\n${esc(Text.truncate(example, HtmlEndpointRenderer.MAX_JSON_CHARS))}</pre>`).join('');
       return `<li><code>${esc(socket.url)}</code> - ${esc(Text.plural(socket.messages, 'message'))}${examples}</li>`;
     });
     return `<section id="websockets"><h2>WebSockets</h2><ul>${items.join('')}</ul></section>`;

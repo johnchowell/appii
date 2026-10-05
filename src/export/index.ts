@@ -16,7 +16,7 @@ export type { OpenApiObject, OpenApiOperationBuilderDeps, OperationContext } fro
 export { OpenApiOperationMerger } from './openapi-operation-merger.js';
 export type { MergeInfo } from './openapi-operation-merger.js';
 export { YamlWriter } from './yaml-writer.js';
-export type { YamlWriterOptions } from './yaml-writer.js';
+export type { YamlVersion, YamlWriterOptions } from './yaml-writer.js';
 export { JsonExporter } from './json-exporter.js';
 export { HarExporter } from './har-exporter.js';
 export type { HarExporterDeps } from './har-exporter.js';
@@ -27,6 +27,7 @@ export type { PostmanExporterDeps } from './postman-exporter.js';
 export { PostmanRequestBuilder } from './postman-request-builder.js';
 export type { PostmanItemContext, PostmanObject } from './postman-request-builder.js';
 export { CurlExporter } from './curl-exporter.js';
+export type { CurlPathArgument } from './curl-exporter.js';
 export { TypeScriptExporter } from './typescript-exporter.js';
 export type { TypeScriptExporterDeps } from './typescript-exporter.js';
 export { TsTypeWriter } from './ts-type-writer.js';
