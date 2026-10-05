@@ -1,5 +1,6 @@
 import type { JsonSchema } from '../model/index.js';
 import { isPlainObject, setOwn, stableStringify } from './json.js';
+import { PatternAudit } from './pattern-audit.js';
 import { short } from './text.js';
 
 export function asSchema(value: unknown): JsonSchema | undefined {
@@ -150,7 +151,7 @@ export function constraintSummary(schema: JsonSchema | undefined): string[] {
   if (htmlType && !['text', 'textarea', 'select-one', 'select-multiple'].includes(htmlType)) out.push(`html ${htmlType}`);
   if (typeof schema.format === 'string') out.push(`format ${schema.format}`);
   const pattern = str(schema['x-html-pattern']) ?? str(schema.pattern);
-  if (pattern) out.push(`pattern ${pattern}`);
+  if (pattern) out.push(unsafePatterns(schema, false).length > 0 ? `pattern ${pattern} (${UNSAFE_PATTERN})` : `pattern ${pattern}`);
   const minLen = str(schema['x-html-minlength']) ?? str(schema.minLength);
   const maxLen = str(schema['x-html-maxlength']) ?? (emptyStringOnly(schema) ? undefined : str(schema.maxLength));
   if (minLen !== undefined || maxLen !== undefined) out.push(`length ${minLen ?? '0'}..${maxLen ?? ''}`);
@@ -202,6 +203,23 @@ export const PADDING = 'x';
 export const PATTERN_FLAGS = 'u';
 export const HTML_PATTERN = 'x-html-pattern';
 export const HTML_PATTERN_FLAGS = 'v';
+export const UNSAFE_PATTERN = 'exponential time';
+export const PATTERN_AUDIT: PatternAudit = Object.freeze(new PatternAudit());
+
+export function unsafePatterns(schema: JsonSchema | undefined, deep = true): string[] {
+  const out: string[] = [];
+  const check = (node: JsonSchema): void => {
+    const html = str(node[HTML_PATTERN]);
+    const json = str(node.pattern);
+    const unsafe = (html !== undefined && PATTERN_AUDIT.unsafe(html, HTML_PATTERN_FLAGS)) || (json !== undefined && PATTERN_AUDIT.unsafe(json, PATTERN_FLAGS));
+    const shown = html ?? json;
+    if (unsafe && shown !== undefined && !out.includes(shown)) out.push(shown);
+  };
+  if (!schema) return out;
+  if (deep) walkSchema(schema, check);
+  else check(schema);
+  return out;
+}
 
 export interface SampleValueOptions {
   missing?: (name: string) => unknown;
@@ -233,7 +251,7 @@ export function accepts(schema: JsonSchema | boolean | undefined, value: unknown
 }
 
 export function patternMatches(pattern: string, value: string): boolean {
-  if ([...value].length > MAX_PATTERN_INPUT) return false;
+  if ([...value].length > MAX_PATTERN_INPUT || PATTERN_AUDIT.unsafe(pattern, PATTERN_FLAGS)) return false;
   try {
     return new RegExp(pattern, PATTERN_FLAGS).test(value);
   } catch {
@@ -244,7 +262,7 @@ export function patternMatches(pattern: string, value: string): boolean {
 export function htmlPatternAccepts(schema: JsonSchema, value: unknown): boolean {
   const pattern = schema[HTML_PATTERN];
   if (typeof pattern !== 'string' || typeof schema.pattern === 'string' || typeof value !== 'string' || value === '') return true;
-  if ([...value].length > MAX_PATTERN_INPUT) return false;
+  if ([...value].length > MAX_PATTERN_INPUT || PATTERN_AUDIT.unsafe(pattern, HTML_PATTERN_FLAGS)) return false;
   try {
     return new RegExp(`^(?:${pattern})$`, HTML_PATTERN_FLAGS).test(value);
   } catch {
@@ -436,6 +454,7 @@ export function walkSchema(schema: JsonSchema | undefined, visit: (node: JsonSch
   variants(schema).forEach((v, i) => walkSchema(v, visit, [...path, `|${i}`]));
   const extra = asSchema(schema.additionalProperties);
   if (extra) walkSchema(extra, visit, [...path, '*']);
+  for (const branch of branches(schema)) walkSchema(branch.then, visit, [...path, `?${branch.condition}`]);
 }
 
 export function isFileSchema(schema: JsonSchema | undefined): boolean {

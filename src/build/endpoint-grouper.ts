@@ -315,6 +315,7 @@ export class EndpointGrouper {
         return {
           exchangeId: exchange.id,
           url: this.#redactor.url(exchange.request.url),
+          ...(exchange.pageUrl !== undefined ? { pageUrl: this.#redactor.url(exchange.pageUrl) } : {}),
           ...(exchange.response ? { status: exchange.response.status } : {}),
           startedAt: exchange.startedAt,
         };

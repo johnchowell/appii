@@ -1,6 +1,5 @@
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
 import { Curl, EndpointIndex, Json, Samples, Schema, Text } from '../shared/index.js';
-import type { SampleText } from '../shared/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
@@ -81,10 +80,8 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return TextLayout.clean(parts.join(' '));
   }
 
-  static exampleRequest(endpoint: Endpoint): { sample: Samples.RequestSample; cookie?: SampleText } {
-    const sample = Samples.requestSample(endpoint);
-    const cookie = Samples.cookieJar(endpoint);
-    return cookie === undefined ? { sample } : { sample, cookie };
+  static exampleRequest(endpoint: Endpoint): Samples.RequestSample {
+    return Samples.requestSample(endpoint);
   }
 
   render(input: EndpointDetailInput): string {
@@ -249,9 +246,9 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   }
 
   #curl(endpoint: Endpoint): PresenterBlock {
-    const { sample, cookie } = EndpointDetailPresenter.exampleRequest(endpoint);
-    const command = Curl.curlCommand(sample, { variables: 'shell', ...(cookie === undefined ? {} : { cookie }) });
-    const names = Curl.placeholderNames(sample, cookie === undefined ? [] : [cookie]);
+    const sample = EndpointDetailPresenter.exampleRequest(endpoint);
+    const command = Curl.curlCommand(sample, { variables: 'shell' });
+    const names = Curl.placeholderNames(sample);
     const lines = [this.heading('Example request (curl)'), ...this.#shell.fold(command, this.width)];
     if (names.length > 0) lines.push('', ...TextLayout.flow(names, this.width, { prefix: this.ansi.dim('Variables:') + ' ', separator: ' ' }));
     return lines;

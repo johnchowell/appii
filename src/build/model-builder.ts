@@ -89,7 +89,9 @@ export class ModelBuilder {
       },
       { includeStatic: options.includeStatic ?? false, includeDocuments: options.includeDocuments ?? true, maxExamples },
     );
+    const classifier = new CookieClassifier();
     const auth = new AuthDetector({
+      cookies: classifier,
       extractor,
       tokens,
       body,
@@ -98,7 +100,7 @@ export class ModelBuilder {
       documents,
       sources: (capture) => new CsrfSourceResolver(capture, { tokens, body, documents, headers }),
     });
-    const cookies = new CookieInventory({ classifier: new CookieClassifier(), parser: new CookieParser(), redactor, body });
+    const cookies = new CookieInventory({ classifier, parser: new CookieParser(), redactor, body });
     const forms = new FormLinker({
       extractor,
       schemas: new FormSchemaBuilder({ tokens }),
@@ -135,7 +137,8 @@ export class ModelBuilder {
     for (const endpoint of endpoints) endpoint.firstParty = OriginSelector.isFirstParty(endpoint.origin, domains);
     const cookies = this.#parts.cookies.build(capture, endpoints, chosen);
     const primaryOrigin = OriginSelector.primary(capture, chosen);
-    const forms = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
+    const shown = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
+    const forms = FormLinker.endpointIds(linked, shown, endpoints);
     return this.#redactUrls({
       version: 1,
       name: this.#options.name ?? (primaryOrigin ? new URL(primaryOrigin).host : ModelBuilder.DEFAULT_NAME),
@@ -162,7 +165,10 @@ export class ModelBuilder {
     };
     if (model.source.startUrl !== undefined) model.source.startUrl = url(model.source.startUrl);
     for (const endpoint of model.endpoints) {
-      for (const sample of endpoint.samples) sample.url = url(sample.url);
+      for (const sample of endpoint.samples) {
+        sample.url = url(sample.url);
+        if (sample.pageUrl !== undefined) sample.pageUrl = url(sample.pageUrl);
+      }
       for (const token of endpoint.auth.csrf) if (token.sourceUrl !== undefined) token.sourceUrl = url(token.sourceUrl);
       const form = endpoint.form;
       if (form) {

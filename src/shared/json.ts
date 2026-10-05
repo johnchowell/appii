@@ -1,4 +1,4 @@
-import { toAscii } from './text.js';
+import { JSON_RAW_CONTROL_SOURCE, escapeJsonControls, toAscii } from './text.js';
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -22,10 +22,10 @@ export function prettyJson(value: unknown, indent = 2): string {
   return JSON.stringify(value, null, indent);
 }
 
-export const UNESCAPED_CONTROL_SOURCE = '[\\x7f-\\x9f]';
+export const UNESCAPED_CONTROL_SOURCE = JSON_RAW_CONTROL_SOURCE;
 
 export function printableJson(value: unknown, indent = 2): string {
-  return (JSON.stringify(value, null, indent) ?? 'null').replace(new RegExp(UNESCAPED_CONTROL_SOURCE, 'g'), (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+  return escapeJsonControls(JSON.stringify(value, null, indent) ?? 'null');
 }
 
 export function asciiJson(value: unknown, indent = 2): string {

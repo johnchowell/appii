@@ -1,4 +1,5 @@
 import type { FormEnctype, FormMethod } from '../model/index.js';
+import { CharsetEncoder } from '../shared/index.js';
 import { HtmlMicrosyntax } from './html-microsyntax.js';
 
 export type ControlAttribute = 'required' | 'readonly' | 'pattern' | 'length' | 'range' | 'placeholder' | 'multiple' | 'accept' | 'dirname';
@@ -103,13 +104,8 @@ export class ControlRules {
   static encodingName(label: string): string | undefined {
     const trimmed = HtmlMicrosyntax.asciiLower(HtmlMicrosyntax.trim(label));
     if (ControlRules.REPLACEMENT_LABELS.has(trimmed)) return ControlRules.REPLACEMENT;
-    let name: string;
-    try {
-      name = new TextDecoder(trimmed).encoding;
-    } catch {
-      return undefined;
-    }
-    return ControlRules.ENCODING_NAMES.get(name) ?? name;
+    const name = CharsetEncoder.canonical(trimmed);
+    return name === undefined ? undefined : (ControlRules.ENCODING_NAMES.get(name) ?? name);
   }
 
   static outputEncoding(name: string): string {

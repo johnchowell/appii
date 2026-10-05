@@ -164,8 +164,8 @@ export class PostmanRequestBuilder {
       lines.push(`The website encodes this form in ${endpoint.form.charset}. Postman uses UTF-8, so the bytes of non-ASCII values are different.`);
     }
     for (const token of endpoint.auth.csrf) {
-      const source = token.sourceName ? `${token.source} \`${token.sourceName}\`` : token.source;
-      lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}${token.sourceUrl ? ` on ${Helpers.mapUrl(ctx.model, token.sourceUrl, ctx.options)}` : ''}.`);
+      const source = Helpers.tokenSource(token, { text: (value) => value, code: (value) => `\`${value}\``, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
+      lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}.`);
     }
     if (endpoint.auth.cookies.length > 0) lines.push(`Cookies: ${endpoint.auth.cookies.map((name) => `\`${name}\``).join(', ')}.`);
     return lines.join('\n\n');

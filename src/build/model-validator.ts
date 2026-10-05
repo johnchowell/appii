@@ -13,6 +13,7 @@ import {
   TOKEN_SOURCES,
 } from '../model/index.js';
 import type { ApiModel } from '../model/index.js';
+import { CaptureStore } from '../capture/index.js';
 import { Json } from '../shared/index.js';
 
 type Fields = Record<string, unknown>;
@@ -38,7 +39,7 @@ export class ModelValidator {
   static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
 
   static looksLikeModel(value: unknown): boolean {
-    return Json.isPlainObject(value) && Array.isArray(value.endpoints) && !Array.isArray(value.exchanges) && !Json.isPlainObject(value.log);
+    return CaptureStore.isModel(value);
   }
 
   isModel(value: unknown): value is ApiModel {
@@ -96,6 +97,7 @@ export class ModelValidator {
       this.#strings(problems, auth, 'cookies', at + 'auth.');
       this.#strings(problems, auth, 'headers', at + 'auth.');
       this.#boolean(problems, auth, 'bearer', at + 'auth.');
+      this.#boolean(problems, auth, 'anonymous', at + 'auth.', { optional: true });
       this.#array(problems, auth, 'csrf', at + 'auth.', (item, p) => {
         const token = this.#object(problems, item, p);
         if (!token) return;
@@ -126,6 +128,7 @@ export class ModelValidator {
       const sample = this.#object(problems, item, p);
       if (!sample) return;
       for (const key of ['exchangeId', 'url', 'startedAt']) this.#string(problems, sample, key, p + '.');
+      this.#string(problems, sample, 'pageUrl', p + '.', { optional: true });
       this.#number(problems, sample, 'status', p + '.', { optional: true });
     });
   }
@@ -174,6 +177,7 @@ export class ModelValidator {
     this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at);
     this.#boolean(problems, form, 'noValidate', at);
     this.#fields(problems, form, at);
+    this.#strings(problems, form, 'endpoints', at, { optional: true });
   }
 
   #fields(problems: string[], holder: Fields, at: string): void {
@@ -239,7 +243,8 @@ export class ModelValidator {
     if (typeof value !== 'string' || !allowed.has(value)) problems.push(`${at}${key}: expected one of ${[...allowed].join(', ')}`);
   }
 
-  #strings(problems: string[], holder: Fields, key: string, at: string): void {
+  #strings(problems: string[], holder: Fields, key: string, at: string, rule: FieldRule = {}): void {
+    if (this.#missing(holder, key, rule)) return;
     const value = holder[key];
     if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) problems.push(`${at}${key}: expected an array of strings`);
   }

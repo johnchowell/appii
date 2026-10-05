@@ -256,12 +256,31 @@ describe('EndpointFilter', () => {
     assert.deepEqual(new EndpointFilter({ origin: 'example.com:443' }).describe(), ['origin example.com:443']);
   });
 
-  test('cookies() keeps the cookies that the matching endpoints set or use', () => {
+  test('cookies() keeps the cookies that the matching endpoints set or use, and names only those endpoints', () => {
     assert.equal(new EndpointFilter().cookies(FIXTURE), FIXTURE.cookies);
-    const login = new EndpointFilter({ text: 'post-login' }).cookies(FIXTURE);
+    const filter = new EndpointFilter({ text: 'post-login' });
+    const login = filter.cookies(FIXTURE);
     assert.ok(login.length > 0 && login.length < FIXTURE.cookies.length);
     assert.ok(login.every((cookie) => cookie.setBy.includes('post-login') || cookie.usedBy.includes('post-login')));
+    assert.ok(login.every((cookie) => [...cookie.setBy, ...cookie.usedBy].every((id) => id === 'post-login')));
+    assert.deepEqual(login, EndpointIndex.subset(FIXTURE, filter.apply(FIXTURE)).cookies);
     assert.deepEqual(new EndpointFilter({ origin: 'nowhere.test' }).cookies(FIXTURE), []);
+  });
+
+  test('cookies() includes the cookies that a browser would send to a form that was never submitted (count 0)', () => {
+    const signup = FIXTURE.endpoints.find((endpoint) => endpoint.id === 'post-signup');
+    assert.equal(signup?.count, 0);
+    const cookies = new EndpointFilter({ text: 'post-signup' }).cookies(FIXTURE);
+    assert.deepEqual(cookies.map((cookie) => [cookie.name, cookie.usedBy]), [...(signup?.auth.cookies ?? [])].sort().map((name) => [name, ['post-signup']]));
+    const unlinked = { ...FIXTURE, cookies: FIXTURE.cookies.map((cookie) => ({ ...cookie, setBy: [], usedBy: [] })) };
+    assert.deepEqual(new EndpointFilter({ text: 'post-signup' }).cookies(unlinked).map((cookie) => cookie.name), [...(signup?.auth.cookies ?? [])].sort());
+  });
+
+  test('cookies() does not take a cookie of the same name that only other endpoints use', () => {
+    const other = { ...FIXTURE.cookies.find((cookie) => cookie.name === 'sid')!, domain: 'other.example.net', setBy: [], usedBy: ['get-root'] };
+    const model = { ...FIXTURE, cookies: [...FIXTURE.cookies, other] };
+    const cookies = new EndpointFilter({ text: 'post-login' }).cookies(model);
+    assert.deepEqual(cookies.filter((cookie) => cookie.name === 'sid').map((cookie) => cookie.domain), ['shop.example.com']);
   });
 
   test('kind and firstPartyOnly restrict the selection', () => {

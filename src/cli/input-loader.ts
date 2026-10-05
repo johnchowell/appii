@@ -1,11 +1,11 @@
 import { basename } from 'node:path';
 import { CaptureStore } from '../capture/index.js';
+import type { StoredKind } from '../capture/index.js';
 import { ModelBuilder, ModelStore } from '../build/index.js';
 import type { BuildOptions } from '../build/index.js';
-import { Fs } from '../shared/index.js';
 import type { ApiModel, Capture } from '../model/index.js';
 
-export type InputKind = 'model' | 'capture' | 'har';
+export type InputKind = StoredKind;
 
 export interface LoadedInput {
   model: ApiModel;
@@ -35,12 +35,10 @@ export class InputLoader {
   }
 
   async load(path: string, buildOptions: BuildOptions = {}): Promise<LoadedInput> {
-    const value = await Fs.readJson(path);
-    if (ModelStore.looksLikeModel(value)) return { model: this.#models.parse(value, path), kind: 'model' };
-    const kind: InputKind = CaptureStore.isHar(value) ? 'har' : 'capture';
-    const capture = await this.#store.load(path);
-    const model = this.#builder(buildOptions).build(capture);
-    return { model: { ...model, source: { ...model.source, file: basename(path) } }, capture, kind };
+    const input = await this.#store.read(path);
+    if (input.kind === 'model') return { model: this.#models.parse(input.value, path), kind: input.kind };
+    const model = this.#builder(buildOptions).build(input.capture);
+    return { model: { ...model, source: { ...model.source, file: basename(path) } }, capture: input.capture, kind: input.kind };
   }
 
   capture(path: string): Promise<Capture> {

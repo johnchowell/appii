@@ -149,17 +149,20 @@ describe('SummaryPresenter', () => {
     assert.ok(all.includes('Endpoints:  12 (json 3, form 3, graphql 1, document 5), 12 first-party'));
     assert.ok(all.includes('Requests:   14 captured, 14 matched to endpoints'));
     assert.ok(all.includes('Cookies:    4 (session 1, auth 1, csrf 1, preference 1), 2 HttpOnly'));
-    assert.ok(all.includes('Forms:      3 (3 endpoints with a form)'));
+    assert.ok(all.includes('Forms:      3 (3 linked to endpoints)'));
     assert.ok(all.includes('WebSockets: 0'));
   });
 
-  test('the Forms line counts the endpoints that have a form when two forms post to one endpoint', () => {
+  test('the Forms line counts the forms that are linked to endpoints, also when two forms post to one endpoint', () => {
     const flow = CaptureFactory.fixture();
     flow.factory.snapshot('/other', 'Other', '<form id="quick" method="post" action="/login"><input name="email" type="email" required><input name="password" type="password"><button>Go</button></form>');
+    flow.factory.snapshot('/close', 'Close', '<form method="dialog"><button>x</button></form>');
     const model = ModelBuilder.create({ now: PresentModels.NOW }).build(flow.factory.capture({ startUrl: flow.factory.url('/') }));
-    assert.equal(model.forms.length, 4);
+    assert.equal(model.forms.length, 5);
     assert.equal(model.endpoints.filter((endpoint) => endpoint.form !== undefined).length, 3);
-    assert.ok(lines(new SummaryPresenter().render(model)).includes('Forms:      4 (3 endpoints with a form)'));
+    assert.ok(lines(new SummaryPresenter().render(model)).includes('Forms:      5 (4 linked to endpoints)'));
+    const old = { ...model, forms: model.forms.map(({ endpoints: _ids, ...form }) => form) };
+    assert.ok(lines(new SummaryPresenter().render(old)).includes('Forms:      5'));
   });
 
   test('lists other origins, websockets, the source file and third-party counts', () => {
@@ -525,21 +528,24 @@ describe('EndpointDetailPresenter', () => {
 
   test('exampleRequest links double-submit cookies and leaves other placeholders alone', () => {
     const endpoint = EndpointIndex.of(FIXTURE).require(4);
-    const { sample, cookie } = EndpointDetailPresenter.exampleRequest(endpoint);
-    assert.equal(String(cookie), 'auth={{auth}}; csrf={{csrf}}; sid={{sid}}; theme={{theme}}');
+    const sample = EndpointDetailPresenter.exampleRequest(endpoint);
+    assert.deepEqual(sample, Samples.requestSample(endpoint));
+    assert.equal(String(sample.cookie), 'auth={{auth}}; csrf={{csrf}}; sid={{sid}}; theme={{theme}}');
     assert.equal(String(sample.headers.find((header) => header.name === 'x-csrf-token')?.value), '{{csrf}}');
     const bodyToken = {
       ...endpoint,
       auth: { ...endpoint.auth, csrf: [{ location: 'body' as const, name: 'token', source: 'cookie' as const, sourceName: 'csrf' }] },
     };
-    const body = Samples.plainValue(EndpointDetailPresenter.exampleRequest(bodyToken).sample.body?.value) as Record<string, unknown>;
+    const body = Samples.plainValue(EndpointDetailPresenter.exampleRequest(bodyToken).body?.value) as Record<string, unknown>;
     assert.equal(body.token, '{{csrf}}');
     const root = EndpointDetailPresenter.exampleRequest(EndpointIndex.of(FIXTURE).require(1));
     assert.equal(root.cookie, undefined);
-    assert.equal(root.sample.method, 'GET');
-    assert.equal(String(root.sample.url), 'https://shop.example.com/');
-    assert.deepEqual(root.sample.headers, []);
-    assert.equal(root.sample.body, undefined);
+    assert.equal(root.method, 'GET');
+    assert.equal(String(root.url), 'https://shop.example.com/');
+    assert.deepEqual(root.headers, []);
+    assert.equal(root.body, undefined);
+    const detail = new EndpointDetailPresenter({ width: 200 }).render({ model: FIXTURE, ref: 4 });
+    assert.equal(detail.split(' -b ').length - 1, 1, detail);
   });
 
   test('create() builds the default collaborators', () => {

@@ -249,7 +249,7 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     const unchecked = new Client({ baseUrl: fresh.origin, validate: false });
     const response = await call(unchecked, 'postLogin', { body: { email: 'x', password: 'y' } });
     assert.equal(response.status, 422);
-    assert.deepEqual(fresh.requests.slice(before).map((r) => `${r.method} ${r.path}`), ['GET /login', 'POST /login', 'GET /login', 'POST /login']);
+    assert.deepEqual(fresh.requests.slice(before).map((r) => `${r.method} ${r.path}`), ['GET /login', 'POST /login']);
   });
 
   test('typed JSON endpoints: getItem, listItems, GraphQL defaults and the GET search form', async () => {

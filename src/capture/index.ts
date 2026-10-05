@@ -41,4 +41,4 @@ export type { HarConverterDeps } from './har-converter.js';
 export type * from './har-types.js';
 export { CaptureValidator } from './capture-validator.js';
 export { CaptureStore } from './capture-store.js';
-export type { CaptureStoreDeps } from './capture-store.js';
+export type { CaptureStoreDeps, StoredInput, StoredKind } from './capture-store.js';

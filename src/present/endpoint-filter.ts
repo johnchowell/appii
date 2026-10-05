@@ -1,5 +1,5 @@
 import type { ApiModel, CookieInfo, Endpoint, EndpointKind } from '../model/index.js';
-import { Http } from '../shared/index.js';
+import { EndpointIndex, Http } from '../shared/index.js';
 
 export interface ListFilter {
   text?: string;
@@ -84,9 +84,7 @@ export class EndpointFilter {
   }
 
   cookies(model: ApiModel): CookieInfo[] {
-    if (!this.active) return model.cookies;
-    const ids = new Set(this.apply(model).map((endpoint) => endpoint.id));
-    return model.cookies.filter((cookie) => cookie.setBy.some((id) => ids.has(id)) || cookie.usedBy.some((id) => ids.has(id)));
+    return this.active ? EndpointIndex.subset(model, this.apply(model)).cookies : model.cookies;
   }
 
   describe(): string[] {

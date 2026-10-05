@@ -10,6 +10,9 @@ export class TsClientRuntime {
     'ValidationError',
     'MissingToken',
     'MissingTokenError',
+    'StaleTokens',
+    'PageToken',
+    'LoadedDocument',
     'StoredCookie',
     'CookieJar',
     'BaseApiClient',
@@ -41,9 +44,10 @@ export class TsClientRuntime {
     'PRIMARY_ORIGIN',
     'DEFAULT_BASE_URL',
     'REGISTRABLE_DOMAINS',
+    'SINGLE_BYTE_INDEXES',
   ];
 
-  static readonly CLIENT_MEMBERS: readonly string[] = ['constructor', 'cookies', 'base', 'resolve', 'clearTokens', 'send'];
+  static readonly CLIENT_MEMBERS: readonly string[] = ['constructor', 'cookies', 'base', 'resolve', 'clearTokens', 'refreshTokens', 'send'];
 
   static readonly PUBLIC_TYPES = String.raw`export interface ApiResponse<S extends number = number, T = unknown> {
   status: S;
@@ -52,6 +56,13 @@ export class TsClientRuntime {
   redirected: boolean;
   headers: Headers;
   data: T;
+  staleTokens?: StaleTokens;
+}
+
+export interface StaleTokens {
+  tokens: string[];
+  pages: string[];
+  message: string;
 }
 
 export interface ClientOptions {
@@ -197,7 +208,6 @@ interface FormIdentity {
 
 interface FormCharset {
   name: string;
-  high?: string;
 }
 
 interface FormSpec {
@@ -282,8 +292,18 @@ interface StoredDocument {
   document: FetchedDocument;
 }
 
+interface LoadedDocument {
+  document: FetchedDocument;
+  cached: boolean;
+}
+
+interface PageToken {
+  token: string;
+  page: string;
+}
+
 interface TokenState {
-  page: boolean;
+  cached: PageToken[];
   missing: MissingToken[];
 }
 
@@ -665,7 +685,7 @@ export class CookieJar {
     if (lower === AppiiRuntime.UTF8) return (text) => new TextEncoder().encode(text);
     const own = Object.entries(custom ?? {}).find(([key]) => key.toLowerCase() === lower)?.[1];
     if (own !== undefined) return own;
-    const high = charset?.high;
+    const high = AppiiRuntime.index(name);
     if (high === undefined) {
       throw new TypeError('The form sends text in the ' + name + ' character encoding. This client has no table for ' + name + '. Give an encoder in options.encoders["' + name + '"].');
     }
@@ -791,8 +811,24 @@ export class CookieJar {
     return new Uint8Array(await response.arrayBuffer());
   }
 
+  static index(label: string): string | undefined {
+    let name: string;
+    try {
+      name = new TextDecoder(label).encoding;
+    } catch {
+      name = label.trim().toLowerCase();
+    }
+    return Object.hasOwn(SINGLE_BYTE_INDEXES, name) ? SINGLE_BYTE_INDEXES[name] : undefined;
+  }
+
   static decode(bytes: Uint8Array, contentType: string): string {
     const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(contentType)?.[1] ?? AppiiRuntime.UTF8;
+    const high = AppiiRuntime.index(charset);
+    if (high !== undefined) {
+      let out = '';
+      for (const byte of bytes) out += byte < AppiiRuntime.FIRST_HIGH_BYTE ? String.fromCharCode(byte) : high.charAt(byte - AppiiRuntime.FIRST_HIGH_BYTE);
+      return out;
+    }
     try {
       return new TextDecoder(charset).decode(bytes);
     } catch {
@@ -1579,7 +1615,7 @@ class AppiiHtml {
 
   static readonly CLIENT = String.raw`export class BaseApiClient {
   static readonly REDIRECT_STATUSES: readonly number[] = [301, 302, 303, 307, 308];
-  static readonly RETRY_STATUSES: readonly number[] = [400, 403, 419, 422];
+  static readonly STALE_STATUSES: readonly number[] = [400, 403, 419, 422];
   static readonly HTTP_SCHEMES: readonly string[] = ['http:', 'https:'];
   static readonly DOCUMENT_ACCEPT = 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8';
   static readonly CLIENT_ERROR = 400;
@@ -1619,6 +1655,10 @@ class AppiiHtml {
     this.#responses.clear();
   }
 
+  refreshTokens(): void {
+    this.#documents.clear();
+  }
+
   protected async send(spec: EndpointSpec, input: RequestInput = {}): Promise<ApiResponse> {
     const params: Record<string, unknown> = { ...input.params };
     const userQuery: Record<string, unknown> = { ...input.query };
@@ -1642,44 +1682,49 @@ class AppiiHtml {
     const fields = variant?.fields ?? form?.fields ?? [];
     const address = this.base(spec.origin) + path;
     const page = spec.page ?? form?.page;
-    for (let attempt = 0; ; attempt++) {
-      const explicit = new Set<string>();
-      const headers = this.#headers(spec, input, explicit);
-      const state: TokenState = { page: false, missing: [] };
-      const currentQuery: Record<string, unknown> = { ...query };
-      const currentBody: unknown = AppiiRuntime.isRecord(body) ? { ...body } : body;
-      for (const token of spec.csrf) await this.#fill(token, address, headers, currentQuery, currentBody, form, state);
-      const search =
-        form !== undefined && form.target === 'query'
-          ? AppiiRuntime.urlencoded(AppiiForms.entries(form.fields, currentQuery, false), true, this.#encoder(form))
-          : AppiiRuntime.query(currentQuery);
-      const url = address + (search === '' ? '' : '?' + search);
-      const encoded = this.#encode(spec, currentBody, headers, fields);
-      const context: RequestContext = { mode: spec.mode, explicit };
-      if (page !== undefined) context.page = this.resolve(page);
-      const exchanged = await this.#exchange(spec.method, url, headers, encoded, context);
-      const status = exchanged.response.status;
-      if (attempt === 0 && state.page && BaseApiClient.RETRY_STATUSES.includes(status)) {
-        await exchanged.response.arrayBuffer().catch(() => undefined);
-        this.#documents.clear();
-        continue;
-      }
-      const bytes = await AppiiRuntime.read(exchanged.response, spec.method);
-      const type = exchanged.response.headers.get('content-type') ?? '';
-      if (spec.tokenKey !== undefined && exchanged.response.ok) {
-        this.#responses.set(spec.tokenKey, { headers: exchanged.response.headers, text: bytes === undefined ? '' : AppiiRuntime.decode(bytes, type) });
-      }
-      const response: ApiResponse = {
-        status,
-        ok: exchanged.response.ok,
-        url: exchanged.url,
-        redirected: exchanged.redirected,
-        headers: exchanged.response.headers,
-        data: AppiiRuntime.data(bytes, type),
-      };
-      if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
-      return response;
+    const explicit = new Set<string>();
+    const headers = this.#headers(spec, input, explicit);
+    const state: TokenState = { cached: [], missing: [] };
+    const sent: unknown = AppiiRuntime.isRecord(body) ? { ...body } : body;
+    for (const token of spec.csrf) await this.#fill(token, address, headers, query, sent, form, state);
+    const search =
+      form !== undefined && form.target === 'query' ? AppiiRuntime.urlencoded(AppiiForms.entries(form.fields, query, false), true, this.#encoder(form)) : AppiiRuntime.query(query);
+    const url = address + (search === '' ? '' : '?' + search);
+    const encoded = this.#encode(spec, sent, headers, fields);
+    const context: RequestContext = { mode: spec.mode, explicit };
+    if (page !== undefined) context.page = this.resolve(page);
+    const exchanged = await this.#exchange(spec.method, url, headers, encoded, context);
+    const status = exchanged.response.status;
+    const bytes = await AppiiRuntime.read(exchanged.response, spec.method);
+    const type = exchanged.response.headers.get('content-type') ?? '';
+    if (spec.tokenKey !== undefined && exchanged.response.ok) {
+      this.#responses.set(spec.tokenKey, { headers: exchanged.response.headers, text: bytes === undefined ? '' : AppiiRuntime.decode(bytes, type) });
     }
+    const response: ApiResponse = {
+      status,
+      ok: exchanged.response.ok,
+      url: exchanged.url,
+      redirected: exchanged.redirected,
+      headers: exchanged.response.headers,
+      data: AppiiRuntime.data(bytes, type),
+    };
+    if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
+    if (state.cached.length > 0 && BaseApiClient.STALE_STATUSES.includes(status)) response.staleTokens = BaseApiClient.#stale(status, state.cached);
+    return response;
+  }
+
+  static #stale(status: number, cached: readonly PageToken[]): StaleTokens {
+    const tokens = [...new Set(cached.map((item) => item.token))];
+    const pages = [...new Set(cached.map((item) => item.page))];
+    const one = tokens.length === 1;
+    const message = [
+      'The server rejected the request with status ' + status + '.',
+      'The client took ' + (one ? 'the token ' : 'the tokens ') + tokens.join(', ') + ' from ' + pages.join(', ') + ', which it loaded for an earlier request.',
+      (one ? 'This token' : 'These tokens') + ' can be stale.',
+      'Call refreshTokens() to load the page again for the next request.',
+      'Send this request again only if the server can safely receive it two times.',
+    ].join(' ');
+    return { tokens, pages, message };
   }
 
   #headers(spec: EndpointSpec, input: RequestInput, explicit: Set<string>): Record<string, string> {
@@ -1775,9 +1820,10 @@ class AppiiHtml {
     }
     const source = token.sourceUrl ?? form?.page;
     if (source === undefined) return undefined;
-    const document = await this.#document(this.resolve(source));
-    const value = BaseApiClient.#extract(document, token, name, form !== undefined && source === form.page ? form.form : undefined);
-    if (value !== undefined) state.page = true;
+    const page = this.resolve(source);
+    const loaded = await this.#document(page);
+    const value = BaseApiClient.#extract(loaded.document, token, name, form !== undefined && source === form.page ? form.form : undefined);
+    if (value !== undefined && loaded.cached) state.cached.push({ token: token.name, page });
     return value;
   }
 
@@ -1800,11 +1846,11 @@ class AppiiHtml {
     return document.scan;
   }
 
-  async #document(url: string): Promise<FetchedDocument> {
+  async #document(url: string): Promise<LoadedDocument> {
     const cached = this.#documents.get(url);
     if (cached !== undefined) {
       const entry = await cached.catch(() => undefined);
-      if (entry !== undefined && entry.cookie === this.cookies.header(url)) return entry.document;
+      if (entry !== undefined && entry.cookie === this.cookies.header(url)) return { document: entry.document, cached: true };
     }
     const context: RequestContext = { mode: 'navigate', explicit: new Set<string>() };
     const loading = this.#exchange('GET', url, { accept: BaseApiClient.DOCUMENT_ACCEPT }, undefined, context).then(async (exchanged): Promise<StoredDocument> => {
@@ -1817,7 +1863,7 @@ class AppiiHtml {
     loading.catch(() => {
       if (this.#documents.get(url) === loading) this.#documents.delete(url);
     });
-    return (await loading).document;
+    return { document: (await loading).document, cached: false };
   }
 
   async #exchange(

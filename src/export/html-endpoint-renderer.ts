@@ -88,9 +88,8 @@ export class HtmlEndpointRenderer {
     if (endpoint.auth.bearer) meta.push(['Bearer', 'Authorization: Bearer token']);
     if (endpoint.auth.headers.length > 0) meta.push(['Auth headers', endpoint.auth.headers.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     for (const token of endpoint.auth.csrf) {
-      const source = token.sourceName ? `${esc(token.source)} <code>${esc(token.sourceName)}</code>` : esc(token.source);
-      const url = token.sourceUrl ? ` on <code>${esc(Helpers.mapUrl(ctx.model, token.sourceUrl, ctx.options))}</code>` : '';
-      meta.push(['CSRF', `<code>${esc(token.name)}</code> in the ${esc(token.location)}, from ${source}${url}`]);
+      const source = Helpers.tokenSource(token, { text: (value) => esc(value), code: (value) => `<code>${esc(value)}</code>`, url: (value) => `<code>${esc(Helpers.mapUrl(ctx.model, value, ctx.options))}</code>` });
+      meta.push(['CSRF', `<code>${esc(token.name)}</code> in the ${esc(token.location)}, from ${source}`]);
     }
     if (endpoint.form) {
       const form = endpoint.form;

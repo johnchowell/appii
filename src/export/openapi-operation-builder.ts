@@ -1,6 +1,7 @@
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, JsonSchema } from '../model/index.js';
 import { EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
+import type { TokenSourceMarkup } from './helpers.js';
 import { OpenApiComponents } from './openapi-components.js';
 import { OpenApiSchemaAdapter } from './openapi-schema-adapter.js';
 import type { OpenApiSecurity } from './openapi-security.js';
@@ -37,6 +38,7 @@ export class OpenApiOperationBuilder {
   static readonly EXAMPLE_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>(['json', 'graphql', 'form', 'multipart']);
   static readonly MEDIA_RANGE: RegExp = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
   static readonly SET_COOKIE_PREFIX = 'set-cookie: ';
+  static readonly MARKUP: TokenSourceMarkup = Object.freeze({ text: (value: string) => value, code: (value: string) => `\`${value}\``, url: (value: string) => value });
   static readonly COMPLEX_TYPES: ReadonlySet<string> = new Set(['object', 'array']);
 
   readonly #schemas: OpenApiSchemaAdapter;
@@ -78,8 +80,7 @@ export class OpenApiOperationBuilder {
     );
     if (endpoint.form) lines.push(`Submitted by the form \`${endpoint.form.selector}\` on ${endpoint.form.pageUrl} (${endpoint.form.enctype}).`);
     for (const token of endpoint.auth.csrf) {
-      const source = token.sourceName ? `${token.source} \`${token.sourceName}\`` : token.source;
-      lines.push(`CSRF token \`${token.name}\` (${token.location}) comes from ${source}${token.sourceUrl ? ` on ${token.sourceUrl}` : ''}.`);
+      lines.push(`CSRF token \`${token.name}\` (${token.location}) comes from ${Helpers.tokenSource(token, OpenApiOperationBuilder.MARKUP)}.`);
     }
     if (endpoint.auth.cookies.length > 0) lines.push(`Cookies sent: ${endpoint.auth.cookies.map((name) => `\`${name}\``).join(', ')}.`);
     return lines.join('\n\n');

@@ -120,6 +120,15 @@ endpoint. Give their values after the endpoint name or number, for example
 for its position in the URL or JSON body. All other arguments go to curl.
 `APPII_BASE_URL` sets the base URL and `APPII_COOKIE` sets the Cookie header.
 
+The `typescript` client fills CSRF tokens from the pages and responses that
+the site uses. It keeps a page while the cookies for that page stay the same.
+The client never sends a request two times on its own. If the server rejects
+a request with status 400, 403, 419 or 422 and the client took a token from a
+page that it loaded before, `response.staleTokens` names the token and the
+page. Call `client.refreshTokens()` to load the page again for the next
+request. Send the request again only if the server can safely receive it two
+times.
+
 For a subset of the endpoints, the `json` export keeps only the cookies and
 forms of the selected endpoints, and `setBy` and `usedBy` name only selected
 endpoints. The site data (`origins`, `source` and `websockets`) does not change.

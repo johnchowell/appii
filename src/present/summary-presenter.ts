@@ -1,5 +1,5 @@
 import { COOKIE_ROLES, ENDPOINT_KINDS } from '../model/index.js';
-import type { ApiModel, CookieRole, EndpointKind } from '../model/index.js';
+import type { ApiModel, CookieRole, EndpointKind, FormDescriptor } from '../model/index.js';
 import { Text } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
 import { TextLayout } from './text-layout.js';
@@ -23,6 +23,12 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
     const ms = Date.parse(to) - Date.parse(from);
     const duration = Number.isFinite(ms) && ms >= 0 ? ` (${Text.formatDuration(ms)})` : '';
     return `${TextLayout.clean(from)} to ${TextLayout.clean(to)}${duration}`;
+  }
+
+  static forms(forms: readonly FormDescriptor[]): string {
+    if (forms.length === 0 || forms.some((form) => form.endpoints === undefined)) return String(forms.length);
+    const linked = forms.filter((form) => (form.endpoints?.length ?? 0) > 0).length;
+    return `${forms.length} (${linked} linked to endpoints)`;
   }
 
   render(model: ApiModel): string {
@@ -49,13 +55,12 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
     const kinds = SummaryPresenter.tally(endpoints.map((endpoint) => endpoint.kind), SummaryPresenter.KIND_ORDER);
     const roles = SummaryPresenter.tally(model.cookies.map((cookie) => cookie.role), SummaryPresenter.ROLE_ORDER);
     const httpOnly = model.cookies.filter((cookie) => cookie.httpOnly).length;
-    const withForm = endpoints.filter((endpoint) => endpoint.form !== undefined).length;
     const messages = model.websockets.reduce((sum, socket) => sum + socket.messages, 0);
     return [
       ['Endpoints', endpoints.length === 0 ? '0' : `${endpoints.length} (${kinds}), ${firstParty} first-party`],
       ['Requests', `${model.source.exchanges} captured, ${hits} matched to endpoints`],
       ['Cookies', model.cookies.length === 0 ? '0' : `${model.cookies.length} (${roles}), ${httpOnly} HttpOnly`],
-      ['Forms', model.forms.length === 0 ? '0' : `${model.forms.length} (${Text.plural(withForm, 'endpoint')} with a form)`],
+      ['Forms', SummaryPresenter.forms(model.forms)],
       ['WebSockets', model.websockets.length === 0 ? '0' : `${model.websockets.length} (${Text.plural(messages, 'message')})`],
     ];
   }

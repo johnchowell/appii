@@ -1,8 +1,9 @@
 import * as zlib from 'node:zlib';
 import type { BodyData, BodyKind, CapturedRequest, CapturedResponse } from '../model/index.js';
-import { Http, Json, Text } from '../shared/index.js';
+import { CharsetEncoder, Http, Json, Text } from '../shared/index.js';
 import { GraphqlDocument } from './graphql-document.js';
 import { MultipartParser } from './multipart-parser.js';
+import type { MultipartPart } from './multipart-parser.js';
 
 export interface ParsedBody {
   kind: BodyKind;
@@ -133,7 +134,7 @@ export class BodyParser {
       if (!decoded) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
       return this.parse(decoded, declared, { formEncoding: options.formEncoding });
     }
-    if (mime === BodyParser.MULTIPART) return this.#multipartBody(body, declared, mime);
+    if (mime === BodyParser.MULTIPART) return this.#multipartBody(body, declared, mime, options.formEncoding);
     const text = BodyParser.#text(body, declared);
     if (text === undefined) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
     if (BodyParser.GRAPHQL_MIMES.has(mime)) return BodyParser.#graphqlDocument(text, mime);
@@ -152,13 +153,13 @@ export class BodyParser {
   }
 
   static urlencoded(text: string, encoding: string = BodyParser.DEFAULT_FORM_ENCODING): Record<string, string | string[]> {
-    const decoder = BodyParser.#decoder(encoding) ?? new TextDecoder(BodyParser.DEFAULT_FORM_ENCODING);
+    const label = CharsetEncoder.canonical(encoding) ?? BodyParser.DEFAULT_FORM_ENCODING;
     const fields = new Map<string, string[]>();
     for (const sequence of text.split('&')) {
       if (sequence === '') continue;
       const eq = sequence.indexOf('=');
-      const name = BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq), decoder);
-      const value = BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1), decoder);
+      const name = BodyParser.#formDecode(eq < 0 ? sequence : sequence.slice(0, eq), label);
+      const value = BodyParser.#formDecode(eq < 0 ? '' : sequence.slice(eq + 1), label);
       const list = fields.get(name);
       if (list) list.push(value);
       else fields.set(name, [value]);
@@ -166,17 +167,19 @@ export class BodyParser {
     return Object.fromEntries([...fields].map(([name, values]) => [name, values.length === 1 ? (values[0] ?? '') : values]));
   }
 
-  #multipartBody(body: BodyData, declared: string, mime: string): ParsedBody {
+  #multipartBody(body: BodyData, declared: string, mime: string, formEncoding: string | undefined): ParsedBody {
     const bytes = Http.bodyBytes(body);
     const boundary = MultipartParser.boundary(declared) ?? MultipartParser.boundary(body.mimeType) ?? MultipartParser.sniffBoundary(bytes);
     if (!boundary) return { kind: 'multipart', mimeType: mime };
     const fields = new Map<string, unknown[]>();
-    for (const part of this.#multipart.parse(bytes, boundary)) {
+    const parts = this.#multipart.parse(bytes, boundary);
+    const charset = BodyParser.#multipartCharset(parts, formEncoding);
+    for (const part of parts) {
       if (part.name === undefined) continue;
       const value: unknown =
         part.filename !== undefined
           ? { filename: part.filename, contentType: part.contentType ?? BodyParser.MULTIPART_FILE_TYPE, size: part.data.byteLength }
-          : new TextDecoder('utf-8').decode(part.data);
+          : CharsetEncoder.decode(part.data, charset);
       const list = fields.get(part.name);
       if (list) list.push(value);
       else fields.set(part.name, [value]);
@@ -233,14 +236,9 @@ export class BodyParser {
     const charset = Http.charsetOf(declared);
     const labels = charset && charset !== 'utf-8' && charset !== 'utf8' ? [charset, 'utf-8'] : ['utf-8'];
     for (const label of labels) {
-      let decoder: TextDecoder;
+      if (CharsetEncoder.canonical(label) === undefined) continue;
       try {
-        decoder = new TextDecoder(label, { fatal: true });
-      } catch {
-        continue;
-      }
-      try {
-        const text = decoder.decode(bytes, { stream: body.truncated === true });
+        const text = CharsetEncoder.decode(bytes, label, { fatal: true, stream: body.truncated === true });
         return text.includes('\u0000') ? undefined : text;
       } catch {
         return undefined;
@@ -251,20 +249,24 @@ export class BodyParser {
 
   static #formCharset(text: string, declared: string, formEncoding: string | undefined): string {
     const declaredCharset = Http.charsetOf(declared);
-    if (declaredCharset !== undefined && BodyParser.#decoder(declaredCharset)) return declaredCharset;
+    if (declaredCharset !== undefined && BodyParser.#known(declaredCharset)) return declaredCharset;
     const field = BodyParser.urlencoded(text)[BodyParser.CHARSET_FIELD];
     const named = Array.isArray(field) ? field[0] : field;
-    if (named !== undefined && BodyParser.#decoder(named)) return named;
-    if (formEncoding !== undefined && BodyParser.#decoder(formEncoding)) return formEncoding;
+    if (named !== undefined && BodyParser.#known(named)) return named;
+    if (formEncoding !== undefined && BodyParser.#known(formEncoding)) return formEncoding;
     return BodyParser.DEFAULT_FORM_ENCODING;
   }
 
-  static #decoder(label: string): TextDecoder | undefined {
-    try {
-      return new TextDecoder(label.trim());
-    } catch {
-      return undefined;
-    }
+  static #multipartCharset(parts: readonly MultipartPart[], formEncoding: string | undefined): string {
+    const field = parts.find((part) => part.name === BodyParser.CHARSET_FIELD && part.filename === undefined);
+    const named = field === undefined ? undefined : CharsetEncoder.decode(field.data, BodyParser.DEFAULT_FORM_ENCODING).trim();
+    if (named !== undefined && BodyParser.#known(named)) return named;
+    if (formEncoding !== undefined && BodyParser.#known(formEncoding)) return formEncoding;
+    return BodyParser.DEFAULT_FORM_ENCODING;
+  }
+
+  static #known(label: string): boolean {
+    return CharsetEncoder.canonical(label) !== undefined;
   }
 
   static #decodeCoding(coding: string, data: Uint8Array, truncated: boolean): Uint8Array | undefined {
@@ -290,7 +292,7 @@ export class BodyParser {
     }
   }
 
-  static #formDecode(value: string, decoder: TextDecoder): string {
+  static #formDecode(value: string, label: string): string {
     const bytes = Buffer.from(value.replace(/\+/g, ' '), 'utf8');
     const out: number[] = [];
     for (let i = 0; i < bytes.length; i++) {
@@ -305,6 +307,6 @@ export class BodyParser {
       }
       out.push(byte);
     }
-    return decoder.decode(new Uint8Array(out));
+    return CharsetEncoder.decode(new Uint8Array(out), label);
   }
 }

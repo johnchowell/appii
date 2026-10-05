@@ -31,7 +31,7 @@ class SourceTree {
 describe('architecture', () => {
   test('generic helpers live once in src/shared and are not copied into the domain namespaces', () => {
     const rules: [string, RegExp][] = [
-      ['a private copy of a Shared helper', /\bstatic\s+#?(?:parseUrl|isPotentiallyTrustworthy|isLoopbackHost|isIpAddress|bareHost|errorMessage|statusCodes|statuses|isRedacted|stripBom|decode|matchPath|asciiJson)\s*\(|\bstatic\s+#(?:short|summary|parse)\s*\(\s*(?:value|problems|items)\b/],
+      ['a private copy of a Shared helper', /\bstatic\s+#?(?:parseUrl|isPotentiallyTrustworthy|isLoopbackHost|isIpAddress|bareHost|errorMessage|statusCodes|statuses|isRedacted|stripBom|decode|matchPath|asciiJson|setOwn)\s*\(|\bstatic\s+#(?:short|summary|parse)\s*\(\s*(?:value|problems|items)\b/],
       ['a safe URL parse or percent decode', /try\s*\{\s*return\s+(?:new URL|decodeURIComponent)\(/],
       ['the loopback host rules', /0:0:0:0:0:0:0:1|\b(?:LOOPBACK_NAMES|SECURE_SCHEMES)\s*[:=]|endsWith\('\.localhost'\)/],
       ['ASCII JSON serialization', /toAscii\(\s*(?:JSON\.stringify|Json\.prettyJson)\(/],

@@ -1,5 +1,5 @@
 import type { ApiModel, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
-import { CharsetEncoder, EndpointIndex, Http, Json, Samples, Schema, Text } from '../shared/index.js';
+import { CharsetEncoder, EndpointIndex, Http, Json, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
 import { Helpers } from './helpers.js';
@@ -47,13 +47,10 @@ export class TsEndpointWriter {
   static readonly BINARY_BODY = 'Blob | ArrayBuffer | Uint8Array | string';
   static readonly HEADER_INDEX = '[name: string]: string | undefined;';
   static readonly METHOD_SUFFIX = 'Endpoint';
-  static readonly FETCHED_SOURCE_METHOD = 'GET';
   static readonly TEXT_PLAIN = 'text/plain';
   static readonly NAVIGATE_TYPES: ReadonlySet<string> = new Set(['document']);
   static readonly CORS_TYPES: ReadonlySet<string> = new Set(['fetch', 'xhr', 'eventsource']);
-  static readonly HIGH_BYTE = 0x80;
-  static readonly HIGH_BYTES = 0x80;
-  static readonly UNMAPPED = '\ufffd';
+  static readonly UNMAPPED = 0xfffd;
 
   readonly #types: TsTypeWriter;
   readonly #literals: TsLiteralWriter;
@@ -78,24 +75,11 @@ export class TsEndpointWriter {
     return `${endpoint.method.toUpperCase()} ${endpoint.origin}${endpoint.path}`;
   }
 
-  static storedSource(token: CsrfToken): boolean {
-    const method = token.sourceMethod?.toUpperCase();
-    return token.source !== 'cookie' && method !== undefined && method !== TsEndpointWriter.FETCHED_SOURCE_METHOD;
-  }
-
-  static sourceEndpoint(token: CsrfToken, endpoints: readonly Endpoint[]): Endpoint | undefined {
-    if (!TsEndpointWriter.storedSource(token) || token.sourceUrl === undefined) return undefined;
-    const url = Http.parseUrl(token.sourceUrl);
-    if (!url) return undefined;
-    const method = token.sourceMethod?.toUpperCase();
-    return endpoints.find((endpoint) => endpoint.method.toUpperCase() === method && endpoint.origin === url.origin && EndpointIndex.matchPath(endpoint.path, url.pathname) !== undefined);
-  }
-
   tokenSources(endpoints: readonly Endpoint[]): Set<string> {
     const out = new Set<string>();
     for (const endpoint of endpoints) {
       for (const token of endpoint.auth.csrf) {
-        const source = TsEndpointWriter.sourceEndpoint(token, endpoints);
+        const source = EndpointIndex.tokenSource(token, endpoints);
         if (source) out.add(source.id);
       }
     }
@@ -217,19 +201,14 @@ export class TsEndpointWriter {
   }
 
   static charset(label: string): Record<string, unknown> {
+    return { name: CharsetEncoder.for(label).utf8 ? 'UTF-8' : label };
+  }
+
+  static index(label: string): [string, string] | undefined {
     const encoder = CharsetEncoder.for(label);
-    if (encoder.utf8) return { name: 'UTF-8' };
-    const out: Record<string, unknown> = { name: label };
-    const table = encoder.exact ? CharsetEncoder.singleByteTable(encoder.name) : undefined;
-    if (table) {
-      const high = Array.from({ length: TsEndpointWriter.HIGH_BYTES }, () => TsEndpointWriter.UNMAPPED);
-      for (const [cp, byte] of table) {
-        const slot = byte - TsEndpointWriter.HIGH_BYTE;
-        if (slot >= 0 && slot < high.length && high[slot] === TsEndpointWriter.UNMAPPED) high[slot] = String.fromCodePoint(cp);
-      }
-      out.high = high.join('');
-    }
-    return out;
+    const points = encoder.utf8 || !encoder.exact ? undefined : SingleByteIndexes.codePoints(encoder.name);
+    if (points === undefined) return undefined;
+    return [encoder.name, points.map((cp) => String.fromCharCode(cp ?? TsEndpointWriter.UNMAPPED)).join('')];
   }
 
   #form(endpoint: Endpoint, model: ApiModel): FormCode | undefined {
@@ -278,8 +257,8 @@ export class TsEndpointWriter {
     if (token.sourceUrl !== undefined) out.sourceUrl = token.sourceUrl;
     else if (token.source !== 'cookie' && endpoint.form) out.sourceUrl = endpoint.form.pageUrl;
     if (token.sourceMethod !== undefined) out.sourceMethod = token.sourceMethod.toUpperCase();
-    if (TsEndpointWriter.storedSource(token)) {
-      const source = TsEndpointWriter.sourceEndpoint(token, ctx.endpoints);
+    if (EndpointIndex.tokenRequest(token) !== undefined) {
+      const source = EndpointIndex.tokenSource(token, ctx.endpoints);
       const url = token.sourceUrl === undefined ? undefined : Http.parseUrl(token.sourceUrl);
       if (source) {
         out.sourceKey = TsEndpointWriter.tokenKey(source);

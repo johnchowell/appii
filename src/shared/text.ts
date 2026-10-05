@@ -183,8 +183,14 @@ export function printable(input: string, options: PrintableOptions = {}): string
   return toAscii(text.replace(new RegExp(mode === 'space' ? CONTROL_SOURCE : BLOCK_CONTROL_SOURCE, 'g'), controlEscape), 'escape');
 }
 
+export const JSON_RAW_CONTROL_SOURCE = '[\\x7f-\\x9f]';
+
+export function escapeJsonControls(json: string): string {
+  return json.replace(new RegExp(JSON_RAW_CONTROL_SOURCE, 'g'), (ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
 export function jsString(input: string): string {
-  return toAscii(JSON.stringify(input), 'escape');
+  return toAscii(escapeJsonControls(JSON.stringify(input)), 'escape');
 }
 
 export function isIdentifier(input: string): boolean {

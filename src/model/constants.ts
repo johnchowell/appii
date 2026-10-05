@@ -41,3 +41,5 @@ export const CSRF_LOCATIONS = Object.freeze(['header', 'body', 'query'] as const
 export const ENDPOINT_KINDS = Object.freeze(['json', 'form', 'graphql', 'document', 'other'] as const);
 
 export const COOKIE_ROLES = Object.freeze(['session', 'auth', 'csrf', 'preference', 'tracking', 'unknown'] as const);
+
+export const CREDENTIAL_COOKIE_ROLES = Object.freeze(['session', 'auth'] as const);

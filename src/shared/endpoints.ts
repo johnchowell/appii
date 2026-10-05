@@ -1,9 +1,10 @@
-import type { ApiModel, Endpoint } from '../model/index.js';
+import type { ApiModel, CsrfToken, Endpoint } from '../model/index.js';
 import { AppiiError } from './errors.js';
-import { decodeComponent } from './http.js';
+import { decodeComponent, parseUrl } from './http.js';
 
 export class EndpointIndex {
   static readonly TEMPLATE_SEGMENT: RegExp = /^(?:\{[^{}/]+\}|[^{}])+$/;
+  static readonly PAGE_LOAD_METHOD = 'GET';
 
   readonly #numbers = new Map<Endpoint, number>();
 
@@ -23,9 +24,27 @@ export class EndpointIndex {
     const sent = new Set(endpoints.flatMap((endpoint) => endpoint.auth.cookies));
     const forms = new Set(endpoints.flatMap((endpoint) => (endpoint.form ? [EndpointIndex.#formKey(endpoint.form.pageUrl, endpoint.form.selector)] : [])));
     const cookies = model.cookies
-      .map((cookie) => ({ ...cookie, setBy: cookie.setBy.filter((id) => ids.has(id)), usedBy: cookie.usedBy.filter((id) => ids.has(id)) }))
-      .filter((cookie) => sent.has(cookie.name) || cookie.setBy.length > 0 || cookie.usedBy.length > 0);
-    return { ...model, endpoints, cookies, forms: model.forms.filter((form) => forms.has(EndpointIndex.#formKey(form.pageUrl, form.selector))) };
+      .filter((cookie) => [...cookie.setBy, ...cookie.usedBy].some((id) => ids.has(id)) || (cookie.setBy.length === 0 && cookie.usedBy.length === 0 && sent.has(cookie.name)))
+      .map((cookie) => ({ ...cookie, setBy: cookie.setBy.filter((id) => ids.has(id)), usedBy: cookie.usedBy.filter((id) => ids.has(id)) }));
+    const kept = model.forms.flatMap((form) => {
+      if (form.endpoints === undefined) return forms.has(EndpointIndex.#formKey(form.pageUrl, form.selector)) ? [form] : [];
+      const linked = form.endpoints.filter((id) => ids.has(id));
+      return linked.length > 0 ? [{ ...form, endpoints: linked }] : [];
+    });
+    return { ...model, endpoints, cookies, forms: kept };
+  }
+
+  static tokenRequest(token: CsrfToken): string | undefined {
+    if (token.source === 'cookie') return undefined;
+    const method = token.sourceMethod?.toUpperCase();
+    return method === undefined || method === EndpointIndex.PAGE_LOAD_METHOD ? undefined : method;
+  }
+
+  static tokenSource(token: CsrfToken, endpoints: readonly Endpoint[]): Endpoint | undefined {
+    const method = EndpointIndex.tokenRequest(token);
+    const url = parseUrl(token.sourceUrl);
+    if (method === undefined || !url) return undefined;
+    return endpoints.find((endpoint) => endpoint.method.toUpperCase() === method && endpoint.origin === url.origin && EndpointIndex.matchPath(endpoint.path, url.pathname) !== undefined);
   }
 
   static #formKey(pageUrl: string, selector: string): string {

@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BodyParser, EndpointGrouper, FormCollector, FormLinker, HtmlPages, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { BodyParser, EndpointGrouper, FormCollector, FormLinker, HtmlPages, ModelBuilder, ModelValidator, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import { EntrySlotFactory, FormExtractor, FormSchemaBuilder, TokenDetector } from '../src/forms/index.js';
 import type { Capture, Endpoint, JsonSchema } from '../src/model/index.js';
 import { Samples, Schema } from '../src/shared/index.js';
@@ -256,6 +256,44 @@ describe('FormLinker matching rules', () => {
   test('page urls that cannot be parsed are skipped without failing', () => {
     const capture = new CaptureFactory().capture();
     capture.pages.push({ url: 'not a url', title: '', capturedAt: capture.startedAt, html: '<form action="/x" method="post"><input name="a"></form>' });
-    assert.deepEqual(linker().link([], capture), { endpoints: [], forms: [] });
+    assert.deepEqual(linker().link([], capture), { endpoints: [], forms: [], targets: new Map() });
+  });
+});
+
+describe('FormDescriptor.endpoints', () => {
+  test('each form names the endpoints that its submitters send to, after origin filtering', () => {
+    const flow = CaptureFactory.fixture();
+    const f = flow.factory;
+    f.snapshot('/other', 'Other', '<form id="quick" method="post" action="/login"><input name="email" type="email" required><input name="password" type="password"><button>Go</button></form>');
+    f.snapshot(
+      '/more',
+      'More',
+      `<form id="close" method="dialog"><button>x</button></form>
+       <form id="away" method="post" action="https://elsewhere.example.net/collect"><input name="a"></form>
+       <form id="both" method="post" action="/login"><input name="q"><button>Login</button><button formaction="/search" formmethod="get">Search</button></form>`,
+    );
+    const model = ModelBuilder.create().build(f.capture({ startUrl: f.url('/') }));
+    const byId = new Map(model.endpoints.map((endpoint) => [endpoint.id, endpoint.key]));
+    const linked = new Map(model.forms.map((form) => [`${new URL(form.pageUrl).pathname} ${form.selector}`, (form.endpoints ?? []).map((id) => byId.get(id))]));
+    assert.deepEqual(linked.get('/login form#login'), [`POST ${ORIGIN}/login`]);
+    assert.deepEqual(linked.get('/other form#quick'), [`POST ${ORIGIN}/login`]);
+    assert.deepEqual(linked.get('/signup form#signup'), [`POST ${ORIGIN}/signup`]);
+    assert.deepEqual(linked.get('/more form#close'), []);
+    assert.deepEqual(linked.get('/more form#away'), []);
+    assert.deepEqual(linked.get('/more form#both'), [`POST ${ORIGIN}/login`, `GET ${ORIGIN}/search`]);
+    assert.ok(model.forms.every((form) => Array.isArray(form.endpoints)));
+    assert.deepEqual(new ModelValidator().validate(model), []);
+  });
+
+  test('the model validator accepts a list of endpoint ids and rejects other values', () => {
+    const model = ModelBuilder.create().build(CaptureFactory.fixture().capture);
+    const validator = new ModelValidator();
+    const form = model.forms[0]!;
+    delete form.endpoints;
+    assert.deepEqual(validator.validate(model), []);
+    (form as unknown as { endpoints: unknown }).endpoints = ['post-login', 7];
+    assert.deepEqual(validator.validate(model), ['forms[0].endpoints: expected an array of strings']);
+    (form as unknown as { endpoints: unknown }).endpoints = 'post-login';
+    assert.deepEqual(validator.validate(model), ['forms[0].endpoints: expected an array of strings']);
   });
 });

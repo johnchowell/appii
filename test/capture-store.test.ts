@@ -131,6 +131,42 @@ describe('CaptureStore', () => {
     assert.equal(c?.response?.body, undefined);
   });
 
+  test('reads a file once and reports whether it holds a capture, a HAR file or an API model', async () => {
+    const folder = join(dir, 'kinds');
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, 'body.json'), '{"ok":true}');
+    const har = {
+      log: {
+        version: '1.2',
+        creator: { name: 'Playwright', version: '1.56.1' },
+        entries: [{ startedDateTime: '2026-05-01T10:00:00.000Z', time: 1, request: { method: 'GET', url: 'https://example.com/a', headers: [] }, response: { status: 200, headers: [], content: { mimeType: 'application/json', size: 11, _file: 'body.json' } } }],
+      },
+    };
+    await writeFile(join(folder, 'in.har'), JSON.stringify(har));
+    await new CaptureStore().save(join(folder, 'capture.json'), capture());
+    await writeFile(join(folder, 'api.json'), JSON.stringify({ version: 1, name: 'x', endpoints: [], cookies: [] }));
+    const reads: string[] = [];
+    const store = new CaptureStore({
+      reader: async (path: string) => {
+        reads.push(path);
+        return JSON.parse(await readFile(path, 'utf8'));
+      },
+    });
+    const fromHar = await store.read(join(folder, 'in.har'));
+    assert.equal(fromHar.kind, 'har');
+    assert.deepEqual(fromHar.kind === 'har' ? Http.bodyJson(fromHar.capture.exchanges[0]?.response?.body) : undefined, { ok: true });
+    const fromCapture = await store.read(join(folder, 'capture.json'));
+    assert.deepEqual(fromCapture, { kind: 'capture', capture: capture() });
+    const fromModel = await store.read(join(folder, 'api.json'));
+    assert.deepEqual(fromModel, { kind: 'model', value: { version: 1, name: 'x', endpoints: [], cookies: [] } });
+    await assert.rejects(store.load(join(folder, 'api.json')), badInput(/API model/));
+    assert.deepEqual(reads, ['in.har', 'capture.json', 'api.json', 'api.json'].map((name) => join(folder, name)));
+    assert.deepEqual(
+      [har, capture(), { endpoints: [] }, { endpoints: [], log: {} }, { endpoints: [], exchanges: [] }].map((value) => CaptureStore.kind(value)),
+      ['har', 'capture', 'model', 'capture', 'capture'],
+    );
+  });
+
   test('does not follow symbolic links out of the HAR folder and reads only regular files', async () => {
     const folder = join(dir, 'links');
     const outside = join(dir, 'outside');

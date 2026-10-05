@@ -28,7 +28,7 @@ import {
 import type { CommandSpec, OptionValues, RecordingSession } from '../src/cli/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, Capture, Exchange } from '../src/model/index.js';
-import { Ansi, AppiiError, Meta } from '../src/shared/index.js';
+import { Ansi, AppiiError, Fs, Meta } from '../src/shared/index.js';
 import { ModelBuilder, ModelStore } from '../src/build/index.js';
 import { CaptureSummaryPresenter } from '../src/present/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
@@ -649,6 +649,51 @@ describe('Cli services', () => {
     });
     await custom.load(join(dir, 'capture.json'), { name: 'x' });
     assert.deepEqual(seen, [{ name: 'x' }]);
+  });
+
+  test('InputLoader reads and parses each input file once', async () => {
+    const flow = CaptureFactory.fixture();
+    await new ModelStore().save(join(dir, 'once-api.json'), PresentModels.fixture());
+    await new CaptureStore().save(join(dir, 'once-capture.json'), flow.capture);
+    await writeFile(join(dir, 'once-capture.har'), JSON.stringify(new HarConverter().toHar(flow.capture)));
+    const reads: string[] = [];
+    let loads = 0;
+    class CountingStore extends CaptureStore {
+      override load(path: string): Promise<Capture> {
+        loads++;
+        return super.load(path);
+      }
+    }
+    const store = new CountingStore({
+      reader: async (path: string) => {
+        reads.push(path);
+        return Fs.readJson(path);
+      },
+    });
+    const loader = new InputLoader({ store, models: new ModelStore() });
+    const parse = JSON.parse;
+    const parsed: number[] = [];
+    JSON.parse = ((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) => {
+      if (typeof text === 'string' && text.length > 10000) parsed.push(text.length);
+      return parse(text, reviver);
+    }) as typeof JSON.parse;
+    try {
+      for (const [name, kind] of [['once-capture.json', 'capture'], ['once-capture.har', 'har'], ['once-api.json', 'model']] as const) {
+        reads.length = 0;
+        parsed.length = 0;
+        const loaded = await loader.load(join(dir, name));
+        assert.equal(loaded.kind, kind, name);
+        assert.equal(parsed.length, 1, name);
+        assert.deepEqual(reads, [join(dir, name)], name);
+      }
+    } finally {
+      JSON.parse = parse;
+    }
+    assert.equal(loads, 0);
+    reads.length = 0;
+    assert.equal((await loader.capture(join(dir, 'once-capture.har'))).exchanges.length, flow.capture.exchanges.length);
+    assert.deepEqual(reads, [join(dir, 'once-capture.har')]);
+    assert.equal(loads, 1);
   });
 
   test('CaptureSummaryPresenter describes a capture', () => {

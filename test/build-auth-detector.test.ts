@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AuthDetector, BodyParser, CsrfSourceResolver, EndpointFactory, EndpointGrouper, HtmlPages, ModelBuilder, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { AuthDetector, BodyParser, CsrfSourceResolver, EndpointFactory, EndpointGrouper, HtmlPages, ModelBuilder, ModelValidator, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import { FormExtractor, TokenDetector } from '../src/forms/index.js';
 import type { Capture, Endpoint } from '../src/model/index.js';
 import { Samples, Schema } from '../src/shared/index.js';
@@ -170,6 +170,47 @@ describe('AuthDetector headers and bearer', () => {
     const endpoints = detect(f.capture());
     assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/me`).auth, { cookies: [], headers: ['authorization', 'x-api-key'], bearer: true, csrf: [] });
     assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/basic`).auth, { cookies: [], headers: ['authorization'], bearer: false, csrf: [] });
+  });
+});
+
+describe('AuthDetector evidence of requests without credentials (EXP2-8)', () => {
+  test('an endpoint is anonymous when a request without a session or auth cookie, bearer or auth header got a 2xx answer', () => {
+    const f = new CaptureFactory();
+    const sid = { cookie: 'sid=a1b2c3d4e5f6; auth=feedface' };
+    f.json('GET', '/api/feed', 200, {}, { requestHeaders: sid });
+    f.json('GET', '/api/feed', 200, {}, { requestHeaders: { cookie: 'theme=dark; _ga=GA1.1' } });
+    f.json('GET', '/api/private', 200, {}, { requestHeaders: sid });
+    f.json('GET', '/api/private', 401, {}, {});
+    f.json('GET', '/api/bearer', 200, {}, { requestHeaders: { authorization: 'Bearer abc' } });
+    f.json('GET', '/api/key', 200, {}, { requestHeaders: { 'x-api-key': 'k' } });
+    f.document('/account', '', { status: 302, responseHeaders: { location: '/login' } });
+    f.json('GET', '/api/public', 200, {});
+    const endpoints = detect(f.capture());
+    const anonymous = (path: string) => find(endpoints, `GET ${ORIGIN}${path}`).auth.anonymous;
+    assert.equal(anonymous('/api/feed'), true);
+    assert.equal(anonymous('/api/private'), undefined);
+    assert.equal(anonymous('/api/bearer'), undefined);
+    assert.equal(anonymous('/api/key'), undefined);
+    assert.equal(anonymous('/account'), undefined);
+    assert.equal(anonymous('/api/public'), true);
+    assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/feed`).auth.cookies, ['_ga', 'auth', 'sid', 'theme']);
+  });
+
+  test('cache hits and responses made by a service worker are not evidence', () => {
+    const f = new CaptureFactory();
+    f.json('GET', '/api/feed', 200, {}, { requestHeaders: { cookie: 'sid=a1b2c3d4e5f6' } });
+    f.json('GET', '/api/feed', 200, {}, { servedBy: 'cache', cacheKind: 'memory' });
+    f.json('GET', '/api/feed', 200, {}, { servedBy: 'service-worker' });
+    assert.equal(find(detect(f.capture()), `GET ${ORIGIN}/api/feed`).auth.anonymous, undefined);
+  });
+
+  test('the model validator accepts true or false and rejects other values', () => {
+    const model = ModelBuilder.create().build(CaptureFactory.fixture().capture);
+    const home = model.endpoints.find((endpoint) => endpoint.path === '/' && endpoint.method === 'GET')!;
+    assert.equal(home.auth.anonymous, true);
+    assert.deepEqual(new ModelValidator().validate(model), []);
+    (home.auth as unknown as { anonymous: unknown }).anonymous = 'yes';
+    assert.deepEqual(new ModelValidator().validate(model), [`endpoints[${model.endpoints.indexOf(home)}].auth.anonymous: expected true or false`]);
   });
 });
 

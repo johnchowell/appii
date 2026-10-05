@@ -1,23 +1,22 @@
+import { SingleByteIndexes } from './single-byte-indexes.js';
+
+export interface CharsetDecodeOptions {
+  fatal?: boolean;
+  stream?: boolean;
+}
+
 export class CharsetEncoder {
   static readonly UTF8 = 'utf-8';
   static readonly UTF8_OUTPUT: ReadonlySet<string> = new Set(['utf-8', 'utf-16le', 'utf-16be', 'replacement']);
-  static readonly SINGLE_BYTE: ReadonlySet<string> = new Set([
-    'ibm866', 'iso-8859-2', 'iso-8859-3', 'iso-8859-4', 'iso-8859-5', 'iso-8859-6', 'iso-8859-7', 'iso-8859-8', 'iso-8859-8-i',
-    'iso-8859-10', 'iso-8859-13', 'iso-8859-14', 'iso-8859-15', 'iso-8859-16', 'koi8-r', 'koi8-u', 'macintosh', 'windows-874',
-    'windows-1250', 'windows-1251', 'windows-1252', 'windows-1253', 'windows-1254', 'windows-1255', 'windows-1256', 'windows-1257',
-    'windows-1258', 'x-mac-cyrillic',
-  ]);
+  static readonly SINGLE_BYTE: ReadonlySet<string> = new Set(SingleByteIndexes.names());
   static readonly FIRST_HIGH_BYTE = 0x80;
   static readonly HIGH_BYTES = 0x80;
+  static readonly DECODE_CHUNK = 0x2000;
   static readonly REPLACEMENT = '\ufffd';
   static readonly FORM_SAFE_BYTE: RegExp = /^[*\-._0-9A-Za-z]$/;
   static readonly SPACE = 0x20;
   static readonly WINDOWS_1252 = 'windows-1252';
-  static readonly WINDOWS_1252_HIGH: readonly number[] = Object.freeze([
-    0x20ac, 0x0081, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008d, 0x017d, 0x008f,
-    0x0090, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x009d, 0x017e, 0x0178,
-    ...Array.from({ length: 0x60 }, (_, i) => 0xa0 + i),
-  ]);
+  static readonly WINDOWS_1252_HIGH: readonly number[] = Object.freeze((SingleByteIndexes.codePoints('windows-1252') ?? []).map((cp) => cp ?? 0xfffd));
 
   readonly name: string;
   readonly exact: boolean;
@@ -39,6 +38,8 @@ export class CharsetEncoder {
 
   static canonical(label: string | undefined): string | undefined {
     if (label === undefined) return undefined;
+    const single = SingleByteIndexes.encoding(label);
+    if (single !== undefined) return single;
     try {
       return new TextDecoder(label.trim()).encoding;
     } catch {
@@ -47,22 +48,32 @@ export class CharsetEncoder {
   }
 
   static singleByteTable(name: string): ReadonlyMap<number, number> | undefined {
-    const decoded = name === CharsetEncoder.WINDOWS_1252 ? String.fromCharCode(...CharsetEncoder.WINDOWS_1252_HIGH) : CharsetEncoder.#decodeHighBytes(name);
-    if (decoded === undefined || decoded.length !== CharsetEncoder.HIGH_BYTES) return undefined;
+    const points = SingleByteIndexes.codePoints(name);
+    if (points === undefined) return undefined;
     const table = new Map<number, number>();
-    for (let i = 0; i < decoded.length; i++) {
-      const ch = decoded.charAt(i);
-      if (ch !== CharsetEncoder.REPLACEMENT && !table.has(ch.charCodeAt(0))) table.set(ch.charCodeAt(0), CharsetEncoder.FIRST_HIGH_BYTE + i);
-    }
+    points.forEach((cp, i) => {
+      if (cp !== undefined && !table.has(cp)) table.set(cp, CharsetEncoder.FIRST_HIGH_BYTE + i);
+    });
     return table;
   }
 
-  static #decodeHighBytes(name: string): string | undefined {
-    try {
-      return new TextDecoder(name).decode(Uint8Array.from({ length: CharsetEncoder.HIGH_BYTES }, (_, i) => CharsetEncoder.FIRST_HIGH_BYTE + i));
-    } catch {
-      return undefined;
+  static decode(bytes: Uint8Array, label: string, options: CharsetDecodeOptions = {}): string {
+    const name = CharsetEncoder.canonical(label);
+    if (name === undefined) throw new RangeError(`The encoding label ${JSON.stringify(label)} is not known`);
+    const points = SingleByteIndexes.codePoints(name);
+    if (points === undefined) return new TextDecoder(name, { fatal: options.fatal === true }).decode(bytes, { stream: options.stream === true });
+    const units: number[] = [];
+    let out = '';
+    for (const byte of bytes) {
+      if (byte < CharsetEncoder.FIRST_HIGH_BYTE) units.push(byte);
+      else {
+        const cp = points[byte - CharsetEncoder.FIRST_HIGH_BYTE];
+        if (cp === undefined && options.fatal === true) throw new TypeError(`The ${name} index has no code point for byte 0x${byte.toString(16)}`);
+        units.push(cp ?? CharsetEncoder.REPLACEMENT.charCodeAt(0));
+      }
+      if (units.length >= CharsetEncoder.DECODE_CHUNK) out += String.fromCharCode(...units.splice(0));
     }
+    return out + String.fromCharCode(...units);
   }
 
   get utf8(): boolean {

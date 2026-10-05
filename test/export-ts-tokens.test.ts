@@ -186,7 +186,7 @@ describe('hidden-field token of the submitted form (EXP2-6, EXP2-20)', () => {
   });
 });
 
-describe('stale page tokens (EXP2-10)', () => {
+describe('stale page tokens (EXP2-10, RETRY-1)', () => {
   let harness: TsClientHarness;
   let model: ApiModel;
   let mod: Module;
@@ -219,14 +219,34 @@ describe('stale page tokens (EXP2-10)', () => {
   }
 
   for (const status of [400, 403, 419, 422]) {
-    test(`a ${status} answer to a page token makes the client load the page again and retry once`, async () => {
+    test(`a ${status} answer to a page token is returned as it is, and the client never sends the request again on its own (RETRY-1)`, async () => {
       const recorder = rotating(status, false);
       const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch });
-      assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'a' } })).status, 200);
+      const first = await TsClientHarness.call(client, endpoint.name, { body: { q: 'a' } });
+      assert.equal(first.status, 200);
+      assert.equal(first.staleTokens, undefined);
+      const second = await TsClientHarness.call(client, endpoint.name, { body: { q: 'b' } });
+      assert.equal(second.status, status);
+      assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'POST /form']);
+      assert.deepEqual(second.staleTokens?.tokens, ['csrf_token']);
+      assert.deepEqual(second.staleTokens?.pages, ['https://rot.example.com/form']);
+      assert.match(second.staleTokens?.message ?? '', new RegExp(`status ${status}\\..*csrf_token.*refreshTokens\\(\\)`));
+      client.refreshTokens();
       assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'b' } })).status, 200);
       assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'POST /form', 'GET /form', 'POST /form']);
     });
   }
+
+  test('a rejection right after the client loaded the page has no stale token notice', async () => {
+    const recorder = TsClientHarness.recorder((request) =>
+      request.method === 'GET' ? TsClientHarness.html('<form action="/form" method="post"><input type="hidden" name="csrf_token" value="T1"><input name="q"></form>') : new Response('bad input', { status: 422 }),
+    );
+    const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch });
+    const response = await TsClientHarness.call(client, endpoint.name, { body: { q: 'a' } });
+    assert.equal(response.status, 422);
+    assert.equal(response.staleTokens, undefined);
+    assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form']);
+  });
 
   test('a session change loads the page again before the next submission, like a browser', async () => {
     const recorder = rotating(403, true);
@@ -236,10 +256,12 @@ describe('stale page tokens (EXP2-10)', () => {
     assert.deepEqual(recorder.sent.map(line), ['GET /form', 'POST /form', 'GET /form', 'POST /form']);
   });
 
-  test('a token that the caller gives is never retried', async () => {
+  test('a token that the caller gives is sent as it is and gets no stale token notice', async () => {
     const recorder = rotating(403, false);
     const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch });
-    assert.equal((await TsClientHarness.call(client, endpoint.name, { body: { q: 'a', csrf_token: 'mine' } })).status, 403);
+    const response = await TsClientHarness.call(client, endpoint.name, { body: { q: 'a', csrf_token: 'mine' } });
+    assert.equal(response.status, 403);
+    assert.equal(response.staleTokens, undefined);
     assert.deepEqual(recorder.sent.map(line), ['POST /form']);
   });
 });

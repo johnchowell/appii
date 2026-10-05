@@ -7,10 +7,13 @@ export class OpenApiSchemaAdapter {
   static readonly NESTED_LISTS: readonly string[] = ['oneOf', 'anyOf', 'allOf', 'prefixItems'];
   static readonly NESTED_SINGLE: readonly string[] = ['items', 'additionalProperties', 'contains', 'not'];
   static readonly GRAPHQL_OPERATION_FIELD = 'operationName';
+  static readonly UNSAFE_PATTERN_KEY = 'x-appii-unsafe-pattern';
+  static readonly UNSAFE_PATTERN_NOTE = `This pattern can take ${Schema.UNSAFE_PATTERN} to check. ${Helpers.UNSAFE_PATTERN_CLIENT}`;
 
   request(schema: JsonSchema, form: boolean): JsonSchema {
     const copy = Json.clone(schema);
     if (form) OpenApiSchemaAdapter.#strip(copy, OpenApiSchemaAdapter.REQUEST_STRIPPED);
+    OpenApiSchemaAdapter.notePatterns(copy);
     return copy;
   }
 
@@ -20,6 +23,7 @@ export class OpenApiSchemaAdapter {
 
   param(param: ParamInfo): JsonSchema {
     const schema = Json.clone(param.schema);
+    OpenApiSchemaAdapter.notePatterns(schema);
     if (!Array.isArray(schema.examples)) {
       const examples = Helpers.examples(param.examples, param.schema);
       if (examples.length > 0) schema.examples = examples;
@@ -34,6 +38,15 @@ export class OpenApiSchemaAdapter {
     const properties: Record<string, unknown> = { ...schema.properties };
     properties[field] = { ...property, type: 'string', const: operationName };
     return { ...schema, properties };
+  }
+
+  static notePatterns(schema: JsonSchema): void {
+    Schema.walkSchema(schema, (node) => {
+      if (Schema.unsafePatterns(node, false).length === 0) return;
+      Json.setOwn(node, OpenApiSchemaAdapter.UNSAFE_PATTERN_KEY, true);
+      const note = OpenApiSchemaAdapter.UNSAFE_PATTERN_NOTE;
+      Json.setOwn(node, 'description', typeof node.description === 'string' && node.description !== '' ? `${node.description} ${note}` : note);
+    });
   }
 
   static discriminable(schema: JsonSchema | undefined): boolean {

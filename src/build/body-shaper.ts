@@ -89,7 +89,7 @@ export class BodyShaper {
       const current = Object.hasOwn(props, key) ? props[key] : undefined;
       if (!Json.isPlainObject(current)) continue;
       const binary = BodyShaper.#binary(uploads);
-      Helpers.setOwn(props, key, current.type === 'array' ? { ...current, items: binary } : binary);
+      Json.setOwn(props, key, current.type === 'array' ? { ...current, items: binary } : binary);
     }
     return schema;
   }

@@ -1,6 +1,7 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { ModelBuilder, ModelValidator } from '../src/build/index.js';
 import { TypeScriptExporter } from '../src/export/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
 import { Fs } from '../src/shared/index.js';
@@ -56,6 +57,38 @@ describe('Origin and Referer of requests that are not HTML forms (EXP2-9)', () =
       [null, null],
       ['https://caller.example', 'https://shop.example.com/app?tab=1'],
     ]);
+  });
+});
+
+describe('Origin and Referer from a model built from a capture (EXP2-9, Build side)', () => {
+  let harness: TsClientHarness;
+  let model: ApiModel;
+  let mod: Module;
+
+  before(async () => {
+    harness = await TsClientHarness.open();
+    model = ModelBuilder.create({ now: ExportModel.NOW }).build(CaptureFactory.fixture().capture);
+    mod = (await harness.load(model)).mod;
+  });
+
+  after(async () => {
+    await harness?.close();
+  });
+
+  test('a fetch() endpoint gets the Origin and Referer of the page that sent it in the capture', async () => {
+    const create = find(model, 'POST', '/api/items');
+    assert.ok(create.samples.length > 0 && create.samples.every((sample) => sample.pageUrl === `${CaptureFactory.ORIGIN}/app`));
+    assert.deepEqual(new ModelValidator().validate(model), []);
+    const recorder = TsClientHarness.recorder(() => TsClientHarness.json({ id: 1 }, 201));
+    const client = TsClientHarness.client(mod, model, { fetch: recorder.fetch, cookies: 'csrf=abc' });
+    await TsClientHarness.call(client, create.name, { body: { name: 'n', price: 1 } });
+    assert.deepEqual(headers(recorder.sent.at(-1)), [CaptureFactory.ORIGIN, `${CaptureFactory.ORIGIN}/app`]);
+  });
+
+  test('the model validator rejects a sample page that is not a string', () => {
+    const copy = JSON.parse(JSON.stringify(model)) as ApiModel;
+    (copy.endpoints[0]!.samples[0] as unknown as { pageUrl: unknown }).pageUrl = 5;
+    assert.deepEqual(new ModelValidator().validate(copy), ['endpoints[0].samples[0].pageUrl: expected a string']);
   });
 });
 

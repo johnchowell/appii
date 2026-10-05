@@ -247,6 +247,17 @@ describe('EndpointGrouper details', () => {
     assert.deepEqual(raw?.responses[0]?.body?.examples, [{ access_token: 'abc', user: 'u' }]);
   });
 
+  test('samples name the page that made the request, with secret query values redacted (EXP2-9)', () => {
+    const f = new CaptureFactory();
+    f.json('POST', '/api/items', 201, { id: 1 }, { pageUrl: f.url('/app?session_token=s3cr3t-value&tab=1'), requestBody: { json: { name: 'x' } }, requestHeaders: { 'content-type': 'application/json' } });
+    f.json('GET', '/api/me', 200, { id: 1 });
+    const endpoints = grouper().group(f.capture().exchanges);
+    assert.equal(byKey(endpoints, `POST ${ORIGIN}/api/items`).samples[0]?.pageUrl, `${ORIGIN}/app?session_token=%3Credacted%3E&tab=1`);
+    assert.equal(Object.hasOwn(byKey(endpoints, `GET ${ORIGIN}/api/me`).samples[0] ?? {}, 'pageUrl'), false);
+    const raw = grouper({}, false).group(f.capture().exchanges);
+    assert.equal(byKey(raw, `POST ${ORIGIN}/api/items`).samples[0]?.pageUrl, `${ORIGIN}/app?session_token=s3cr3t-value&tab=1`);
+  });
+
   test('graphql operations split endpoints; GET graphql is detected from the query parameter', () => {
     const f = new CaptureFactory();
     f.json('POST', '/graphql', 200, { data: {} }, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { query: 'query A { a }' } } });

@@ -60,3 +60,12 @@ describe('Json.asciiJson and Json.printableJson', () => {
     assert.deepEqual(JSON.parse(printable), value);
   });
 });
+
+describe('Text.jsString', () => {
+  test('escapes DEL and the C1 controls, which JSON.stringify leaves raw', () => {
+    assert.equal(Text.jsString('a\x7fb\x85c\x9f'), '"a\\u007fb\\u0085c\\u009f"');
+    assert.equal(Text.jsString('caf\u00e9 \ud83d\ude00'), '"caf\\u00e9 \\ud83d\\ude00"');
+    assert.equal(eval(Text.jsString('a\x7fb\x85\n')), 'a\x7fb\x85\n');
+    assert.equal(Json.printableJson('\x7f'), '"\\u007f"');
+  });
+});

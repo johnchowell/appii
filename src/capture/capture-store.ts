@@ -11,7 +11,12 @@ import type { Har } from './har-types.js';
 export interface CaptureStoreDeps {
   har?: HarConverter;
   validator?: CaptureValidator;
+  reader?: (path: string) => Promise<unknown>;
 }
+
+export type StoredKind = 'model' | 'capture' | 'har';
+
+export type StoredInput = { kind: 'model'; value: unknown } | { kind: 'capture' | 'har'; capture: Capture };
 
 export class CaptureStore {
   static readonly VERSION = CaptureValidator.VERSION;
@@ -22,15 +27,17 @@ export class CaptureStore {
 
   readonly #har: HarConverter;
   readonly #validator: CaptureValidator;
+  readonly #reader: (path: string) => Promise<unknown>;
 
   constructor(deps: CaptureStoreDeps = {}) {
     this.#validator = deps.validator ?? new CaptureValidator();
     this.#har = deps.har ?? new HarConverter({ validator: this.#validator });
+    this.#reader = deps.reader ?? ((path: string) => Fs.readJson(path));
   }
 
   static create(): CaptureStore {
     const validator = new CaptureValidator();
-    return new CaptureStore({ validator, har: new HarConverter({ cookies: new CookieParser(), validator }) });
+    return new CaptureStore({ validator, har: new HarConverter({ cookies: new CookieParser(), validator }), reader: (path) => Fs.readJson(path) });
   }
 
   static isCapture(value: unknown): value is Capture {
@@ -63,6 +70,15 @@ export class CaptureStore {
     return Json.isPlainObject(value) && Json.isPlainObject(value.log) && Array.isArray(value.log.entries);
   }
 
+  static isModel(value: unknown): boolean {
+    return Json.isPlainObject(value) && Array.isArray(value.endpoints) && !Array.isArray(value.exchanges) && !Json.isPlainObject(value.log);
+  }
+
+  static kind(value: unknown): StoredKind {
+    if (CaptureStore.isHar(value)) return 'har';
+    return CaptureStore.isModel(value) ? 'model' : 'capture';
+  }
+
   async save(path: string, capture: Capture): Promise<void> {
     const problems = this.#validator.validate(capture);
     if (problems.length > 0) {
@@ -89,19 +105,29 @@ export class CaptureStore {
   }
 
   async load(path: string): Promise<Capture> {
-    const value = await Fs.readJson(path);
-    if (CaptureStore.isHar(value)) {
-      await CaptureStore.#inlineAttachments(value, dirname(resolve(path)));
-      try {
-        return this.#har.fromHar(value);
-      } catch (err) {
-        if (err instanceof AppiiError) throw new AppiiError(err.code, `${path}: ${err.message}`, { cause: err, details: err.details });
-        throw err;
-      }
+    const input = await this.read(path);
+    if (input.kind === 'model') throw new AppiiError('BAD_INPUT', `${path} is an API model (api.json), not a capture or HAR file`);
+    return input.capture;
+  }
+
+  async read(path: string): Promise<StoredInput> {
+    const value = await this.#reader(path);
+    const kind = CaptureStore.kind(value);
+    if (kind === 'model') return { kind, value };
+    return { kind, capture: kind === 'har' ? await this.#fromHar(value as Har, path) : this.#fromCapture(value, path) };
+  }
+
+  async #fromHar(har: Har, path: string): Promise<Capture> {
+    await CaptureStore.#inlineAttachments(har, dirname(resolve(path)));
+    try {
+      return this.#har.fromHar(har);
+    } catch (err) {
+      if (err instanceof AppiiError) throw new AppiiError(err.code, `${path}: ${err.message}`, { cause: err, details: err.details });
+      throw err;
     }
-    if (Json.isPlainObject(value) && Array.isArray(value.endpoints) && !Array.isArray(value.exchanges)) {
-      throw new AppiiError('BAD_INPUT', `${path} is an API model (api.json), not a capture or HAR file`);
-    }
+  }
+
+  #fromCapture(value: unknown, path: string): Capture {
     if (Json.isPlainObject(value) && typeof value.version === 'number' && value.version !== CaptureStore.VERSION) {
       throw new AppiiError('BAD_INPUT', `${path} has unsupported capture version ${value.version}; this appii reads version ${CaptureStore.VERSION}`);
     }

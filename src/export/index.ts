@@ -38,7 +38,7 @@ export { TsClientRuntime } from './ts-client-runtime.js';
 export { TsEndpointWriter } from './ts-endpoint-writer.js';
 export type { TsEndpointCode, TsEndpointContext, TsEndpointWriterDeps } from './ts-endpoint-writer.js';
 export { FormRuleCompiler } from './form-rule-compiler.js';
-export type { CompiledForm, FieldEntry, FieldRule } from './form-rule-compiler.js';
+export type { CompiledForm, CompiledSchema, CompiledVariant, FieldEntry, FieldRule, FormCondition, FormRuleCompilerDeps } from './form-rule-compiler.js';
 export { ExporterRegistry } from './exporter-registry.js';
 export { HtmlExporter } from './html-exporter.js';
 export type { HtmlExporterDeps } from './html-exporter.js';

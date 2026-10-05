@@ -1,6 +1,13 @@
-import type { ApiModel, CookieRole, Endpoint, JsonSchema } from '../model/index.js';
-import { AppiiError, Http, Samples, Schema, Text } from '../shared/index.js';
+import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
+import type { ApiModel, CookieRole, CsrfToken, Endpoint, JsonSchema } from '../model/index.js';
+import { AppiiError, EndpointIndex, Http, Samples, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
+
+export interface TokenSourceMarkup {
+  text(value: string): string;
+  code(value: string): string;
+  url(value: string): string;
+}
 
 export interface PathSegment {
   text: string;
@@ -10,8 +17,9 @@ export interface PathSegment {
 export class Helpers {
   static readonly GROUP_PREFIXES: RegExp = /^(?:api|apis|rest|rpc|json|ajax|public|v[0-9]+(?:\.[0-9]+)*)$/i;
   static readonly ROOT_GROUP = 'root';
-  static readonly AUTH_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['session', 'auth']);
+  static readonly AUTH_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
   static readonly BASE_URL_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
+  static readonly UNSAFE_PATTERN_CLIENT = 'The generated TypeScript client does not check it unless the unsafePatterns option is true.';
 
   static normalizeOptions(options: ExportOptions): ExportOptions {
     const out: ExportOptions = { ...options };
@@ -52,6 +60,14 @@ export class Helpers {
     if (options.baseUrl === undefined || model.primaryOrigin === '') return url;
     if (url === model.primaryOrigin) return options.baseUrl;
     return url.startsWith(model.primaryOrigin + '/') ? options.baseUrl + url.slice(model.primaryOrigin.length) : url;
+  }
+
+  static tokenSource(token: CsrfToken, markup: TokenSourceMarkup): string {
+    const head = token.sourceName ? `${markup.text(token.source)} ${markup.code(token.sourceName)}` : markup.text(token.source);
+    if (token.sourceUrl === undefined) return head;
+    const method = EndpointIndex.tokenRequest(token);
+    const where = markup.url(token.sourceUrl);
+    return method === undefined ? `${head} on ${where}` : `${head} of ${markup.text(method)} ${where}`;
   }
 
   static sample(model: ApiModel, endpoint: Endpoint, options: ExportOptions, extra: Samples.SampleOptions = {}): Samples.RequestSample {

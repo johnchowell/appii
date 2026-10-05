@@ -17,6 +17,12 @@ export interface FieldErrorShape {
   message: string;
 }
 
+export interface StaleTokensShape {
+  tokens: string[];
+  pages: string[];
+  message: string;
+}
+
 export interface ResponseShape {
   status: number;
   ok: boolean;
@@ -24,11 +30,13 @@ export interface ResponseShape {
   redirected: boolean;
   headers: Headers;
   data: any;
+  staleTokens?: StaleTokensShape;
 }
 
 export interface ClientShape {
   cookies: { get(name: string, url?: string): string | undefined; header(url: string): string; clear(): void };
   clearTokens(): void;
+  refreshTokens(): void;
   [method: string]: unknown;
 }
 

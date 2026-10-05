@@ -52,8 +52,4 @@ export class Helpers {
     if (!Json.isPlainObject(props)) return [];
     return Object.entries(props).filter((entry): entry is [string, JsonSchema] => Json.isPlainObject(entry[1]));
   }
-
-  static setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
-    Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
-  }
 }

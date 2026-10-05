@@ -85,6 +85,15 @@ export class TypeScriptExporter extends BaseExporter {
     return Object.fromEntries(out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   }
 
+  static indexes(endpoints: readonly Endpoint[]): Record<string, string> {
+    const out = new Map<string, string>();
+    for (const endpoint of endpoints) {
+      const index = endpoint.form === undefined ? undefined : TsEndpointWriter.index(endpoint.form.charset);
+      if (index !== undefined) out.set(index[0], index[1]);
+    }
+    return Object.fromEntries([...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  }
+
   source(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
     const opts = Helpers.normalizeOptions(options);
     const taken = new Set<string>(TsClientRuntime.IDENTIFIERS);
@@ -102,6 +111,7 @@ export class TypeScriptExporter extends BaseExporter {
         `const PRIMARY_ORIGIN = ${Text.jsString(primary)};`,
         `const DEFAULT_BASE_URL = ${Text.jsString(base)};`,
         `const REGISTRABLE_DOMAINS: Record<string, string> = ${this.#literals.write(TypeScriptExporter.sites(model, endpoints, opts))};`,
+        `const SINGLE_BYTE_INDEXES: Record<string, string> = ${this.#literals.write(TypeScriptExporter.indexes(endpoints))};`,
       ].join('\n'),
       ...codes.flatMap((code) => code.declarations),
       ...codes.map((code) => code.spec),

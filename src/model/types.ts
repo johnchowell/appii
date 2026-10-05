@@ -185,6 +185,7 @@ export interface FormDescriptor {
   fields: FormField[];
   submitters: FormField[];
   tokenFields: string[];
+  endpoints?: string[];
 }
 
 export type JsonSchema = { [key: string]: unknown };
@@ -233,6 +234,7 @@ export interface EndpointAuth {
   headers: string[];
   bearer: boolean;
   csrf: CsrfToken[];
+  anonymous?: boolean;
 }
 
 export interface EndpointForm {

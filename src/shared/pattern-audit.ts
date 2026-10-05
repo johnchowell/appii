@@ -13,7 +13,7 @@ interface ParseState {
   readonly hidden: PatternNode[];
 }
 
-export class TsPatternAudit {
+export class PatternAudit {
   static readonly MAX_CODE_POINT = 0x10ffff;
   static readonly ANY: CharRanges = [[0, 0x10ffff]];
   static readonly DIGIT: CharRanges = [[0x30, 0x39]];
@@ -43,32 +43,32 @@ export class TsPatternAudit {
   static readonly CONTROL_ESCAPES: Readonly<Record<string, number>> = { t: 0x09, n: 0x0a, v: 0x0b, f: 0x0c, r: 0x0d, '0': 0x00 };
   static readonly FLAGS = 'v';
 
-  unsafe(source: string): boolean {
+  unsafe(source: string, flags: string = PatternAudit.FLAGS): boolean {
     try {
-      new RegExp(source, TsPatternAudit.FLAGS);
+      new RegExp(source, flags);
     } catch {
       return false;
     }
     const state: ParseState = { source, index: 0, hidden: [] };
     let root: PatternNode;
     try {
-      root = TsPatternAudit.#alternation(state);
+      root = PatternAudit.#alternation(state);
     } catch {
       return true;
     }
     if (state.index < source.length) return true;
-    return [root, ...state.hidden].some((node) => TsPatternAudit.exponential(node));
+    return [root, ...state.hidden].some((node) => PatternAudit.exponential(node));
   }
 
   static exponential(node: PatternNode): boolean {
     switch (node.kind) {
       case 'seq':
-        return node.items.some((item) => TsPatternAudit.exponential(item));
+        return node.items.some((item) => PatternAudit.exponential(item));
       case 'alt':
-        return node.options.some((option) => TsPatternAudit.exponential(option));
+        return node.options.some((option) => PatternAudit.exponential(option));
       case 'repeat':
-        if (node.max >= 2 && TsPatternAudit.#repeatable(node.body)) return true;
-        return TsPatternAudit.exponential(node.body);
+        if (node.max >= 2 && PatternAudit.#repeatable(node.body)) return true;
+        return PatternAudit.exponential(node.body);
       default:
         return false;
     }
@@ -77,74 +77,74 @@ export class TsPatternAudit {
   static ambiguous(node: PatternNode): boolean {
     switch (node.kind) {
       case 'seq': {
-        if (node.items.some((item) => TsPatternAudit.ambiguous(item))) return true;
+        if (node.items.some((item) => PatternAudit.ambiguous(item))) return true;
         for (let i = 0; i < node.items.length; i++) {
           const left = node.items[i];
-          if (!left || !TsPatternAudit.#variable(left)) continue;
+          if (!left || !PatternAudit.#variable(left)) continue;
           for (let j = i + 1; j < node.items.length; j++) {
             const right = node.items[j];
             if (!right) break;
-            if (TsPatternAudit.#variable(right) && TsPatternAudit.intersects(TsPatternAudit.last(left), TsPatternAudit.first(right))) return true;
-            if (!TsPatternAudit.nullable(right)) break;
+            if (PatternAudit.#variable(right) && PatternAudit.intersects(PatternAudit.last(left), PatternAudit.first(right))) return true;
+            if (!PatternAudit.nullable(right)) break;
           }
         }
         return false;
       }
       case 'alt': {
-        if (node.options.some((option) => TsPatternAudit.ambiguous(option))) return true;
-        const options = node.options.filter((option) => !TsPatternAudit.#emptyOnly(option));
+        if (node.options.some((option) => PatternAudit.ambiguous(option))) return true;
+        const options = node.options.filter((option) => !PatternAudit.#emptyOnly(option));
         for (let i = 0; i < options.length; i++) {
           for (let j = i + 1; j < options.length; j++) {
             const a = options[i];
             const b = options[j];
-            if (a && b && TsPatternAudit.overlap(a, b)) return true;
+            if (a && b && PatternAudit.overlap(a, b)) return true;
           }
         }
         return false;
       }
       case 'repeat':
-        return TsPatternAudit.ambiguous(node.body) || (node.max >= 2 && TsPatternAudit.#repeatable(node.body));
+        return PatternAudit.ambiguous(node.body) || (node.max >= 2 && PatternAudit.#repeatable(node.body));
       default:
         return false;
     }
   }
 
   static #repeatable(body: PatternNode): boolean {
-    if (TsPatternAudit.#emptyOnly(body)) return false;
-    return TsPatternAudit.ambiguous(body) || TsPatternAudit.pumpable(body) || TsPatternAudit.nullable(body);
+    if (PatternAudit.#emptyOnly(body)) return false;
+    return PatternAudit.ambiguous(body) || PatternAudit.pumpable(body) || PatternAudit.nullable(body);
   }
 
   static pumpable(node: PatternNode): boolean {
     switch (node.kind) {
       case 'repeat':
-        if (TsPatternAudit.#emptyOnly(node.body)) return false;
-        return (node.max > node.min && node.max >= 2) || (node.max >= 1 && TsPatternAudit.pumpable(node.body));
+        if (PatternAudit.#emptyOnly(node.body)) return false;
+        return (node.max > node.min && node.max >= 2) || (node.max >= 1 && PatternAudit.pumpable(node.body));
       case 'seq': {
-        const solid = node.items.filter((item) => !TsPatternAudit.nullable(item));
-        if (solid.length === 0) return node.items.some((item) => TsPatternAudit.pumpable(item));
+        const solid = node.items.filter((item) => !PatternAudit.nullable(item));
+        if (solid.length === 0) return node.items.some((item) => PatternAudit.pumpable(item));
         const [only] = solid;
-        return solid.length === 1 && only !== undefined && TsPatternAudit.pumpable(only);
+        return solid.length === 1 && only !== undefined && PatternAudit.pumpable(only);
       }
       case 'alt':
-        return node.options.some((option) => TsPatternAudit.pumpable(option));
+        return node.options.some((option) => PatternAudit.pumpable(option));
       default:
         return false;
     }
   }
 
   static overlap(a: PatternNode, b: PatternNode): boolean {
-    const fixedA = TsPatternAudit.#fixed(a);
-    const fixedB = TsPatternAudit.#fixed(b);
+    const fixedA = PatternAudit.#fixed(a);
+    const fixedB = PatternAudit.#fixed(b);
     if (fixedA && fixedB) {
       const length = Math.min(fixedA.length, fixedB.length);
       for (let i = 0; i < length; i++) {
         const left = fixedA[i];
         const right = fixedB[i];
-        if (!left || !right || !TsPatternAudit.intersects(left, right)) return false;
+        if (!left || !right || !PatternAudit.intersects(left, right)) return false;
       }
       return true;
     }
-    return TsPatternAudit.intersects(TsPatternAudit.first(a), TsPatternAudit.first(b));
+    return PatternAudit.intersects(PatternAudit.first(a), PatternAudit.first(b));
   }
 
   static nullable(node: PatternNode): boolean {
@@ -152,22 +152,22 @@ export class TsPatternAudit {
       case 'set':
         return false;
       case 'seq':
-        return node.items.every((item) => TsPatternAudit.nullable(item));
+        return node.items.every((item) => PatternAudit.nullable(item));
       case 'alt':
-        return node.options.some((option) => TsPatternAudit.nullable(option));
+        return node.options.some((option) => PatternAudit.nullable(option));
       case 'repeat':
-        return node.min === 0 || TsPatternAudit.nullable(node.body);
+        return node.min === 0 || PatternAudit.nullable(node.body);
       default:
         return true;
     }
   }
 
   static first(node: PatternNode): CharRanges {
-    return TsPatternAudit.#edge(node, false);
+    return PatternAudit.#edge(node, false);
   }
 
   static last(node: PatternNode): CharRanges {
-    return TsPatternAudit.#edge(node, true);
+    return PatternAudit.#edge(node, true);
   }
 
   static union(a: CharRanges, b: CharRanges): CharRanges {
@@ -184,11 +184,11 @@ export class TsPatternAudit {
   static complement(ranges: CharRanges): CharRanges {
     const out: [number, number][] = [];
     let next = 0;
-    for (const [lo, hi] of TsPatternAudit.union(ranges, [])) {
+    for (const [lo, hi] of PatternAudit.union(ranges, [])) {
       if (lo > next) out.push([next, lo - 1]);
       next = Math.max(next, hi + 1);
     }
-    if (next <= TsPatternAudit.MAX_CODE_POINT) out.push([next, TsPatternAudit.MAX_CODE_POINT]);
+    if (next <= PatternAudit.MAX_CODE_POINT) out.push([next, PatternAudit.MAX_CODE_POINT]);
     return out;
   }
 
@@ -204,39 +204,39 @@ export class TsPatternAudit {
         let out: CharRanges = [];
         const items = end ? [...node.items].reverse() : node.items;
         for (const item of items) {
-          out = TsPatternAudit.union(out, TsPatternAudit.#edge(item, end));
-          if (!TsPatternAudit.nullable(item)) break;
+          out = PatternAudit.union(out, PatternAudit.#edge(item, end));
+          if (!PatternAudit.nullable(item)) break;
         }
         return out;
       }
       case 'alt':
-        return node.options.reduce<CharRanges>((out, option) => TsPatternAudit.union(out, TsPatternAudit.#edge(option, end)), []);
+        return node.options.reduce<CharRanges>((out, option) => PatternAudit.union(out, PatternAudit.#edge(option, end)), []);
       case 'repeat':
-        return node.max === 0 ? [] : TsPatternAudit.#edge(node.body, end);
+        return node.max === 0 ? [] : PatternAudit.#edge(node.body, end);
       default:
         return [];
     }
   }
 
   static #variable(node: PatternNode): boolean {
-    return node.kind === 'repeat' && node.max > node.min && !TsPatternAudit.#emptyOnly(node.body);
+    return node.kind === 'repeat' && node.max > node.min && !PatternAudit.#emptyOnly(node.body);
   }
 
   static #emptyOnly(node: PatternNode): boolean {
-    return TsPatternAudit.first(node).length === 0;
+    return PatternAudit.first(node).length === 0;
   }
 
   static #fixed(node: PatternNode): CharRanges[] | undefined {
     if (node.kind === 'set') return [node.set];
     if (node.kind === 'empty') return [];
     if (node.kind === 'repeat' && node.min === node.max && node.max <= 64) {
-      const body = TsPatternAudit.#fixed(node.body);
+      const body = PatternAudit.#fixed(node.body);
       return body === undefined ? undefined : Array.from({ length: node.min }, () => body).flat();
     }
     if (node.kind !== 'seq') return undefined;
     const out: CharRanges[] = [];
     for (const item of node.items) {
-      const part = TsPatternAudit.#fixed(item);
+      const part = PatternAudit.#fixed(item);
       if (part === undefined) return undefined;
       out.push(...part);
     }
@@ -244,10 +244,10 @@ export class TsPatternAudit {
   }
 
   static #alternation(state: ParseState): PatternNode {
-    const options: PatternNode[] = [TsPatternAudit.#sequence(state)];
+    const options: PatternNode[] = [PatternAudit.#sequence(state)];
     while (state.source.charAt(state.index) === '|') {
       state.index++;
-      options.push(TsPatternAudit.#sequence(state));
+      options.push(PatternAudit.#sequence(state));
     }
     return options.length === 1 && options[0] ? options[0] : { kind: 'alt', options };
   }
@@ -257,8 +257,8 @@ export class TsPatternAudit {
     while (state.index < state.source.length) {
       const ch = state.source.charAt(state.index);
       if (ch === '|' || ch === ')') break;
-      const atom = TsPatternAudit.#atom(state);
-      items.push(TsPatternAudit.#quantified(state, atom));
+      const atom = PatternAudit.#atom(state);
+      items.push(PatternAudit.#quantified(state, atom));
     }
     return items.length === 1 && items[0] ? items[0] : { kind: 'seq', items };
   }
@@ -288,16 +288,16 @@ export class TsPatternAudit {
   static #atom(state: ParseState): PatternNode {
     const { source } = state;
     const ch = source.charAt(state.index);
-    if (ch === '(') return TsPatternAudit.#group(state);
-    if (ch === '[') return TsPatternAudit.#class(state);
-    if (ch === '\\') return TsPatternAudit.#escape(state, false);
+    if (ch === '(') return PatternAudit.#group(state);
+    if (ch === '[') return PatternAudit.#class(state);
+    if (ch === '\\') return PatternAudit.#escape(state, false);
     if (ch === '^' || ch === '$') {
       state.index++;
       return { kind: 'empty' };
     }
     if (ch === '.') {
       state.index++;
-      return { kind: 'set', set: TsPatternAudit.complement(TsPatternAudit.LINE_TERMINATORS) };
+      return { kind: 'set', set: PatternAudit.complement(PatternAudit.LINE_TERMINATORS) };
     }
     const cp = source.codePointAt(state.index) ?? 0;
     state.index += cp > 0xffff ? 2 : 1;
@@ -324,7 +324,7 @@ export class TsPatternAudit {
       if (colon < 0) throw new SyntaxError('Unknown group');
       state.index = colon + 1;
     }
-    const body = TsPatternAudit.#alternation(state);
+    const body = PatternAudit.#alternation(state);
     if (source.charAt(state.index) !== ')') throw new SyntaxError('Unterminated group');
     state.index++;
     if (!hidden) return body;
@@ -366,27 +366,27 @@ export class TsPatternAudit {
         state.index = close + 1;
         continue;
       }
-      const low = TsPatternAudit.#classAtom(state);
+      const low = PatternAudit.#classAtom(state);
       if (source.charAt(state.index) === '-' && source.charAt(state.index + 1) !== ']' && low.length === 1 && low[0] && low[0][0] === low[0][1]) {
         state.index++;
-        const high = TsPatternAudit.#classAtom(state);
+        const high = PatternAudit.#classAtom(state);
         const start = low[0][0];
         const end = high.length === 1 && high[0] && high[0][0] === high[0][1] ? high[0][0] : start;
-        ranges = TsPatternAudit.union(ranges, [[start, Math.max(start, end)]]);
+        ranges = PatternAudit.union(ranges, [[start, Math.max(start, end)]]);
       } else {
-        ranges = TsPatternAudit.union(ranges, low);
+        ranges = PatternAudit.union(ranges, low);
       }
     }
     if (source.charAt(state.index) !== ']') throw new SyntaxError('Unterminated class');
     state.index++;
-    if (complex) return { kind: 'set', set: TsPatternAudit.ANY };
-    return { kind: 'set', set: negated ? TsPatternAudit.complement(ranges) : ranges };
+    if (complex) return { kind: 'set', set: PatternAudit.ANY };
+    return { kind: 'set', set: negated ? PatternAudit.complement(ranges) : ranges };
   }
 
   static #classAtom(state: ParseState): CharRanges {
     if (state.source.charAt(state.index) === '\\') {
-      const node = TsPatternAudit.#escape(state, true);
-      return node.kind === 'set' ? node.set : TsPatternAudit.ANY;
+      const node = PatternAudit.#escape(state, true);
+      return node.kind === 'set' ? node.set : PatternAudit.ANY;
     }
     const cp = state.source.codePointAt(state.index) ?? 0;
     state.index += cp > 0xffff ? 2 : 1;
@@ -400,17 +400,17 @@ export class TsPatternAudit {
     const set = (ranges: CharRanges): PatternNode => ({ kind: 'set', set: ranges });
     switch (ch) {
       case 'd':
-        return set(TsPatternAudit.DIGIT);
+        return set(PatternAudit.DIGIT);
       case 'D':
-        return set(TsPatternAudit.complement(TsPatternAudit.DIGIT));
+        return set(PatternAudit.complement(PatternAudit.DIGIT));
       case 'w':
-        return set(TsPatternAudit.WORD);
+        return set(PatternAudit.WORD);
       case 'W':
-        return set(TsPatternAudit.complement(TsPatternAudit.WORD));
+        return set(PatternAudit.complement(PatternAudit.WORD));
       case 's':
-        return set(TsPatternAudit.SPACE);
+        return set(PatternAudit.SPACE);
       case 'S':
-        return set(TsPatternAudit.complement(TsPatternAudit.SPACE));
+        return set(PatternAudit.complement(PatternAudit.SPACE));
       case 'b':
         return inClass ? set([[0x08, 0x08]]) : { kind: 'empty' };
       case 'B':
@@ -420,13 +420,13 @@ export class TsPatternAudit {
         const close = source.indexOf('}', state.index);
         if (close < 0) throw new SyntaxError('Unterminated property escape');
         state.index = close + 1;
-        return set(TsPatternAudit.ANY);
+        return set(PatternAudit.ANY);
       }
       case 'k': {
         const close = source.indexOf('>', state.index);
         if (close < 0) throw new SyntaxError('Unterminated group reference');
         state.index = close + 1;
-        return { kind: 'repeat', body: set(TsPatternAudit.ANY), min: 0, max: Number.POSITIVE_INFINITY };
+        return { kind: 'repeat', body: set(PatternAudit.ANY), min: 0, max: Number.POSITIVE_INFINITY };
       }
       case 'x': {
         const hex = source.slice(state.index, state.index + 2);
@@ -454,9 +454,9 @@ export class TsPatternAudit {
       default: {
         if (!inClass && /^[1-9]$/.test(ch)) {
           while (/^[0-9]$/.test(source.charAt(state.index))) state.index++;
-          return { kind: 'repeat', body: set(TsPatternAudit.ANY), min: 0, max: Number.POSITIVE_INFINITY };
+          return { kind: 'repeat', body: set(PatternAudit.ANY), min: 0, max: Number.POSITIVE_INFINITY };
         }
-        const control = TsPatternAudit.CONTROL_ESCAPES[ch];
+        const control = PatternAudit.CONTROL_ESCAPES[ch];
         if (control !== undefined) return set([[control, control]]);
         const cp = source.codePointAt(state.index - 1) ?? 0;
         if (cp > 0xffff) state.index++;

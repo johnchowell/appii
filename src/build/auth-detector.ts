@@ -1,8 +1,10 @@
-import type { Capture, CsrfToken, Endpoint, Exchange } from '../model/index.js';
+import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
+import type { Capture, CookieRole, CsrfToken, Endpoint, Exchange } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, TokenDetector } from '../forms/index.js';
 import { Http, Json } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
+import { CookieClassifier } from './cookie-classifier.js';
 import { CsrfSourceResolver } from './csrf-source-resolver.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { HeaderPolicy } from './header-policy.js';
@@ -20,6 +22,7 @@ export interface AuthDetectorDeps {
   documents?: PageDocuments;
   redactor?: Redactor;
   sources?: (capture: Capture) => CsrfSourceResolver;
+  cookies?: CookieClassifier;
 }
 
 interface TokenCandidate {
@@ -39,15 +42,20 @@ interface EndpointAuthState {
 export class AuthDetector {
   static readonly BEARER: RegExp = /^bearer[ \t]+\S/i;
   static readonly BODY_FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
+  static readonly CREDENTIAL_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
+  static readonly SUCCESS_MIN = 200;
+  static readonly SUCCESS_MAX = 299;
 
   readonly #tokens: TokenDetector;
   readonly #body: BodyParser;
   readonly #headers: HeaderPolicy;
   readonly #redactor: Redactor;
   readonly #sources: (capture: Capture) => CsrfSourceResolver;
+  readonly #cookies: CookieClassifier;
 
   constructor(deps: AuthDetectorDeps) {
     this.#tokens = deps.tokens;
+    this.#cookies = deps.cookies ?? new CookieClassifier();
     this.#body = deps.body;
     this.#headers = deps.headers ?? new HeaderPolicy({ tokens: deps.tokens });
     this.#redactor = deps.redactor ?? new Redactor(true, { tokens: deps.tokens });
@@ -67,6 +75,7 @@ export class AuthDetector {
       headers: new HeaderPolicy({ tokens }),
       documents: new PageDocuments({ pages: new HtmlPages({ body }), extractor }),
       redactor: new Redactor(options.redact ?? true, { tokens }),
+      cookies: new CookieClassifier(),
     });
   }
 
@@ -85,8 +94,17 @@ export class AuthDetector {
         headers: [...state.headers].sort(Helpers.compare),
         bearer: state.bearer,
         csrf: [...state.csrf.values()],
+        ...(exchanges.some((exchange) => this.isAnonymous(exchange)) ? { anonymous: true } : {}),
       };
     }
+  }
+
+  isAnonymous(exchange: Exchange): boolean {
+    const status = exchange.response?.status;
+    if (status === undefined || status < AuthDetector.SUCCESS_MIN || status > AuthDetector.SUCCESS_MAX) return false;
+    const headers = exchange.request.headers;
+    if (headers.some((header) => this.#headers.isAuth(header.name))) return false;
+    return !Http.parseCookieHeader(Http.getHeader(headers, 'cookie')).some((cookie) => AuthDetector.CREDENTIAL_ROLES.has(this.#cookies.classify(cookie.name)));
   }
 
   static predictCookies(endpoint: Endpoint, capture: Capture): string[] {

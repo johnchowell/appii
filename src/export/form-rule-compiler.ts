@@ -1,6 +1,5 @@
 import type { JsonSchema, ParamInfo } from '../model/index.js';
-import { Json, Schema } from '../shared/index.js';
-import { TsPatternAudit } from './ts-pattern-audit.js';
+import { Json, PatternAudit, Schema } from '../shared/index.js';
 
 export interface FieldRule {
   name: string;
@@ -53,7 +52,7 @@ export interface CompiledSchema extends CompiledForm {
 }
 
 export interface FormRuleCompilerDeps {
-  patterns?: TsPatternAudit;
+  patterns?: PatternAudit;
 }
 
 export class FormRuleCompiler {
@@ -65,14 +64,14 @@ export class FormRuleCompiler {
   static readonly NOVALIDATE = 'x-html-novalidate';
   static readonly FIELDS = 'x-appii-fields';
 
-  readonly #patterns: TsPatternAudit;
+  readonly #patterns: PatternAudit;
 
   constructor(deps: FormRuleCompilerDeps = {}) {
-    this.#patterns = deps.patterns ?? new TsPatternAudit();
+    this.#patterns = deps.patterns ?? new PatternAudit();
   }
 
   static create(): FormRuleCompiler {
-    return new FormRuleCompiler({ patterns: new TsPatternAudit() });
+    return new FormRuleCompiler({ patterns: new PatternAudit() });
   }
 
   compileSchema(schema: JsonSchema | undefined): CompiledSchema {

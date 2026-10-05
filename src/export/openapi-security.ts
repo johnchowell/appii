@@ -1,6 +1,7 @@
 import type { ApiModel, CookieRole, CsrfToken, Endpoint } from '../model/index.js';
 import { Json } from '../shared/index.js';
 import { Helpers } from './helpers.js';
+import type { TokenSourceMarkup } from './helpers.js';
 import { OpenApiComponents } from './openapi-components.js';
 
 export type SecurityRequirement = Record<string, string[]>;
@@ -9,6 +10,7 @@ export class OpenApiSecurity {
   static readonly BEARER_KEY = 'http:bearer';
   static readonly BEARER_NAME = 'bearerAuth';
   static readonly AUTHORIZATION = 'authorization';
+  static readonly MARKUP: TokenSourceMarkup = Object.freeze({ text: (value: string) => value, code: (value: string) => value, url: (value: string) => value });
 
   readonly #model: ApiModel;
   readonly #components: OpenApiComponents;
@@ -37,7 +39,7 @@ export class OpenApiSecurity {
       seen.add(key);
       out.push(requirement);
     }
-    if (out.length > 0 && endpoint.count === 0) out.push({});
+    if (out.length > 0 && (endpoint.count === 0 || endpoint.auth.anonymous === true)) out.push({});
     return out;
   }
 
@@ -64,8 +66,7 @@ export class OpenApiSecurity {
 
   #csrfHeader(token: CsrfToken): string {
     const lower = token.name.toLowerCase();
-    const source = token.sourceName ? `${token.source} ${token.sourceName}` : token.source;
-    const description = `CSRF token sent in the ${token.name} header; the website takes it from ${source}${token.sourceUrl ? ` (${token.sourceUrl})` : ''}.`;
+    const description = `CSRF token sent in the ${token.name} header; the website takes it from ${Helpers.tokenSource(token, OpenApiSecurity.MARKUP)}.`;
     return this.#components.scheme(`header:${lower}`, `${lower} header`, { type: 'apiKey', in: 'header', name: token.name, description });
   }
 

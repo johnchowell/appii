@@ -16,6 +16,7 @@ export class MarkdownExporter extends BaseExporter {
   readonly extension = 'md';
   readonly mimeType = 'text/markdown';
   readonly description = 'Markdown documentation with endpoint tables, details and cookies';
+  static readonly UNSAFE_PATTERN_NOTE = `A pattern marked (${Schema.UNSAFE_PATTERN}) can take a very long time to check. ${Helpers.UNSAFE_PATTERN_CLIENT}`;
 
   readonly #md: MarkdownWriter;
   readonly #fields: SchemaFieldList;
@@ -123,8 +124,8 @@ export class MarkdownExporter extends BaseExporter {
     if (endpoint.auth.cookies.length > 0) facts.push(`- **Cookies:** ${endpoint.auth.cookies.map((name) => md.code(name)).join(', ')}`);
     if (endpoint.auth.bearer) facts.push('- **Bearer:** Authorization: Bearer token');
     for (const token of endpoint.auth.csrf) {
-      const source = token.sourceName ? `${md.text(token.source)} ${md.code(token.sourceName)}` : md.text(token.source);
-      facts.push(`- **CSRF:** ${md.code(token.name)} in the ${md.text(token.location)}, from ${source}${token.sourceUrl ? ` on ${md.code(Helpers.mapUrl(model, token.sourceUrl, options))}` : ''}`);
+      const source = Helpers.tokenSource(token, { text: (value) => md.text(value), code: (value) => md.code(value), url: (value) => md.code(Helpers.mapUrl(model, value, options)) });
+      facts.push(`- **CSRF:** ${md.code(token.name)} in the ${md.text(token.location)}, from ${source}`);
     }
     if (endpoint.form) {
       facts.push(`- **Form:** ${md.code(endpoint.form.selector)} on ${md.code(Helpers.mapUrl(model, endpoint.form.pageUrl, options))} (${md.text(endpoint.form.enctype)})`);
@@ -152,8 +153,15 @@ export class MarkdownExporter extends BaseExporter {
         out.push(`*Response ${response.status} fields*`, this.#fieldTable(fields));
       }
     }
+    if (MarkdownExporter.#unsafePatterns(endpoint)) out.push(md.text(MarkdownExporter.UNSAFE_PATTERN_NOTE));
     out.push('**Example request**', md.block(Curl.curlCommand(Helpers.sample(model, endpoint, options)), 'bash'));
     return out.join('\n\n');
+  }
+
+  static #unsafePatterns(endpoint: Endpoint): boolean {
+    const schemas = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams].map((param) => param.schema);
+    if (endpoint.requestBody?.schema) schemas.push(endpoint.requestBody.schema);
+    return schemas.some((schema) => Schema.unsafePatterns(schema).length > 0);
   }
 
   #params(params: readonly ParamInfo[]): string {

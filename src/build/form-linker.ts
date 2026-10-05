@@ -34,6 +34,7 @@ export interface FormLinkerOptions {
 export interface FormLinkResult {
   endpoints: Endpoint[];
   forms: FormDescriptor[];
+  targets: ReadonlyMap<FormDescriptor, readonly Endpoint[]>;
 }
 
 interface Submission {
@@ -118,10 +119,17 @@ export class FormLinker {
     const matcher = new EndpointMatcher(endpoints, { paths: this.#paths });
     const links = new Map<string, Link>();
     const created: Endpoint[] = [];
+    const sent = new Map<FormDescriptor, Endpoint[]>();
+    const record = (form: FormDescriptor, endpoint: Endpoint): void => {
+      const list = sent.get(form) ?? [];
+      if (!list.includes(endpoint)) list.push(endpoint);
+      sent.set(form, list);
+    };
     for (const submission of this.#submissions(forms)) {
       const existing = FormLinker.#find(endpoints, submission, matcher);
       if (existing) {
         FormLinker.#entry(links, existing.key, () => ({ endpoint: existing, submissions: [] })).submissions.push(submission);
+        record(submission.form, existing);
         continue;
       }
       const path = submission.url.pathname;
@@ -133,9 +141,25 @@ export class FormLinker {
         return { endpoint, template, submissions: [] };
       });
       link.submissions.push(submission);
+      record(submission.form, link.endpoint);
     }
     for (const link of links.values()) this.#apply(link);
-    return { endpoints: [...endpoints, ...created], forms: forms.map((form) => this.#redactor.form(form)) };
+    const targets = new Map<FormDescriptor, readonly Endpoint[]>();
+    const described = forms.map((form) => {
+      const out = this.#redactor.form(form);
+      targets.set(out, sent.get(form) ?? []);
+      return out;
+    });
+    return { endpoints: [...endpoints, ...created], forms: described, targets };
+  }
+
+  static endpointIds(result: FormLinkResult, forms: readonly FormDescriptor[], kept: readonly Endpoint[]): FormDescriptor[] {
+    const order = new Map(kept.map((endpoint, index) => [endpoint, index]));
+    return forms.map((form) => {
+      const linked = (result.targets.get(form) ?? []).filter((endpoint) => order.has(endpoint));
+      linked.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+      return { ...form, endpoints: Helpers.distinct(linked.map((endpoint) => endpoint.id)) };
+    });
   }
 
   #submissions(forms: readonly FormDescriptor[]): Submission[] {
@@ -223,7 +247,7 @@ export class FormLinker {
       const source = formProps.get(name);
       if (!source || Schema.primaryType(source) !== Schema.primaryType(property)) continue;
       for (const [key, value] of Object.entries(source)) {
-        if ((key.startsWith(FormLinker.ANNOTATION_PREFIX) || FormLinker.ANNOTATION_KEYS.includes(key)) && !Object.hasOwn(property, key)) Helpers.setOwn(property, key, Json.clone(value));
+        if ((key.startsWith(FormLinker.ANNOTATION_PREFIX) || FormLinker.ANNOTATION_KEYS.includes(key)) && !Object.hasOwn(property, key)) Json.setOwn(property, key, Json.clone(value));
       }
     }
     return out;
