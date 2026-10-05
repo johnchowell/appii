@@ -16,9 +16,9 @@ test('Text casing, singularize, escaping', () => {
   ]);
   assert.equal(Text.truncate('abcdefgh', 5), 'ab...');
   assert.equal(Text.shellQuote("it's"), `'it'\\''s'`);
-  assert.equal(Text.escapeHtml('<a href="x">é</a>'), '&lt;a href=&quot;x&quot;&gt;&#233;&lt;/a&gt;');
+  assert.equal(Text.escapeHtml('<a href="x">\u00e9</a>'), '&lt;a href=&quot;x&quot;&gt;&#233;&lt;/a&gt;');
   assert.equal(Text.escapeMarkdown('a|b`c'), 'a\\|b\\`c');
-  assert.equal(Text.jsString('café \u{1F600}'), '"caf\\u00e9 \\ud83d\\ude00"');
+  assert.equal(Text.jsString('caf\u00e9 \u{1F600}'), '"caf\\u00e9 \\ud83d\\ude00"');
   assert.equal(Text.propertyKey('a-b'), '"a-b"');
   assert.equal(Text.propertyKey('ab'), 'ab');
   const taken = new Set<string>();

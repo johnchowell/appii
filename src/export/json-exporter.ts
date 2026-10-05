@@ -1,0 +1,23 @@
+import type { ApiModel, Endpoint } from '../model/index.js';
+import { BaseExporter } from './exporter.js';
+import type { ExportFormat, ExportOptions } from './exporter.js';
+import { Helpers } from './helpers.js';
+
+export class JsonExporter extends BaseExporter {
+  readonly format: ExportFormat = 'json';
+  readonly extension = 'json';
+  readonly mimeType = 'application/json';
+  readonly description = 'The API model (api.json) as pretty-printed JSON';
+
+  model(model: ApiModel, endpoints: readonly Endpoint[]): ApiModel {
+    return { ...model, endpoints: [...endpoints] };
+  }
+
+  protected render(model: ApiModel, endpoints: Endpoint[], _options: ExportOptions): string {
+    return Helpers.json(this.model(model, endpoints)) + '\n';
+  }
+
+  protected override filename(_model: ApiModel): string {
+    return 'api.json';
+  }
+}
