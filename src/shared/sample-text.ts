@@ -5,7 +5,7 @@ export interface LiteralPart {
   readonly text: string;
 }
 
-export type PlaceholderEncoding = 'component' | 'json';
+export type PlaceholderEncoding = 'component' | 'form' | 'json';
 
 export interface PlaceholderPart {
   readonly kind: 'placeholder';

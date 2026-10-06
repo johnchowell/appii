@@ -7,6 +7,7 @@ export interface PathObservation {
   readonly mime: string;
   readonly structure?: StructureSignature;
   readonly query: readonly string[];
+  readonly credentials?: readonly string[];
 }
 
 export interface PathEvidence {

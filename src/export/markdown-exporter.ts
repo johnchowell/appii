@@ -18,6 +18,8 @@ export class MarkdownExporter extends BaseExporter {
   readonly description = 'Markdown documentation with endpoint tables, details and cookies';
   static readonly UNSAFE_PATTERN_NOTE = `A pattern marked (${Schema.UNSAFE_PATTERN}) can take a very long time to check. ${Helpers.UNSAFE_PATTERN_CLIENT}`;
   static readonly FORM_PAGES = 3;
+  static readonly SCHEMA_OPEN = '<details><summary>JSON Schema</summary>';
+  static readonly DETAILS_CLOSE = '</details>';
 
   readonly #md: MarkdownWriter;
   readonly #fields: SchemaFieldList;
@@ -197,6 +199,7 @@ export class MarkdownExporter extends BaseExporter {
     const fields = this.#fields.rows(shape.schema);
     const out: string[] = [];
     if (fields.length > 0) out.push(this.#fieldTable(fields));
+    if (shape.schema) out.push(MarkdownExporter.SCHEMA_OPEN, this.#md.block(Json.asciiJson(shape.schema), 'json'), MarkdownExporter.DETAILS_CLOSE);
     const example = shape.examples[0];
     if (shape.jsonLines === true) out.push(this.#md.block(Helpers.jsonLines(shape.examples), ''));
     else if (example !== undefined) out.push(this.#md.block(typeof example === 'string' ? example : Json.asciiJson(example), typeof example === 'string' ? '' : 'json'));

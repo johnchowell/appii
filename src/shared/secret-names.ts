@@ -40,6 +40,7 @@ export class SecretNames {
     'xsrf',
   ]);
   static readonly STEMS: readonly string[] = Object.freeze(['password', 'passwd', 'passphrase']);
+  static readonly PASSWORD_WORDS: readonly string[] = Object.freeze(['password', 'passwd', 'passphrase', 'passcode', 'pass', 'pwd', 'pw']);
   static readonly SUFFIXES: readonly string[] = Object.freeze(['token', 'secret', 'apikey', 'passcode', 'sessionid', 'cvc', 'cvv', 'cardnumber']);
   static readonly KEY_QUALIFIERS: readonly string[] = Object.freeze([
     'api', 'access', 'secret', 'private', 'app', 'rp', 'reset', 'activation', 'recovery', 'confirmation', 'verification',
@@ -99,6 +100,12 @@ export class SecretNames {
     if (words.length === 0) return false;
     if (words.some((word) => SecretNames.#secretWord(word))) return true;
     return SecretNames.PHRASES.some((phrase) => SecretNames.#hasPhrase(words, phrase));
+  }
+
+  static isPassword(name: string): boolean {
+    if (letterWords(name).some((word) => SecretNames.PASSWORD_WORDS.includes(word))) return true;
+    const lower = name.toLowerCase();
+    return SecretNames.STEMS.some((stem) => lower.includes(stem));
   }
 
   static #secretWord(word: string): boolean {

@@ -4,9 +4,15 @@ import { Http } from '../shared/index.js';
 
 export type CookieGeneration = 'authenticated' | 'anonymous';
 
+export interface GenerationEvent {
+  readonly at: number;
+  readonly generation: CookieGeneration;
+}
+
 export interface CredentialEvidenceData {
   readonly roles: ReadonlyMap<string, CookieRole>;
-  readonly generations: ReadonlyMap<string, CookieGeneration>;
+  readonly generations: ReadonlyMap<string, readonly GenerationEvent[]>;
+  readonly positions: ReadonlyMap<Exchange, number>;
   readonly loginPages: ReadonlySet<string>;
   readonly classify: (name: string) => CookieRole;
 }
@@ -41,12 +47,15 @@ export class CredentialEvidence {
     return CredentialEvidence.CREDENTIAL_ROLES.has(this.role(name));
   }
 
-  generation(name: string, value: string): CookieGeneration | undefined {
-    return this.#data.generations.get(CredentialEvidence.key(name, value));
+  generation(name: string, value: string, exchange?: Exchange): CookieGeneration | undefined {
+    const events = this.#data.generations.get(CredentialEvidence.key(name, value)) ?? [];
+    const at = exchange === undefined ? undefined : this.#data.positions.get(exchange);
+    const preceding = at === undefined ? events : events.filter((event) => event.at < at);
+    return (preceding[preceding.length - 1] ?? events[0])?.generation;
   }
 
-  isCredential(name: string, value: string): boolean {
-    return value !== '' && this.isCredentialRole(name) && this.generation(name, value) !== 'anonymous';
+  isCredential(name: string, value: string, exchange?: Exchange): boolean {
+    return value !== '' && this.isCredentialRole(name) && this.generation(name, value, exchange) !== 'anonymous';
   }
 
   isLoginPage(url: URL): boolean {

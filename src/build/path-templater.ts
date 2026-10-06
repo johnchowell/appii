@@ -26,8 +26,11 @@ export interface SegmentRule {
   test: (segment: string) => boolean;
 }
 
+export type SecretLabel = (segment: string) => string | undefined;
+
 export interface PathTemplaterDeps {
   judge?: SegmentJudge;
+  secrets?: SecretLabel;
 }
 
 export interface FileNumber {
@@ -41,6 +44,7 @@ interface Row {
   readonly segments: readonly string[];
   readonly decoded: readonly string[];
   readonly kinds: readonly SegmentKind[];
+  readonly secrets: readonly (string | undefined)[];
   readonly files: readonly (FileNumber | undefined)[];
   readonly open: boolean[];
   readonly partial: boolean[];
@@ -83,19 +87,23 @@ export class PathTemplater {
     'export', 'import', 'upload', 'download', 'bulk', 'batch', 'count', 'stats', 'summary', 'autocomplete', 'suggest', 'validate', 'invite', 'subscribe',
     'unsubscribe', 'callback', 'authorize', 'session', 'sessions', 'token', 'tokens',
   ]);
+  static readonly NO_SECRETS: SecretLabel = () => undefined;
+  static readonly SECRET_NAME = 'secret';
   static readonly UNIT_WORDS: ReadonlySet<string> = new Set([
     'bytes', 'bits', 'kb', 'mb', 'gb', 'chars', 'characters', 'words', 'lines', 'pixels', 'px', 'ms', 'milliseconds', 'seconds', 'secs', 'minutes',
     'mins', 'hours', 'days', 'weeks', 'months', 'years', 'times', 'percent',
   ]);
 
   readonly #judge: SegmentJudge;
+  readonly #secrets: SecretLabel;
 
   constructor(deps: PathTemplaterDeps = {}) {
     this.#judge = deps.judge ?? new SegmentJudge();
+    this.#secrets = deps.secrets ?? PathTemplater.NO_SECRETS;
   }
 
-  static create(): PathTemplater {
-    return new PathTemplater({ judge: new SegmentJudge() });
+  static create(secrets: SecretLabel = PathTemplater.NO_SECRETS): PathTemplater {
+    return new PathTemplater({ judge: new SegmentJudge(), secrets });
   }
 
   static isOpaqueToken(segment: string): boolean {
@@ -159,15 +167,19 @@ export class PathTemplater {
 
   #row(path: string, evidence: PathEvidence | undefined): Row {
     if (!path.startsWith('/')) {
-      return { path, segments: [path], decoded: [path], kinds: ['literal'], files: [undefined], open: [false], partial: [false], pinned: new Set(), evidence };
+      return { path, segments: [path], decoded: [path], kinds: ['literal'], secrets: [undefined], files: [undefined], open: [false], partial: [false], pinned: new Set(), evidence };
     }
     const segments = PathTemplater.segments(path);
-    const kinds = segments.map((segment) => this.classify(segment));
+    const decoded = segments.map((segment) => Http.decodeComponent(segment));
+    const classified = segments.map((segment) => this.classify(segment));
+    const secrets = decoded.map((segment, i) => (segment === '' || PathTemplater.OPEN_KINDS.has(classified[i] ?? 'literal') ? undefined : this.#secrets(segment)));
+    const kinds = classified.map((kind, i): SegmentKind => (secrets[i] === undefined ? kind : 'token'));
     return {
       path,
       segments,
-      decoded: segments.map((segment) => Http.decodeComponent(segment)),
+      decoded,
       kinds,
+      secrets,
       files: segments.map((segment) => PathTemplater.fileNumber(segment)),
       open: kinds.map((kind) => PathTemplater.OPEN_KINDS.has(kind)),
       partial: segments.map(() => false),
@@ -200,7 +212,7 @@ export class PathTemplater {
     const touched = new Set<Row>();
     for (const [key, bucket] of buckets) {
       if (bucket.rows.some((row) => touched.has(row))) continue;
-      const decision = this.#judge.decide(PathTemplater.#profiles(bucket), idShapes.has(key));
+      const decision = this.#judge.decide(PathTemplater.#profiles(bucket), { idShape: idShapes.has(key), pluralParent: PathTemplater.#pluralParent(bucket) });
       if (!decision) continue;
       for (const row of bucket.rows) {
         if (decision.open.has(row.segments[bucket.position] ?? '')) row.open[bucket.position] = true;
@@ -218,6 +230,11 @@ export class PathTemplater {
     if (row.open[position - 1] || row.partial[position - 1]) return false;
     const parent = row.decoded[position - 1] ?? '';
     return parent !== '' && !PathTemplater.isFixed(parent);
+  }
+
+  static #pluralParent(bucket: Bucket): boolean {
+    const parent = bucket.rows[0]?.decoded[bucket.position - 1] ?? '';
+    return Text.singularizePhrase(parent).toLowerCase() !== parent.toLowerCase();
   }
 
   static #profiles(bucket: Bucket): ValueProfile[] {
@@ -241,6 +258,7 @@ export class PathTemplater {
         observations: rows.flatMap((row) => row.evidence?.observations ?? []),
         reference: rows.some((row) => row.evidence?.references?.has(position) === true),
         identifierEcho: rows.some((row) => (row.evidence?.echoes?.get(position) ?? []).some((echo) => echo.identifier)),
+        echo: rows.some((row) => (row.evidence?.echoes?.get(position) ?? []).length > 0),
       };
     });
   }
@@ -367,7 +385,8 @@ export class PathTemplater {
       }
       if (!first.open[position]) return segment;
       const kind = PathTemplater.#mergeKinds(members.map((member) => member.kinds[position] ?? 'literal'));
-      const name = Text.uniqueName(PathTemplater.#paramName(members, position, kind, echoes), taken);
+      const secret = members.map((member) => member.secrets[position]).find((label) => label !== undefined);
+      const name = Text.uniqueName(secret === undefined ? PathTemplater.#paramName(members, position, kind, echoes) : Text.camelCase(secret) || PathTemplater.SECRET_NAME, taken);
       const examples = Helpers.distinct(members.map((member) => member.decoded[position] ?? ''));
       params.push({ name, position, kind, examples });
       return `{${name}}`;

@@ -6,26 +6,39 @@ export class SecretValues {
     'deleted', 'undefined', 'expired', 'invalid', 'anonymous', 'default', 'enabled', 'disabled', 'loggedout', 'logged_out', 'guest',
   ]);
   static readonly REGEX_SPECIAL: RegExp = /[.*+?^${}()|[\]\\]/g;
+  static readonly WORD_SEPARATORS: RegExp = /[ ._-]/;
+  static readonly WORD: RegExp = /^(?:[a-z]+|[A-Z]+|[A-Z][a-z]+)$/;
+  static readonly MAX_WORD_LENGTH = 15;
+  static readonly DEFAULT_LABEL = 'secret';
   static readonly EMPTY: SecretValues = new SecretValues();
 
   readonly #values: ReadonlySet<string>;
-  readonly #forms: ReadonlySet<string>;
+  readonly #forms: ReadonlyMap<string, string>;
+  readonly #labels: ReadonlyMap<string, string>;
   readonly #pattern: RegExp | undefined;
 
-  constructor(values: Iterable<string> = []) {
+  constructor(values: Iterable<string> = [], labels: ReadonlyMap<string, string> = new Map()) {
     const kept = new Set<string>();
     for (const value of values) if (SecretValues.worthHiding(value)) kept.add(value);
-    const forms = new Set<string>();
-    for (const value of kept) for (const form of SecretValues.variants(value)) forms.add(form);
+    const forms = new Map<string, string>();
+    for (const value of [...kept].sort((a, b) => b.length - a.length || Text.compare(a, b))) {
+      for (const form of SecretValues.variants(value)) if (!forms.has(form)) forms.set(form, value);
+    }
     this.#values = kept;
     this.#forms = forms;
-    const sorted = [...forms].sort((a, b) => b.length - a.length || Text.compare(a, b));
+    this.#labels = new Map([...labels].filter(([value]) => kept.has(value)));
+    const sorted = [...forms.keys()].sort((a, b) => b.length - a.length || Text.compare(a, b));
     this.#pattern = sorted.length === 0 ? undefined : new RegExp(sorted.map((form) => form.replace(SecretValues.REGEX_SPECIAL, '\\$&')).join('|'), 'g');
   }
 
   static worthHiding(value: string): boolean {
     const trimmed = value.trim();
     return trimmed.length >= SecretValues.MIN_LENGTH && trimmed === value && !SecretValues.COMMON_VALUES.has(value.toLowerCase()) && !Samples.isRedacted(value);
+  }
+
+  static isWordLike(value: string): boolean {
+    const words = value.split(SecretValues.WORD_SEPARATORS);
+    return words.every((word) => word.length > 0 && word.length <= SecretValues.MAX_WORD_LENGTH && SecretValues.WORD.test(word));
   }
 
   static variants(value: string): string[] {
@@ -53,6 +66,13 @@ export class SecretValues {
 
   contains(text: string): boolean {
     return this.#pattern !== undefined && text.search(this.#pattern) >= 0;
+  }
+
+  label(text: string): string | undefined {
+    if (this.#pattern === undefined) return undefined;
+    const [form] = text.match(this.#pattern) ?? [];
+    const value = form === undefined ? undefined : this.#forms.get(form);
+    return value === undefined ? undefined : (this.#labels.get(value) ?? SecretValues.DEFAULT_LABEL);
   }
 
   scrub(text: string, replacement: string = Samples.REDACTED): string {

@@ -31,6 +31,8 @@ export const SUCCESS_MIN = 200;
 export const SUCCESS_MAX = 299;
 export const NEWLINE_SOURCE = '\r\n|\r|\n';
 export const FORM_BODY_KINDS: readonly BodyKind[] = Object.freeze<BodyKind[]>(['form', 'multipart', 'text']);
+export const REDACTED_KEY: RegExp = /([A-Za-z0-9_.\-[\]]+)=$/;
+export const REPEAT_SEPARATOR = '_';
 
 export interface SampleEntry {
   readonly name: string;
@@ -102,10 +104,31 @@ export function isRecord(value: unknown): value is SampleRecord {
   return isPlainObject(value);
 }
 
+export function redactedText(value: string, key = ''): SampleText {
+  const fallback = key || SECRET_NAME;
+  if (value === REDACTED) return placeholder(fallback);
+  const pieces = value.split(REDACTED);
+  const used = new Map<string, number>();
+  const parts: SampleTextInput[] = [];
+  pieces.forEach((piece, i) => {
+    if (i > 0) {
+      const name = SampleText.placeholderName(REDACTED_KEY.exec(pieces[i - 1] ?? '')?.[1] ?? fallback);
+      const seen = (used.get(name) ?? 0) + 1;
+      used.set(name, seen);
+      parts.push(placeholder(seen === 1 ? name : `${name}${REPEAT_SEPARATOR}${seen}`));
+    }
+    parts.push(piece);
+  });
+  return SampleText.concat(...parts);
+}
+
+export function capturedText(value: string, key = ''): SampleText {
+  return isRedacted(value) ? redactedText(value, key) : SampleText.literal(value);
+}
+
 export function capturedValue(value: unknown, key = ''): SampleValue {
-  if (isRedacted(value)) return placeholder(key || SECRET_NAME);
   if (value instanceof SampleText) return value;
-  if (typeof value === 'string') return SampleText.literal(value);
+  if (typeof value === 'string') return capturedText(value, key);
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
   if (Array.isArray(value)) return value.map((item: unknown) => (item === undefined ? null : capturedValue(item, key)));
   if (isPlainObject(value)) {
@@ -164,8 +187,23 @@ export function parseTextPlain(text: string): Record<string, string | string[]> 
   return Object.fromEntries([...out].map(([name, values]) => [name, values.length === 1 ? (values[0] ?? '') : values]));
 }
 
+export function submittedExample(shape: BodyShape, submission: FormSubmission): unknown {
+  const fields = (example: unknown): unknown => (typeof example === 'string' && submission.enctype === TEXT_PLAIN ? parseTextPlain(example) : example);
+  const chosen = submission.submitter ? submitterEntries(submission.submitter) : [];
+  const sent = (record: unknown, name: string, value: string): boolean => {
+    if (!isPlainObject(record) || !Object.hasOwn(record, name)) return false;
+    const item = record[name];
+    return item === value || (Array.isArray(item) && item.includes(value));
+  };
+  if (chosen.length > 0) {
+    const match = shape.examples.find((example) => chosen.every(([name, value]) => sent(fields(example), name, value)));
+    if (match !== undefined) return match;
+  }
+  return shape.examples[0];
+}
+
 export function formSample(shape: BodyShape, submission: FormSubmission): SampleValue | undefined {
-  const example = shape.examples[0];
+  const example = submittedExample(shape, submission);
   if (typeof example === 'string' && submission.enctype === TEXT_PLAIN) return capturedValue(parseTextPlain(example) ?? example);
   if (example !== undefined) return capturedValue(example);
   if (!shape.schema) return undefined;
@@ -350,7 +388,8 @@ export function observedQuery(endpoint: Endpoint): [string, string][] {
 function paramValue(param: ParamInfo): SampleText {
   const example = param.examples.find((e) => !isRedacted(e));
   if (example !== undefined) return SampleText.literal(example);
-  if (param.examples.length) return placeholder(param.name);
+  const redacted = param.examples[0];
+  if (redacted !== undefined) return redactedText(redacted, param.name);
   const v = sampleValue(param.schema, param.name, { missing: () => undefined });
   if (v === null || v === undefined) return placeholder(param.name);
   return SampleText.literal(typeof v === 'string' ? v : JSON.stringify(v));
@@ -392,7 +431,7 @@ function samplePath(endpoint: Endpoint, variables: boolean): { path: SampleText;
 function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined, opts: SampleOptions): SampleEntry[] {
   const entries = new Map<string, SampleValue>();
   if (submission && !BODYLESS_METHODS.includes(endpoint.method)) {
-    for (const [name, value] of submission.action.searchParams) if (!entries.has(name)) entries.set(name, isRedacted(value) ? placeholder(name) : SampleText.literal(value));
+    for (const [name, value] of submission.action.searchParams) if (!entries.has(name)) entries.set(name, capturedText(value, name));
     const formNames = actionQueryNames(submission.form);
     for (const param of endpoint.queryParams) {
       if (param.required && !formNames.has(param.name) && !entries.has(param.name)) entries.set(param.name, paramValue(param));
@@ -404,7 +443,7 @@ function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined,
     const params = new Map(endpoint.queryParams.map((param) => [param.name, param]));
     for (const [name, value] of observedQuery(endpoint)) {
       if (opts.requiredOnly && params.get(name)?.required !== true) continue;
-      entries.set(name, isRedacted(value) ? placeholder(name) : SampleText.literal(value));
+      entries.set(name, capturedText(value, name));
     }
     for (const param of endpoint.queryParams) if (param.required && !entries.has(param.name)) entries.set(param.name, paramValue(param));
   }

@@ -42,7 +42,14 @@ export const SAFE_UPLOAD_NAME: RegExp = /^[A-Za-z0-9._+-]+$/;
 export const CONTINUATION = ' \\\n  ';
 export const SAFE_WORD: RegExp = /^[A-Za-z0-9_.-]+$/;
 export const DOUBLE_QUOTE_SPECIAL: RegExp = /[!"$\\`]/;
-export const ENCODING_HELPERS: Readonly<Record<PlaceholderEncoding, string>> = Object.freeze({ component: 'appii_pct', json: 'appii_json' });
+export const ENCODING_HELPERS: Readonly<Record<PlaceholderEncoding, string>> = Object.freeze({ component: 'appii_pct', form: 'appii_form', json: 'appii_json' });
+export const COPY_BYTE = `printf -v byte '%b' "\\\\x$byte"`;
+export const PERCENT_BYTE = `printf -v byte '%%%02X' "0x$byte"`;
+export const ENCODER_CASES: Readonly<Record<PlaceholderEncoding, readonly string[]>> = Object.freeze({
+  component: [`2d|2e|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]|7e) ${COPY_BYTE} ;;`, `*) ${PERCENT_BYTE} ;;`],
+  form: ["20) byte='+' ;;", `2a|2d|2e|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]) ${COPY_BYTE} ;;`, `*) ${PERCENT_BYTE} ;;`],
+  json: [`22) byte='\\"' ;;`, `5c) byte='\\\\' ;;`, `[01][0-9a-f]|7f) printf -v byte '\\\\u%04x' "0x$byte" ;;`, `*) ${COPY_BYTE} ;;`],
+});
 export const BOUNDARY_PREFIX = '----appiiFormBoundary';
 export const BOUNDARY_LENGTH = 16;
 export const MULTIPART_CONTENT_TYPE = 'multipart/form-data; boundary=';
@@ -57,34 +64,87 @@ export const BACKSLASH = 0x5c;
 export const SINGLE_QUOTE = 0x27;
 export const FIRST_PRINTABLE = 0x20;
 export const LAST_PRINTABLE = 0x7e;
+export const ARGUMENT_HELPER = 'appii_curl_args';
+export const VALUE_OPTIONS: readonly string[] = Object.freeze([
+  '--abstract-unix-socket', '--alt-svc', '--aws-sigv4', '--cacert', '--capath', '--cert', '--cert-type', '--ciphers', '--config', '--connect-timeout',
+  '--connect-to', '--continue-at', '--cookie', '--cookie-jar', '--create-file-mode', '--crlfile', '--curves', '--data', '--data-ascii', '--data-binary',
+  '--data-raw', '--data-urlencode', '--delegation', '--dns-interface', '--dns-ipv4-addr', '--dns-ipv6-addr', '--dns-servers', '--doh-url', '--dump-header',
+  '--ech', '--egd-file', '--engine', '--etag-compare', '--etag-save', '--expect100-timeout', '--form', '--form-string', '--ftp-account',
+  '--ftp-alternative-to-user', '--ftp-method', '--ftp-port', '--ftp-ssl-ccc-mode', '--happy-eyeballs-timeout-ms', '--haproxy-clientip', '--header',
+  '--hostpubmd5', '--hostpubsha256', '--hsts', '--interface', '--ip-tos', '--ipfs-gateway', '--json', '--keepalive-cnt', '--keepalive-time', '--key',
+  '--key-type', '--knownhosts', '--krb', '--libcurl', '--limit-rate', '--local-port', '--login-options', '--mail-auth', '--mail-from', '--mail-rcpt',
+  '--max-filesize', '--max-redirs', '--max-time', '--netrc-file', '--noproxy', '--oauth2-bearer', '--output', '--output-dir', '--parallel-max', '--pass',
+  '--pinnedpubkey', '--preproxy', '--proto', '--proto-default', '--proto-redir', '--proxy', '--proxy-cacert', '--proxy-capath', '--proxy-cert',
+  '--proxy-cert-type', '--proxy-ciphers', '--proxy-crlfile', '--proxy-header', '--proxy-key', '--proxy-key-type', '--proxy-pass', '--proxy-pinnedpubkey',
+  '--proxy-service-name', '--proxy-tls13-ciphers', '--proxy-tlsauthtype', '--proxy-tlspassword', '--proxy-tlsuser', '--proxy-user', '--proxy1.0',
+  '--pubkey', '--quote', '--random-file', '--range', '--rate', '--referer', '--request', '--request-target', '--resolve', '--retry', '--retry-delay',
+  '--retry-max-time', '--sasl-authzid', '--service-name', '--sigalgs', '--socks4', '--socks4a', '--socks5', '--socks5-gssapi-service', '--socks5-hostname',
+  '--speed-limit', '--speed-time', '--ssl-sessions', '--stderr', '--telnet-option', '--tftp-blksize', '--time-cond', '--tls-max', '--tls13-ciphers',
+  '--tlsauthtype', '--tlspassword', '--tlsuser', '--trace', '--trace-ascii', '--trace-config', '--unix-socket', '--upload-file', '--upload-flags',
+  '--url-query', '--user', '--user-agent', '--variable', '--vlan-priority', '--write-out',
+]);
+export const VALUE_SHORT_OPTIONS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+export const TRANSFER_OPTIONS: readonly string[] = Object.freeze(['--url', '--next']);
+export const NEXT_SHORT_OPTION = ':';
+export const VALUE_OPTIONS_PER_LINE = 6;
 
 export const HELPER_FUNCTIONS: readonly string[] = Object.freeze([
-  `${ENCODING_HELPERS.component}() {`,
-  "  local byte out=''",
-  `  for byte in $(printf '%s' "\${!1-}" | od -An -v -tx1); do`,
-  '    case $byte in',
-  `      2d|2e|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]|7e) printf -v byte '%b' "\\\\x$byte" ;;`,
-  `      *) printf -v byte '%%%02X' "0x$byte" ;;`,
-  '    esac',
-  '    out+=$byte',
-  '  done',
-  `  printf '%s' "$out"`,
-  '}',
+  ...encoderHelper('component'),
   '',
-  `${ENCODING_HELPERS.json}() {`,
-  "  local byte out=''",
-  `  for byte in $(printf '%s' "\${!1-}" | od -An -v -tx1); do`,
-  '    case $byte in',
-  `      22) byte='\\"' ;;`,
-  `      5c) byte='\\\\' ;;`,
-  `      [01][0-9a-f]|7f) printf -v byte '\\\\u%04x' "0x$byte" ;;`,
-  `      *) printf -v byte '%b' "\\\\x$byte" ;;`,
-  '    esac',
-  '    out+=$byte',
-  '  done',
-  `  printf '%s' "$out"`,
-  '}',
+  ...encoderHelper('form'),
+  '',
+  ...encoderHelper('json'),
+  '',
+  ...argumentHelper(),
 ]);
+
+export function encoderHelper(encoding: PlaceholderEncoding): string[] {
+  return [
+    `${ENCODING_HELPERS[encoding]}() {`,
+    "  local byte out=''",
+    `  for byte in $(printf '%s' "\${!1-}" | od -An -v -tx1); do`,
+    '    case $byte in',
+    ...ENCODER_CASES[encoding].map((line) => `      ${line}`),
+    '    esac',
+    '    out+=$byte',
+    '  done',
+    `  printf '%s' "$out"`,
+    '}',
+  ];
+}
+
+export function argumentHelper(): string[] {
+  const arms: string[] = [];
+  for (let i = 0; i < VALUE_OPTIONS.length; i += VALUE_OPTIONS_PER_LINE) arms.push(`      ${VALUE_OPTIONS.slice(i, i + VALUE_OPTIONS_PER_LINE).join('|')}) [[ $# -eq 0 ]] || shift ;;`);
+  const refuse = (message: string): string => `printf '%s: ${message} %s\\n' "$appii_fn" "$appii_word" "$appii_hint" >&2; return 2 ;;`;
+  return [
+    `${ARGUMENT_HELPER}() {`,
+    '  local appii_fn="$1" appii_hint="$2" appii_word appii_rest',
+    '  shift 2',
+    '  while [[ $# -gt 0 ]]; do',
+    '    appii_word="$1"',
+    '    shift',
+    '    case "$appii_word" in',
+    `      --) ${refuse('unexpected argument %s. A value that starts with a dash goes in its APPII_<NAME> variable.')}`,
+    `      ${TRANSFER_OPTIONS.join('|')}) ${refuse('curl option %s is not supported, because it makes curl send another request.')}`,
+    ...arms,
+    '      --*) ;;',
+    '      -?*)',
+    '        appii_rest="${appii_word#-}"',
+    '        while [[ -n "$appii_rest" ]]; do',
+    '          case "$appii_rest" in',
+    `            ${NEXT_SHORT_OPTION}*) ${refuse('curl option %s is not supported, because it makes curl send another request.')}`,
+    `            [${VALUE_SHORT_OPTIONS}]*) [[ \${#appii_rest} -gt 1 || $# -eq 0 ]] || shift; break ;;`,
+    '          esac',
+    '          appii_rest="${appii_rest#?}"',
+    '        done',
+    '        ;;',
+    `      *) ${refuse('unexpected argument %s.')}`,
+    '    esac',
+    '  done',
+    '}',
+  ];
+}
 
 export function variableName(name: string): string {
   return VARIABLE_PREFIX + name.toUpperCase();
@@ -160,20 +220,23 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   const cookie = opts.cookie ?? sample.cookie;
   if (cookie) groups.push(['-b', arg(cookie)]);
   if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
-  else groups.push(...bodyGroups(sample.body, arg));
+  else groups.push(...bodyGroups(sample.body, arg, vars));
   groups.push([COMPRESSED_FLAG]);
   for (const extra of opts.extraArgs ?? []) groups.push([extra]);
   const parts = groups.map((group) => group.join(' '));
   return ShellScript.ascii(opts.multiline === false ? parts.join(' ') : parts.join(CONTINUATION));
 }
 
-function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) => string): string[][] {
+function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) => string, vars: VariableMode): string[][] {
   if (!body || body.value === undefined) return [];
   if (body.kind === 'form' && isRecord(body.value)) {
     const encoder = CharsetEncoder.for(body.charset);
+    const encode = (text: string): string => encoder.formComponent(text);
     return formEntries(body.value).map((entry) => {
-      const name = encoder.formComponent(entry.name);
-      return entry.value.isLiteral ? [RAW_FLAG, arg(`${name}=${encoder.formComponent(entry.value.toString())}`)] : [FORM_FLAG, arg(SampleText.concat(`${name}=`, entry.value))];
+      const name = encode(entry.name);
+      if (entry.value.isLiteral) return [RAW_FLAG, arg(`${name}=${encode(entry.value.toString())}`)];
+      if (vars === 'script') return [RAW_FLAG, arg(SampleText.concat(`${name}=`, entry.value.mapLiterals(encode).encoded('form')))];
+      return [FORM_FLAG, arg(SampleText.concat(`${name}=`, entry.value))];
     });
   }
   if (body.kind === 'multipart' && isRecord(body.value)) {

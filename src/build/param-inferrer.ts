@@ -21,6 +21,7 @@ export interface ParamInferrerOptions {
 export interface HeaderSample {
   readonly headers: readonly Header[];
   readonly scripted?: ReadonlySet<string>;
+  readonly status?: number;
 }
 
 interface ParamStats {
@@ -107,8 +108,13 @@ export class ParamInferrer {
     }
     return [...stats].map(([name, stat]) => {
       const examples = stat.values.map((value) => this.#redactor.header(name, value));
-      return this.#param(name, 'header', stat.present === requests.length, { type: 'string' }, examples);
+      return this.#param(name, 'header', ParamInferrer.#headerRequired(name, stat, requests), { type: 'string' }, examples);
     });
+  }
+
+  static #headerRequired(name: string, stat: ParamStats, requests: readonly HeaderSample[]): boolean {
+    if (!HeaderPolicy.isOptionalByProtocol(name)) return stat.present === requests.length;
+    return requests.some((request) => request.status === HeaderPolicy.PRECONDITION_REQUIRED && !request.headers.some((header) => header.name.toLowerCase() === name));
   }
 
   path(template: PathTemplate, paths: readonly string[]): ParamInfo[] {

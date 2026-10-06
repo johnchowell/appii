@@ -1,3 +1,4 @@
+import { BodyParser } from '../build/index.js';
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, JsonSchema } from '../model/index.js';
 import { EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
@@ -31,6 +32,7 @@ export class OpenApiOperationBuilder {
   static readonly COMPLEX_TYPES: ReadonlySet<string> = new Set(['object', 'array']);
   static readonly JSON_LINES_KEY = 'x-appii-json-lines';
   static readonly JSON_LINES_NOTE = 'The body is JSON lines: one JSON value per line. The schema describes the list of these values.';
+  static readonly FILE_EXAMPLE_NOTE = 'A file part shows the name of the file that was sent; its media type is in the encoding of the part.';
 
   readonly #schemas: OpenApiSchemaAdapter;
 
@@ -202,8 +204,23 @@ export class OpenApiOperationBuilder {
     }
     shape.examples.forEach((value, i) => {
       const key = name !== undefined && shape.examples.length === 1 ? name : `${name ?? 'example'}${i + 1}`;
-      Json.setOwn(out, key, { value: Json.clone(value) });
+      const files = shape.kind === 'multipart' && OpenApiOperationBuilder.#hasFiles(value);
+      const example: OpenApiObject = { value: files ? OpenApiOperationBuilder.#fileNames(value) : Json.clone(value) };
+      if (files) example.description = OpenApiOperationBuilder.FILE_EXAMPLE_NOTE;
+      Json.setOwn(out, key, example);
     });
+    return out;
+  }
+
+  static #hasFiles(value: unknown): boolean {
+    return Json.isPlainObject(value) && Object.values(value).some((item) => (Array.isArray(item) ? item : [item]).some((each) => BodyParser.isUploadedFile(each)));
+  }
+
+  static #fileNames(value: unknown): unknown {
+    if (!Json.isPlainObject(value)) return Json.clone(value);
+    const name = (item: unknown): unknown => (BodyParser.isUploadedFile(item) ? item.filename : Json.clone(item));
+    const out: OpenApiObject = {};
+    for (const [key, item] of Object.entries(value)) Json.setOwn(out, key, Array.isArray(item) ? item.map(name) : name(item));
     return out;
   }
 

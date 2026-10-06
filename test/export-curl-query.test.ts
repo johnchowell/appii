@@ -158,7 +158,7 @@ describe('the curl script takes query parameters and rejects stray arguments (QT
     const list = await run(file, []);
     assert.match(list.stdout, new RegExp(`\\n *\\d+ +GET +/api/quotes +${quotes} +\\[page=\\]\\n`));
     const usage = await run(file, ['--help']);
-    assert.match(usage.stdout, /\[name=\] is a query parameter\. Give it as name=value after the path values,\nor set the APPII_<NAME> variable\./);
+    assert.match(usage.stdout, /\[name=\] is a query parameter or a field of the request body\. Give it as\nname=value after the path values, or set the APPII_<NAME> variable\./);
   });
 
   test('the default request is an observed one, and optional filters are added only on request (SPA-3)', async () => {

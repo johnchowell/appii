@@ -13,14 +13,32 @@ export interface CurlPathArgument {
 export interface CurlQueryArgument {
   readonly name: string;
   readonly key: string;
+  readonly word: string;
   readonly variable: string;
   readonly fallback?: SampleText;
+}
+
+export interface CurlBodyArgument {
+  readonly name: string;
+  readonly word: string;
+  readonly variable: string;
+  readonly fallback: SampleText;
+  readonly raw: boolean;
 }
 
 export interface CurlArguments {
   readonly path: readonly CurlPathArgument[];
   readonly query: readonly CurlQueryArgument[];
+  readonly body: readonly CurlBodyArgument[];
 }
+
+export interface CurlBodyField {
+  readonly name: string;
+  readonly value: SampleText;
+  readonly raw: boolean;
+}
+
+export type CurlValueArgument = CurlQueryArgument | CurlBodyArgument;
 
 export class CurlExporter extends BaseExporter {
   static readonly BASE_NAME = 'base_url';
@@ -32,8 +50,12 @@ export class CurlExporter extends BaseExporter {
   static readonly VALUE_LOCAL = 'appii_value';
   static readonly DEFAULT_PREFIX = 'appii_default_';
   static readonly FUNCTION_SUFFIX = 'Endpoint';
+  static readonly QUERY_WORD_PREFIX = 'query.';
+  static readonly BODY_WORD_PREFIX = 'body.';
+  static readonly ARGUMENT_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart']);
+  static readonly JSON_BODY_KIND = 'json';
   static readonly RESERVED_FUNCTIONS: ReadonlySet<string> = new Set([
-    'list', 'usage', 'main', 'help', 'appii_cookie', 'appii_pct', 'appii_json', 'curl', 'cat', 'printf', 'od', 'bash', 'sh', 'alias', 'bg',
+    'list', 'usage', 'main', 'help', 'appii_cookie', 'appii_pct', 'appii_json', 'appii_form', 'appii_curl_args', 'curl', 'cat', 'printf', 'od', 'bash', 'sh', 'alias', 'bg',
     'bind', 'break', 'builtin', 'caller', 'case', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'coproc', 'declare',
     'dirs', 'disown', 'do', 'done', 'echo', 'elif', 'else', 'enable', 'esac', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg',
     'fi', 'for', 'function', 'getopts', 'hash', 'history', 'if', 'in', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
@@ -117,16 +139,72 @@ export class CurlExporter extends BaseExporter {
     const add = (name: string, fallback: SampleText | undefined): void => {
       if (out.some((arg) => arg.name === name)) return;
       const variable = Text.uniqueName(Curl.variableName(rename(SampleText.placeholderName(name))), taken, '_');
-      out.push(fallback === undefined ? { name, key: component(name), variable } : { name, key: component(name), variable, fallback });
+      out.push(fallback === undefined ? { name, key: component(name), word: name, variable } : { name, key: component(name), word: name, variable, fallback });
     };
     for (const entry of sample.query) add(entry.name, entry.value);
     for (const param of endpoint.queryParams) add(param.name, undefined);
     return out;
   }
 
+  static bodyFields(body: Samples.SampleBody | undefined): CurlBodyField[] {
+    if (!body || !Samples.isRecord(body.value) || !CharsetEncoder.for(body.charset).utf8 || Curl.rawBody(body) !== undefined) return [];
+    const storable = (value: SampleText): boolean => value.parts.every((part) => part.kind === 'placeholder' || !part.text.includes(Curl.NUL));
+    if (CurlExporter.ARGUMENT_BODY_KINDS.has(body.kind)) {
+      const entries = Samples.formEntries(body.value);
+      const count = (name: string): number => entries.filter((entry) => entry.name === name).length;
+      return entries.filter((entry) => !entry.file && count(entry.name) === 1 && storable(entry.value)).map((entry) => ({ name: entry.name, value: entry.value, raw: false }));
+    }
+    if (body.kind !== CurlExporter.JSON_BODY_KIND) return [];
+    return Object.entries(body.value).flatMap(([name, item]): CurlBodyField[] => {
+      if (item instanceof SampleText) return storable(item) ? [{ name, value: item, raw: false }] : [];
+      if (item === null || typeof item === 'number' || typeof item === 'boolean') return [{ name, value: SampleText.literal(JSON.stringify(item)), raw: true }];
+      return [];
+    });
+  }
+
+  bodyArguments(sample: Samples.RequestSample, rename: (name: string) => string, taken: Iterable<string> = []): CurlBodyArgument[] {
+    const fields = CurlExporter.bodyFields(sample.body);
+    if (fields.length === 0) return [];
+    const used = new Set<string>(taken);
+    const outside = [sample.url, ...sample.headers.map((header) => header.value), ...(sample.cookie ? [sample.cookie] : []), ...(sample.user ? [sample.user] : [])];
+    for (const text of [...outside, ...fields.map((field) => field.value)]) for (const name of text.placeholders()) used.add(Curl.variableName(name));
+    return fields.map((field) => {
+      const wanted = Curl.variableName(rename(SampleText.placeholderName(field.name)));
+      const variable = CurlExporter.#ownVariable(field.value) === wanted ? wanted : Text.uniqueName(wanted, used, '_');
+      return { name: field.name, word: field.name, variable, fallback: field.value, raw: field.raw };
+    });
+  }
+
+  static withBody(sample: Samples.RequestSample, args: readonly CurlBodyArgument[]): Samples.RequestSample {
+    const body = sample.body;
+    if (!body || !Samples.isRecord(body.value) || args.length === 0) return sample;
+    const byName = new Map(args.map((arg) => [arg.name, arg]));
+    const reference = (arg: CurlBodyArgument): SampleText => SampleText.placeholder(arg.variable.slice(Curl.VARIABLE_PREFIX.length).toLowerCase());
+    if (body.kind === CurlExporter.JSON_BODY_KIND) {
+      const members = Object.entries(body.value).map(([name, item]) => {
+        const arg = byName.get(name);
+        const value = arg === undefined ? Samples.jsonText(item) : arg.raw ? reference(arg) : Samples.jsonText(reference(arg));
+        return SampleText.concat(Samples.jsonText(SampleText.literal(name)), ':', value);
+      });
+      return { ...sample, body: { ...body, value: SampleText.concat('{', SampleText.join(members, ','), '}') } };
+    }
+    const value = Object.fromEntries(Object.entries(body.value).map(([name, item]) => {
+      const arg = byName.get(name);
+      return [name, arg === undefined ? item : reference(arg)];
+    }));
+    return { ...sample, body: { ...body, value } };
+  }
+
   arguments(endpoint: Endpoint, sample: Samples.RequestSample, rename: (name: string) => string): CurlArguments {
     const path = this.pathArguments(sample, rename);
-    return { path, query: this.queryArguments(endpoint, sample, rename, path) };
+    const query = this.queryArguments(endpoint, sample, rename, path);
+    const body = this.bodyArguments(sample, rename, [...path, ...query].map((arg) => arg.variable));
+    const shared = new Set(query.filter((arg) => body.some((field) => field.name === arg.name)).map((arg) => arg.name));
+    return {
+      path,
+      query: query.map((arg) => (shared.has(arg.name) ? { ...arg, word: CurlExporter.QUERY_WORD_PREFIX + arg.name } : arg)),
+      body: body.map((arg) => (shared.has(arg.name) ? { ...arg, word: CurlExporter.BODY_WORD_PREFIX + arg.name } : arg)),
+    };
   }
 
   script(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
@@ -140,10 +218,11 @@ export class CurlExporter extends BaseExporter {
     const globals = new Set<string>();
     const argumentsOf = new Map<Endpoint, CurlArguments>();
     for (const endpoint of endpoints) {
-      const sample = this.sample(endpoint, origins.get(endpoint.origin) ?? CurlExporter.BASE_NAME, rename);
-      const args = this.arguments(endpoint, sample, rename);
+      const base = this.sample(endpoint, origins.get(endpoint.origin) ?? CurlExporter.BASE_NAME, rename);
+      const args = this.arguments(endpoint, base, rename);
+      const sample = CurlExporter.withBody(base, args.body);
       argumentsOf.set(endpoint, args);
-      const locals = new Set([...args.path, ...args.query].map((arg) => arg.variable));
+      const locals = new Set([...args.path, ...args.query, ...args.body].map((arg) => arg.variable));
       for (const variable of Curl.placeholderNames(sample, CurlExporter.#fallbacks(args))) {
         if (!locals.has(variable) && ![...reserved].some((name) => Curl.variableName(name) === variable)) globals.add(variable);
       }
@@ -153,7 +232,6 @@ export class CurlExporter extends BaseExporter {
       '#!/usr/bin/env bash',
       `# ${Text.printable(Helpers.title(model, opts))}: ${Text.plural(endpoints.length, 'endpoint')}, generated by ${Meta.APP_NAME} ${Meta.appVersion()}.`,
       `# ${CurlExporter.USAGE}  (run without arguments to list the endpoints)`,
-      'set -euo pipefail',
       '',
     ];
     for (const [origin, name] of origins) {
@@ -171,7 +249,7 @@ export class CurlExporter extends BaseExporter {
     lines.push(...this.#list(model, endpoints, index, names, argumentsOf), '');
     lines.push(...CurlExporter.#usage(), '');
     lines.push(...this.#main(endpoints, index, names), '');
-    lines.push('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then', '  main "$@"', 'fi');
+    lines.push('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then', '  set -euo pipefail', '  main "$@"', 'fi');
     return lines.join('\n') + '\n';
   }
 
@@ -199,10 +277,11 @@ export class CurlExporter extends BaseExporter {
   #function(endpoint: Endpoint, name: string, sample: Samples.RequestSample, args: CurlArguments, rename: (name: string) => string): string {
     const value = CurlExporter.VALUE_LOCAL;
     const variable = (placeholder: string): string => (placeholder === CurlExporter.QUERY_NAME ? CurlExporter.QUERY_LOCAL : Curl.variableName(placeholder));
-    const assignable = args.query.filter((arg) => CurlExporter.ASSIGNABLE_NAME.test(arg.name));
-    const patterns = assignable.map((arg) => `${CurlExporter.#pattern(arg.name)}=*`);
+    const values: CurlValueArgument[] = [...args.query, ...args.body];
+    const assignable = values.filter((arg) => CurlExporter.ASSIGNABLE_NAME.test(arg.word));
+    const patterns = assignable.map((arg) => `${CurlExporter.#pattern(arg.word)}=*`);
     const lines = [`${name}() {`];
-    if (args.path.length > 0 || args.query.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
+    if (args.path.length > 0 || values.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
     for (const arg of args.path) {
       lines.push(`  ${value}=${Text.shellQuote(arg.fallback)}`);
       lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
@@ -223,7 +302,7 @@ export class CurlExporter extends BaseExporter {
       linked.add(linkedVariable);
       lines.push(`  local ${linkedVariable}="\${${linkedVariable}:-$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})}"`);
     }
-    for (const arg of args.query) {
+    for (const arg of values) {
       if (!CurlExporter.#ownDefault(arg) || arg.fallback === undefined) {
         lines.push(`  local ${arg.variable}="\${${arg.variable}:-}"`);
         continue;
@@ -237,8 +316,7 @@ export class CurlExporter extends BaseExporter {
       assignable.forEach((arg, i) => lines.push(`      ${patterns[i] ?? ''}) ${arg.variable}="\${1#*=}" ;;`));
       lines.push('      *) break ;;', '    esac', '    shift', '  done');
     }
-    const hint = CurlExporter.#hint(args);
-    lines.push(`  if [[ $# -gt 0 && "$1" != -* ]]; then printf '%s: unexpected argument %s. %s\\n' ${Text.shellQuote(name)} "$1" ${Text.shellQuote(hint)} >&2; return 2; fi`);
+    lines.push(`  ${Curl.ARGUMENT_HELPER} ${Text.shellQuote(name)} ${Text.shellQuote(CurlExporter.#hint(args))} "$@" || return 2`);
     if (args.query.length > 0) {
       const local = CurlExporter.QUERY_LOCAL;
       lines.push(`  local ${local}=''`);
@@ -253,15 +331,18 @@ export class CurlExporter extends BaseExporter {
     return ShellScript.ascii(lines.join('\n'));
   }
 
-  static #ownDefault(arg: CurlQueryArgument): boolean {
+  static #ownVariable(value: SampleText): string | undefined {
+    const only = value.parts.length === 1 ? value.parts[0] : undefined;
+    return only?.kind === 'placeholder' ? Curl.variableName(only.name) : undefined;
+  }
+
+  static #ownDefault(arg: CurlValueArgument): boolean {
     const fallback = arg.fallback;
-    if (fallback === undefined) return false;
-    const only = fallback.parts.length === 1 ? fallback.parts[0] : undefined;
-    return !(only?.kind === 'placeholder' && Curl.variableName(only.name) === arg.variable);
+    return fallback !== undefined && CurlExporter.#ownVariable(fallback) !== arg.variable;
   }
 
   static #fallbacks(args: CurlArguments): SampleText[] {
-    return args.query.flatMap((arg) => (arg.fallback === undefined ? [] : [arg.fallback]));
+    return [...args.query, ...args.body].flatMap((arg) => (arg.fallback === undefined ? [] : [arg.fallback]));
   }
 
   static #pattern(name: string): string {
@@ -276,7 +357,7 @@ export class CurlExporter extends BaseExporter {
 
   static #argumentWords(args: CurlArguments | undefined): string[] {
     if (!args) return [];
-    return [...args.path.map((arg) => `[${arg.name}]`), ...args.query.map((arg) => `[${Text.printable(arg.name)}=]`)];
+    return [...args.path.map((arg) => `[${arg.name}]`), ...[...args.query, ...args.body].map((arg) => `[${Text.printable(arg.word)}=]`)];
   }
 
   #list(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex, names: ReadonlyMap<Endpoint, string>, args: ReadonlyMap<Endpoint, CurlArguments>): string[] {
@@ -358,23 +439,28 @@ export class CurlExporter extends BaseExporter {
       'ENDPOINT. If you do not give a value, the script uses the APPII_<NAME>',
       'variable or the captured example.',
       '',
-      '[name=] is a query parameter. Give it as name=value after the path values,',
-      'or set the APPII_<NAME> variable. The script sends the query parameters of',
-      'the captured request with their captured values unless you change them, and',
-      'the other query parameters only when you give them a value.',
+      '[name=] is a query parameter or a field of the request body. Give it as',
+      'name=value after the path values, or set the APPII_<NAME> variable. The',
+      'script sends the query parameters and body fields of the captured request',
+      'with their captured values unless you change them, and the other query',
+      'parameters only when you give them a value. A query parameter and a body',
+      'field with the same name are [query.name=] and [body.name=].',
       '',
-      "A path value that starts with '-' or with the name= of a query parameter",
-      "must go in the variable. Arguments that start with '-' go to curl (for",
-      'example -i, -v or -o FILE). The script stops with an error for any other',
-      'argument and sends no request.',
+      "A path value that starts with '-' or with the name= of a parameter must go",
+      "in the variable. Arguments that start with '-' go to curl (for example -i,",
+      "-v or -o FILE). The script stops with an error and sends no request for any",
+      "other argument, for a bare '--' and for the curl options --url and --next,",
+      'which would make curl send another request.',
       '',
       'Environment:',
       `  ${Curl.variableName(CurlExporter.BASE_NAME)}   base URL of the API (default: the captured origin)`,
       `  ${Curl.variableName(CurlExporter.COOKIE_NAME)}     Cookie header value sent with every request`,
-      '  APPII_<NAME>     value of the placeholder, path parameter or query',
-      '                   parameter NAME, for example a CSRF token',
+      '  APPII_<NAME>     value of the placeholder, path parameter, query',
+      '                   parameter or body field NAME, for example a CSRF token',
       '',
       'The script can also be sourced to call the endpoint functions directly.',
+      'Sourcing does not change the options of your shell, and a function',
+      'returns a non-zero status instead of ending the shell.',
       'APPII_USAGE',
       '}',
     ];

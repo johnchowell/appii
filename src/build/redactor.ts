@@ -13,6 +13,8 @@ export interface RedactorOptions {
 
 export type PlainTextMode = 'form' | 'pairs' | 'values';
 
+export type CookieAlias = (name: string, value: string) => string;
+
 interface PairContext {
   readonly path: string;
   readonly names: ReadonlySet<string>;
@@ -45,6 +47,19 @@ export class Redactor {
     'x-functions-key',
     'private-token',
   ]);
+  static readonly PUBLIC_HEADERS: ReadonlySet<string> = new Set([
+    'access-control-allow-credentials',
+    'access-control-allow-headers',
+    'access-control-allow-methods',
+    'access-control-allow-origin',
+    'access-control-allow-private-network',
+    'access-control-expose-headers',
+    'access-control-max-age',
+    'access-control-request-headers',
+    'access-control-request-method',
+    'access-control-request-private-network',
+  ]);
+  static readonly ERROR_CONTAINERS: ReadonlySet<string> = new Set(['errors', 'error', 'messages', 'details', 'detail', 'violations', 'fielderrors', 'validationerrors']);
   static readonly QUERY_SECRET_NAMES: ReadonlySet<string> = new Set([
     'key',
     'appid',
@@ -161,22 +176,28 @@ export class Redactor {
   }
 
   isSecretHeader(name: string): boolean {
-    return Redactor.SECRET_HEADERS.has(name.toLowerCase()) || this.#tokens.isCsrfHeader(name) || this.isSecretField(name);
+    const lower = name.toLowerCase();
+    if (Redactor.PUBLIC_HEADERS.has(lower)) return false;
+    return Redactor.SECRET_HEADERS.has(lower) || this.#tokens.isCsrfHeader(name) || this.isSecretField(name);
+  }
+
+  static isErrorContainer(name: string, value: unknown): boolean {
+    return Redactor.ERROR_CONTAINERS.has(name.toLowerCase()) && (Array.isArray(value) || Json.isPlainObject(value));
   }
 
   isSecretValue(value: string): boolean {
     return Redactor.looksSecret(value) || this.#values.has(value);
   }
 
-  header(name: string, value: string): string {
+  header(name: string, value: string, alias?: CookieAlias): string {
     if (!this.#enabled) return value;
     const lower = name.toLowerCase();
     if (lower === 'cookie') {
       return Http.parseCookieHeader(value)
-        .map((cookie) => (cookie.name ? `${cookie.name}=${Samples.REDACTED}` : Samples.REDACTED))
+        .map((cookie) => (cookie.name ? `${cookie.name}=${Redactor.#cookieValue(cookie.name, cookie.value, alias)}` : Samples.REDACTED))
         .join('; ');
     }
-    if (lower === 'set-cookie') return value.split('\n').map((line) => Redactor.#setCookie(line)).join('\n');
+    if (lower === 'set-cookie') return value.split('\n').map((line) => Redactor.#setCookie(line, alias)).join('\n');
     if (Redactor.SCHEME_HEADERS.has(lower)) {
       const m = /^(\S+)\s+\S/.exec(value.trim());
       return m ? `${m[1]} ${Samples.REDACTED}` : Samples.REDACTED;
@@ -186,12 +207,17 @@ export class Redactor {
   }
 
   field(name: string, value: unknown): unknown {
+    return this.#field(name, value, false);
+  }
+
+  #field(name: string, value: unknown, inErrors: boolean): unknown {
     if (!this.#enabled) return value;
+    if (inErrors && !SecretNames.isPassword(name)) return this.#deep(value, true);
     if (this.isSecretField(name)) return Redactor.#all(value);
     const lower = name.toLowerCase();
     if (Redactor.COOKIE_HEADERS.has(lower) || Redactor.SCHEME_HEADERS.has(lower)) return typeof value === 'string' ? this.header(name, value) : this.#headerList(name, value);
     if (Redactor.SECRET_HEADERS.has(lower)) return Redactor.#all(value);
-    return this.deep(value);
+    return this.#deep(value, Redactor.isErrorContainer(name, value));
   }
 
   queryField(name: string, value: string, url: URL): string {
@@ -201,10 +227,14 @@ export class Redactor {
   }
 
   deep(value: unknown): unknown {
+    return this.#deep(value, false);
+  }
+
+  #deep(value: unknown, inErrors: boolean): unknown {
     if (!this.#enabled) return value;
     if (typeof value === 'string') return this.#string(value);
-    if (Array.isArray(value)) return value.map((item) => this.deep(item));
-    if (Json.isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.field(key, item)]));
+    if (Array.isArray(value)) return value.map((item) => this.#deep(item, inErrors));
+    if (Json.isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.#field(key, item, inErrors)]));
     return value;
   }
 
@@ -517,11 +547,17 @@ export class Redactor {
     return value;
   }
 
-  static #setCookie(line: string): string {
+  static #setCookie(line: string, alias: CookieAlias | undefined): string {
     const semi = line.indexOf(';');
     const pair = semi < 0 ? line : line.slice(0, semi);
     const rest = semi < 0 ? '' : line.slice(semi);
     const eq = pair.indexOf('=');
-    return eq < 0 ? Samples.REDACTED + rest : `${pair.slice(0, eq)}=${Samples.REDACTED}${rest}`;
+    if (eq < 0) return Samples.REDACTED + rest;
+    const name = pair.slice(0, eq);
+    return `${name}=${Redactor.#cookieValue(name.trim(), pair.slice(eq + 1).trim(), alias)}${rest}`;
+  }
+
+  static #cookieValue(name: string, value: string, alias: CookieAlias | undefined): string {
+    return alias === undefined ? Samples.REDACTED : alias(name, value);
   }
 }

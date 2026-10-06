@@ -124,7 +124,7 @@ export class AuthDetector {
   credentialSet(exchange: Exchange, evidence: CredentialEvidence, evidenced: ReadonlySet<string> = new Set()): string[] {
     const out = new Set<string>();
     for (const cookie of CredentialAnalyzer.sent(exchange)) {
-      if (evidence.isCredential(cookie.name, cookie.value) || evidenced.has(cookie.name)) out.add(Credentials.entry(Credentials.COOKIE, cookie.name));
+      if (evidence.isCredential(cookie.name, cookie.value, exchange) || evidenced.has(cookie.name)) out.add(Credentials.entry(Credentials.COOKIE, cookie.name));
     }
     for (const header of exchange.request.headers) {
       const lower = header.name.toLowerCase();

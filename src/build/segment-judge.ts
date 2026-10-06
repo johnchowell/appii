@@ -8,6 +8,12 @@ export interface ValueProfile {
   readonly observations: readonly PathObservation[];
   readonly reference: boolean;
   readonly identifierEcho: boolean;
+  readonly echo: boolean;
+}
+
+export interface BucketTraits {
+  readonly idShape: boolean;
+  readonly pluralParent: boolean;
 }
 
 export interface BucketDecision {
@@ -19,7 +25,10 @@ export type ValueRelation = 'alike' | 'conflict' | 'neutral';
 
 export class SegmentJudge {
   static readonly MIN_VARYING_VALUES = 2;
+  static readonly MIN_SHAPE_ONLY_VALUES = 3;
   static readonly MIN_REFERENCES_TO_PIN = 2;
+  static readonly NOT_FOUND: ReadonlySet<number> = new Set([404, 410]);
+  static readonly REFUSED: ReadonlySet<number> = new Set([401, 403]);
 
   static isSuccess(observation: PathObservation): boolean {
     return observation.status !== undefined && observation.status >= 200 && observation.status < 300;
@@ -55,9 +64,13 @@ export class SegmentJudge {
     return JSON.stringify([...new Set(parts)].sort());
   }
 
-  decide(profiles: readonly ValueProfile[], idShape: boolean): BucketDecision | undefined {
-    const candidates = profiles.filter((profile) => !profile.pinned && (!idShape || profile.idLike));
-    const core = SegmentJudge.#core(candidates);
+  static isCredentialed(observation: PathObservation): boolean {
+    return (observation.credentials?.length ?? 0) > 0;
+  }
+
+  decide(profiles: readonly ValueProfile[], traits: BucketTraits): BucketDecision | undefined {
+    const candidates = profiles.filter((profile) => !profile.pinned && (!traits.idShape || profile.idLike));
+    const core = SegmentJudge.#core(candidates, traits);
     if (core.length === 0) return undefined;
     const members = new Set(core);
     const eligible = new Set(candidates);
@@ -71,7 +84,7 @@ export class SegmentJudge {
     return { open, pin };
   }
 
-  static #core(candidates: readonly ValueProfile[]): ValueProfile[] {
+  static #core(candidates: readonly ValueProfile[], traits: BucketTraits): ValueProfile[] {
     const ordered = [...candidates].sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
     const groups: { members: ValueProfile[]; representatives: Map<string, ValueProfile> }[] = [];
     for (const profile of ordered.filter((candidate) => SegmentJudge.#structured(candidate))) {
@@ -90,7 +103,7 @@ export class SegmentJudge {
     }
     let best: ValueProfile[] = [];
     for (const group of groups) if (group.members.length > best.length) best = group.members;
-    if (best.length >= SegmentJudge.MIN_VARYING_VALUES) return best;
+    if (best.length >= SegmentJudge.MIN_VARYING_VALUES && (traits.pluralParent || SegmentJudge.#identified(best))) return best;
     const ids = SegmentJudge.#compatible(ordered.filter((profile) => profile.idLike));
     if (ids.length >= SegmentJudge.MIN_VARYING_VALUES) return ids;
     return SegmentJudge.#compatible(ordered.filter((profile) => profile.reference || profile.identifierEcho));
@@ -117,6 +130,12 @@ export class SegmentJudge {
     return kept;
   }
 
+  static #identified(members: readonly ValueProfile[]): boolean {
+    if (members.length >= SegmentJudge.MIN_SHAPE_ONLY_VALUES || members.some((member) => member.idLike)) return true;
+    const pages = members.some((member) => member.observations.some((observation) => SegmentJudge.isSuccess(observation) && observation.structure !== undefined && observation.structure.kind !== 'json'));
+    return pages || members.every((member) => member.echo || member.reference || member.identifierEcho);
+  }
+
   static #structured(profile: ValueProfile): boolean {
     return profile.observations.some((observation) => SegmentJudge.isSuccess(observation) && observation.structure !== undefined);
   }
@@ -136,7 +155,7 @@ export class SegmentJudge {
     if (representatives.some((member) => SegmentJudge.relation(member, profile) === 'conflict')) return false;
     if (!SegmentJudge.#sharesMethod(profile, core)) return false;
     if (SegmentJudge.#queryMismatch(profile, core)) return false;
-    return !SegmentJudge.#referenceMismatch(profile, core);
+    return !SegmentJudge.#statusMismatch(profile, core);
   }
 
   static #sharesMethod(profile: ValueProfile, core: readonly ValueProfile[]): boolean {
@@ -152,8 +171,21 @@ export class SegmentJudge {
     return ![...own].some((name) => shared.has(name));
   }
 
-  static #referenceMismatch(profile: ValueProfile, core: readonly ValueProfile[]): boolean {
-    if (profile.reference || profile.idLike || !profile.observations.some((observation) => observation.status !== undefined)) return false;
+  static #statusMismatch(profile: ValueProfile, core: readonly ValueProfile[]): boolean {
+    if (profile.reference || profile.idLike) return false;
+    const answered = profile.observations.filter((observation) => observation.status !== undefined);
+    if (answered.length === 0 || answered.every((observation) => SegmentJudge.NOT_FOUND.has(observation.status ?? 0))) return false;
+    const refused = SegmentJudge.#refusedAnonymously(answered, core);
+    if (refused !== undefined) return refused;
     return core.filter((member) => member.reference).length >= SegmentJudge.MIN_REFERENCES_TO_PIN;
+  }
+
+  static #refusedAnonymously(answered: readonly PathObservation[], core: readonly ValueProfile[]): boolean | undefined {
+    if (!answered.every((observation) => SegmentJudge.REFUSED.has(observation.status ?? 0) && !SegmentJudge.isCredentialed(observation))) return undefined;
+    const granted = core.flatMap((member) => member.observations).filter((observation) => SegmentJudge.isSuccess(observation));
+    if (granted.length === 0) return undefined;
+    if (granted.every((observation) => !SegmentJudge.isCredentialed(observation))) return true;
+    if (granted.every((observation) => SegmentJudge.isCredentialed(observation))) return false;
+    return undefined;
   }
 }

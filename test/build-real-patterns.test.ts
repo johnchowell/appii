@@ -9,6 +9,7 @@ import type { PatternSite } from './fixtures/real-patterns.js';
 
 interface Captured {
   model: Model.ApiModel;
+  capture: Model.Capture;
   close(): Promise<void>;
 }
 
@@ -16,7 +17,7 @@ async function captureSite(start: () => Promise<PatternSite>, script: (page: Pag
   const site = await start();
   try {
     const capture = await Capture.CaptureSession.create({ url: `${site.origin}/`, headless: true, idleMs: 300, script: (page) => script(page, site.origin) }).run();
-    return { model: Build.ModelBuilder.create({ now: new Date(0) }).build(capture), close: () => site.close() };
+    return { model: Build.ModelBuilder.create({ now: new Date(0) }).build(capture), capture, close: () => site.close() };
   } catch (err) {
     await site.close();
     throw err;
@@ -90,7 +91,7 @@ describe('real-site patterns on local servers: path identity from evidence', () 
     endpoint(model, 'GET', '/tag/{tag}/page/{page}/');
     endpoint(model, 'GET', '/login');
     assert.equal(paths(model).filter((path) => /\/tag\/[a-z]/.test(path)).length, 0);
-    assert.equal(endpoint(model, 'GET', '/tag/{tag}/').name, 'getTagPage');
+    assert.equal(endpoint(model, 'GET', '/tag/{tag}/').name, 'getTagPageByTag');
   });
 
   test('slug-with-id detail pages and numbered pages are templated, missing ids join as 404 (BOOKS-1, BOOKS-2)', () => {
@@ -107,6 +108,22 @@ describe('real-site patterns on local servers: path identity from evidence', () 
     assert.deepEqual(doc.paths['/catalogue/{catalogue}/index.html']?.get?.parameters?.filter((param) => param.in === 'path').map((param) => param.name), ['catalogue']);
     assert.ok(doc.paths['/catalogue/page-{page}.html']);
     for (const e of model.endpoints) assert.ok(!/Html|Page[0-9]/.test(e.name), e.name);
+  });
+
+  test('page names follow from the path alone, with or without the numbered listing pages (BOOKS-R4)', () => {
+    const { model, capture } = books;
+    const listing = /\/catalogue\/page-[0-9]+\.html$/;
+    const subset: Model.Capture = { ...capture, exchanges: capture.exchanges.filter((exchange) => !listing.test(exchange.request.url)), pages: capture.pages.filter((page) => !listing.test(page.url)) };
+    const smaller = Build.ModelBuilder.create({ now: new Date(0) }).build(subset);
+    assert.ok(!smaller.endpoints.some((e) => e.path === '/catalogue/page-{page}.html'));
+    const shared = smaller.endpoints.filter((e) => model.endpoints.some((other) => other.method === e.method && other.path === e.path));
+    assert.ok(shared.some((e) => e.path === '/catalogue/{catalogue}/index.html') && shared.some((e) => e.path === '/catalogue/category/books/{book}/index.html'));
+    for (const e of shared) assert.equal(e.name, endpoint(model, e.method, e.path).name, e.path);
+    const names = Object.fromEntries(model.endpoints.map((e) => [e.path, e.name]));
+    assert.equal(names['/catalogue/{catalogue}/index.html'], 'getCataloguePageByCatalogue');
+    assert.equal(names['/catalogue/page-{page}.html'], 'getCataloguePageByPage');
+    assert.equal(names['/catalogue/category/books/{book}/index.html'], 'getCatalogueCategoryBookPageByBook');
+    assert.equal(names['/catalogue/category/books/{book}/page-{page}.html'], 'getCatalogueCategoryBookPageByBookAndPage');
   });
 
   test('page previews under a singular parent share one endpoint named after the response field (WIKI-1)', () => {

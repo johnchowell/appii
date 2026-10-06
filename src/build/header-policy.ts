@@ -87,6 +87,7 @@ export class HeaderPolicy {
   static readonly CONDITIONAL_HEADERS: ReadonlySet<string> = new Set(['if-none-match', 'if-match', 'if-range', 'if-modified-since', 'if-unmodified-since']);
   static readonly VALIDATOR_HEADERS: ReadonlySet<string> = new Set(['etag', 'last-modified']);
   static readonly ENTITY_TAG_HEADERS: ReadonlySet<string> = new Set(['etag', 'if-none-match', 'if-match', 'if-range']);
+  static readonly PRECONDITION_REQUIRED = 428;
 
   readonly #tokens: TokenDetector;
 
@@ -133,6 +134,11 @@ export class HeaderPolicy {
       if (seen.size > 0) validators.set(key, seen);
     }
     return out;
+  }
+
+  static isOptionalByProtocol(name: string): boolean {
+    const lower = name.toLowerCase();
+    return HeaderPolicy.SCRIPT_RANGE_HEADERS.has(lower) || HeaderPolicy.CONDITIONAL_HEADERS.has(lower);
   }
 
   isParam(name: string, scripted: ReadonlySet<string> = new Set()): boolean {

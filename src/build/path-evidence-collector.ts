@@ -15,6 +15,8 @@ export interface EvidenceSource {
   readonly response: ParsedBody | undefined;
 }
 
+export type CredentialLookup = (exchange: Exchange) => readonly string[];
+
 export interface PathEvidenceCollectorDeps {
   structures?: ResponseStructure;
 }
@@ -30,6 +32,7 @@ interface Entry {
 export class PathEvidenceCollector {
   static readonly OPERATION_METHODS: ReadonlySet<string> = new Set(['POST']);
   static readonly FIELD_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
+  static readonly NO_CREDENTIALS: CredentialLookup = () => [];
 
   readonly #structures: ResponseStructure;
 
@@ -54,7 +57,11 @@ export class PathEvidenceCollector {
     });
   }
 
-  collect(sources: readonly EvidenceSource[], forms: ReadonlyMap<string, PathEvidence> = new Map()): Map<string, Map<string, PathEvidence>> {
+  collect(
+    sources: readonly EvidenceSource[],
+    forms: ReadonlyMap<string, PathEvidence> = new Map(),
+    credentials: CredentialLookup = PathEvidenceCollector.NO_CREDENTIALS,
+  ): Map<string, Map<string, PathEvidence>> {
     const index = new IdentifierIndex();
     for (const { exchange, response } of sources) {
       if (PathEvidenceCollector.isSuccess(exchange) && response?.kind === 'json') index.add(response.value, Helpers.startMs(exchange) + exchange.durationMs);
@@ -64,7 +71,7 @@ export class PathEvidenceCollector {
       const { signature } = source;
       const entry = PathEvidenceCollector.#entry(out, signature.origin, signature.path);
       const varies = PathEvidenceCollector.mayVary(signature.path);
-      entry.observations.push(this.#observation(source, varies));
+      entry.observations.push(this.#observation(source, varies, credentials(source.exchange)));
       if (varies) PathEvidenceCollector.#identifiers(entry, source, index);
       const body = signature.request;
       if (!PathEvidenceCollector.OPERATION_METHODS.has(signature.method) || !PathEvidenceCollector.FIELD_BODY_KINDS.has(body.kind) || !Json.isPlainObject(body.value)) continue;
@@ -80,7 +87,7 @@ export class PathEvidenceCollector {
     return out;
   }
 
-  #observation(source: EvidenceSource, varies: boolean): PathObservation {
+  #observation(source: EvidenceSource, varies: boolean, credentials: readonly string[]): PathObservation {
     const { exchange, signature, response } = source;
     const status = exchange.response?.status;
     const mime = response?.mimeType ?? Http.mimeEssence(exchange.response ? Http.getHeader(exchange.response.headers, 'content-type') : undefined);
@@ -91,6 +98,7 @@ export class PathEvidenceCollector {
       mime,
       ...(structure ? { structure } : {}),
       query: Helpers.distinct([...signature.url.searchParams.keys()]),
+      ...(credentials.length > 0 ? { credentials: [...credentials] } : {}),
     };
   }
 

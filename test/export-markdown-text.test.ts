@@ -56,8 +56,8 @@ describe('MarkdownExporter keeps captured text intact', () => {
       for (const row of table) assert.equal(cells(row), width, row);
     }
     assert.ok(markdown.startsWith('# pat ret n\\x00ul esc\\x1b\\[31m del\\x7f c1\\x85 Pr&#233;nom\n'), markdown.slice(0, 80));
-    const json = /```json\n([\s\S]*?)\n```/.exec(markdown)?.[1] ?? '';
-    assert.deepEqual(JSON.parse(json), { note: HOSTILE });
+    const json = [...markdown.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1] ?? '') as unknown);
+    assert.deepEqual(json, [{ type: 'object', properties: { note: { type: 'string', title: HOSTILE } } }, { note: HOSTILE }]);
     assert.ok(markdown.includes('`pat ret n\\x00ul esc\\x1b[31m del\\x7f c1\\x85 Pr\\u00e9nom`'), markdown);
     assert.match(markdown, /\\xNN/);
   });

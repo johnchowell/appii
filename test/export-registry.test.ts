@@ -139,7 +139,7 @@ describe('HarExporter and JsonExporter on a real capture', () => {
     assert.equal(form.get('csrf_token'), '<redacted>');
     assert.equal(form.get('email'), FIXTURE_USER.email);
     const cookie = login.request.headers.find((h) => h.name.toLowerCase() === 'cookie')?.value ?? '';
-    assert.match(cookie, /^sid=<redacted>; theme=<redacted>$/);
+    assert.match(cookie, /^sid=<redacted>[0-9]+; theme=<redacted>[0-9]+$/);
     assert.ok(!result.content.includes(FIXTURE_USER.password));
     const raw = exporter.export(model, { capture: fixture.capture, endpoints: ['postLogin'], redact: false }).content;
     assert.ok(raw.includes(encodeURIComponent(FIXTURE_USER.password)));
@@ -205,9 +205,11 @@ describe('ExchangeSanitizer', () => {
       ),
     );
     assert.equal(out.request.url, 'https://shop.example.com/a?token=%3Credacted%3E&page=2');
-    assert.deepEqual(out.request.headers.map((h) => h.value), ['Bearer <redacted>', 'sid=<redacted>; theme=<redacted>', 'application/x-www-form-urlencoded']);
+    assert.deepEqual(out.request.headers.map((h) => h.value), ['Bearer <redacted>', 'sid=<redacted>1; theme=<redacted>1', 'application/x-www-form-urlencoded']);
     assert.equal(Http.bodyText(out.request.body), 'user=bob&password=%3Credacted%3E&csrf_token=%3Credacted%3E&note=a+b');
-    assert.equal(out.response?.headers[0]?.value, 'sid=<redacted>; Path=/');
+    assert.equal(out.response?.headers[0]?.value, 'sid=<redacted>2; Path=/');
+    assert.equal(sanitizer.cookieAlias('sid', '1'), '<redacted>1');
+    assert.equal(sanitizer.cookieAlias('sid', ''), '');
     assert.deepEqual(JSON.parse(Http.bodyText(out.response?.body)), { access_token: '<redacted>', user: { name: 'bob' } });
   });
 

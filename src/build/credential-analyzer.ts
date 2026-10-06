@@ -1,12 +1,12 @@
 import type { Capture, CookieRole, Exchange } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { TokenDetector } from '../forms/index.js';
-import { Http, Json, Text } from '../shared/index.js';
+import { Http, Json, SecretNames, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
 import { CookieInventory } from './cookie-inventory.js';
 import { CredentialEvidence } from './credential-evidence.js';
-import type { CookieGeneration } from './credential-evidence.js';
+import type { GenerationEvent } from './credential-evidence.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Redactor } from './redactor.js';
 
@@ -29,8 +29,6 @@ interface Sent {
 
 export class CredentialAnalyzer {
   static readonly SIGN_OUT: RegExp = /(?:^|[^a-z])(?:log|sign)[-_.]?(?:out|off)(?:[^a-z]|$)/i;
-  static readonly PASSWORD_WORDS: ReadonlySet<string> = new Set(['password', 'passwd', 'passphrase', 'passcode', 'pass', 'pwd', 'pw']);
-  static readonly PASSWORD_STEMS: readonly string[] = ['password', 'passwd', 'passphrase'];
   static readonly CLIENT_ROLE: CookieRole = 'tracking';
   static readonly FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json', 'graphql']);
   static readonly SCHEME_HEADERS: ReadonlySet<string> = new Set(['authorization']);
@@ -87,8 +85,9 @@ export class CredentialAnalyzer {
     const roles = this.#roles(capture, ordered);
     const classify = (name: string): CookieRole => this.#cookies.classify(name);
     const role = (name: string): CookieRole => roles.get(name) ?? classify(name);
+    const positions = new Map(ordered.map((exchange, at) => [exchange, at]));
     const generations = this.#generations(ordered, role, input);
-    return new CredentialEvidence({ roles, generations, loginPages: input.loginPages ?? new Set(), classify });
+    return new CredentialEvidence({ roles, generations, positions, loginPages: input.loginPages ?? new Set(), classify });
   }
 
   isCredentialSubmission(exchange: Exchange, input: CredentialInput = {}): boolean {
@@ -122,11 +121,7 @@ export class CredentialAnalyzer {
   }
 
   #isPassword(name: string, input: CredentialInput): boolean {
-    if (input.passwordFields?.has(name) === true) return true;
-    const words = Text.letterWords(name);
-    if (words.some((word) => CredentialAnalyzer.PASSWORD_WORDS.has(word))) return true;
-    const lower = name.toLowerCase();
-    return CredentialAnalyzer.PASSWORD_STEMS.some((stem) => lower.includes(stem));
+    return input.passwordFields?.has(name) === true || SecretNames.isPassword(name);
   }
 
   static #filled(value: unknown): boolean {
@@ -176,18 +171,22 @@ export class CredentialAnalyzer {
     });
   }
 
-  #generations(ordered: readonly Exchange[], role: (name: string) => CookieRole, input: CredentialInput): Map<string, CookieGeneration> {
-    const generations = new Map<string, CookieGeneration>();
+  #generations(ordered: readonly Exchange[], role: (name: string) => CookieRole, input: CredentialInput): Map<string, GenerationEvent[]> {
+    const generations = new Map<string, GenerationEvent[]>();
     const credential = (name: string): boolean => CredentialEvidence.CREDENTIAL_ROLES.has(role(name));
-    for (const exchange of ordered) {
+    const current = (name: string, value: string): GenerationEvent | undefined => generations.get(CredentialEvidence.key(name, value))?.at(-1);
+    ordered.forEach((exchange, at) => {
       const set = CredentialAnalyzer.setCookies(exchange).filter((cookie) => cookie.value !== '' && credential(cookie.name));
-      if (set.length === 0) continue;
-      const fresh = set.filter((cookie) => !generations.has(CredentialEvidence.key(cookie.name, cookie.value)));
-      if (fresh.length === 0) continue;
-      const carried = CredentialAnalyzer.sent(exchange).some((cookie) => credential(cookie.name) && cookie.value !== '' && generations.get(CredentialEvidence.key(cookie.name, cookie.value)) !== 'anonymous');
+      if (set.length === 0) return;
+      const carried = CredentialAnalyzer.sent(exchange).some((cookie) => credential(cookie.name) && cookie.value !== '' && current(cookie.name, cookie.value)?.generation !== 'anonymous');
       const authenticated = this.isCredentialSubmission(exchange, input) || (carried && !CredentialAnalyzer.isSignOut(exchange));
-      for (const cookie of fresh) generations.set(CredentialEvidence.key(cookie.name, cookie.value), authenticated ? 'authenticated' : 'anonymous');
-    }
+      for (const cookie of set) {
+        const key = CredentialEvidence.key(cookie.name, cookie.value);
+        const events = generations.get(key) ?? [];
+        events.push({ at, generation: authenticated ? 'authenticated' : 'anonymous' });
+        generations.set(key, events);
+      }
+    });
     return generations;
   }
 }

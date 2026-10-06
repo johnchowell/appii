@@ -47,6 +47,8 @@ export class ExchangeSanitizer {
   readonly #tokens: TokenDetector;
   readonly #multipart: MultipartParser;
   readonly #scanner: HtmlTagScanner;
+  readonly #cookieAliases = new Map<string, Map<string, string>>();
+  readonly #cookieAlias = (name: string, value: string): string => this.cookieAlias(name, value);
 
   static create(options: ExchangeSanitizerOptions = {}): ExchangeSanitizer {
     return new ExchangeSanitizer({
@@ -184,8 +186,17 @@ export class ExchangeSanitizer {
   #headers(headers: Header[]): Header[] {
     return headers.map((header) => {
       if (ExchangeSanitizer.URL_HEADERS.has(header.name.toLowerCase())) return { name: header.name, value: this.#redactor.url(header.value) };
-      return { name: header.name, value: this.#redactor.header(header.name, header.value) };
+      return { name: header.name, value: this.#redactor.header(header.name, header.value, this.#cookieAlias) };
     });
+  }
+
+  cookieAlias(name: string, value: string): string {
+    if (value === '') return value;
+    const known = this.#cookieAliases.get(name) ?? new Map<string, string>();
+    this.#cookieAliases.set(name, known);
+    const alias = known.get(value) ?? `${Samples.REDACTED}${known.size + 1}`;
+    known.set(value, alias);
+    return alias;
   }
 
   #urlencoded(body: BodyData, secrets: ReadonlySet<string>): BodyData {

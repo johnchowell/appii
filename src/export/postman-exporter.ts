@@ -4,6 +4,7 @@ import { EndpointIndex, Json, Meta, Samples, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { PostmanPathVariables } from './postman-path-variables.js';
 import { PostmanRequestBuilder } from './postman-request-builder.js';
 import type { PostmanObject } from './postman-request-builder.js';
 
@@ -69,11 +70,14 @@ export class PostmanExporter extends BaseExporter {
     const folders = new Map<string, PostmanObject[]>();
     const placeholders = new Set<string>();
     for (const endpoint of endpoints) {
-      const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
-      const items = this.#requests.items(endpoint, { model, index, options: opts, variable });
       for (const each of [endpoint, ...Helpers.bodyVariants(endpoint).map((variant) => variant.endpoint)]) {
         for (const name of Samples.placeholderNames(Helpers.sample(model, each, opts, { cookie: false }))) placeholders.add(name);
       }
+    }
+    const pathVariables = PostmanPathVariables.create([...origins.values(), ...placeholders]);
+    for (const endpoint of endpoints) {
+      const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
+      const items = this.#requests.items(endpoint, { model, index, options: opts, variable, pathVariables });
       const group = Helpers.group(endpoint);
       const list = folders.get(group) ?? [];
       list.push(...items);
@@ -84,6 +88,7 @@ export class PostmanExporter extends BaseExporter {
       variable.push({ key: name, value: Helpers.originBase(model, origin, opts), type: 'string', description: `Base URL for ${origin}` });
     }
     for (const name of [...placeholders].sort()) variable.push({ key: name, value: '', type: 'string' });
+    variable.push(...pathVariables.entries());
     return {
       info: {
         _postman_id: PostmanExporter.collectionId(model, endpoints),

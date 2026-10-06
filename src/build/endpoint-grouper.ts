@@ -13,6 +13,7 @@ import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
 import { ParamInferrer } from './param-inferrer.js';
 import { PathEvidenceCollector } from './path-evidence-collector.js';
+import type { CredentialLookup } from './path-evidence-collector.js';
 import { PathTemplater } from './path-templater.js';
 import type { PathEvidence, PathTemplate } from './path-templater.js';
 import { Redactor } from './redactor.js';
@@ -44,6 +45,7 @@ export interface GroupContext {
   forms?: ReadonlyMap<string, PathEvidence>;
   encoding?: (exchange: Exchange) => string | undefined;
   submitted?: (exchange: Exchange) => boolean;
+  credentials?: CredentialLookup;
 }
 
 interface Member {
@@ -164,7 +166,7 @@ export class EndpointGrouper {
       const signature = this.#signatures.of(exchange, encoding);
       if (signature) members.push({ exchange, signature, encoding, scripted: scripted.get(exchange), response: this.#parseResponse(exchange) });
     }
-    const templates = this.#templates(members, context.forms ?? new Map());
+    const templates = this.#templates(members, context);
     const buckets = new Map<string, Bucket>();
     for (const member of members) {
       const { signature } = member;
@@ -193,14 +195,14 @@ export class EndpointGrouper {
     return undefined;
   }
 
-  #templates(members: readonly Member[], forms: ReadonlyMap<string, PathEvidence>): Map<string, Map<string, PathTemplate>> {
+  #templates(members: readonly Member[], context: GroupContext): Map<string, Map<string, PathTemplate>> {
     const paths = new Map<string, string[]>();
     for (const { signature } of members) {
       const list = paths.get(signature.origin);
       if (list) list.push(signature.path);
       else paths.set(signature.origin, [signature.path]);
     }
-    const evidence = this.#evidence.collect(members, forms);
+    const evidence = this.#evidence.collect(members, context.forms, context.credentials);
     return new Map([...paths].map(([origin, list]) => [origin, this.#paths.template(list, evidence.get(origin) ?? new Map())]));
   }
 
@@ -222,7 +224,13 @@ export class EndpointGrouper {
       members.map((member) => member.signature.url),
       members.map((member) => member.encoding),
     );
-    endpoint.headerParams = this.#params.headers(served.map((member) => ({ headers: member.exchange.request.headers, ...(member.scripted ? { scripted: member.scripted } : {}) })));
+    endpoint.headerParams = this.#params.headers(
+      served.map((member) => ({
+        headers: member.exchange.request.headers,
+        ...(member.scripted ? { scripted: member.scripted } : {}),
+        ...(member.exchange.response ? { status: member.exchange.response.status } : {}),
+      })),
+    );
     const [requestBody, ...otherRequestBodies] = this.#shaper.shapes(members.map((member) => member.signature.request));
     if (requestBody) endpoint.requestBody = requestBody;
     if (otherRequestBodies.length > 0) endpoint.otherRequestBodies = otherRequestBodies;

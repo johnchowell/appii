@@ -55,12 +55,15 @@ describe('CurlExporter against the fixture site', () => {
     assert.equal(result.format, 'curl');
     assert.ok(Text.isAscii(content));
     assert.ok(content.startsWith('#!/usr/bin/env bash\n'));
-    assert.match(content, /\nset -euo pipefail\n/);
+    assert.ok(content.endsWith('\nif [[ "${BASH_SOURCE[0]}" == "$0" ]]; then\n  set -euo pipefail\n  main "$@"\nfi\n'), content.slice(-200));
+    assert.equal(content.match(/set -euo pipefail/g)?.length, 1);
     assert.match(content, new RegExp(`\\nappii_default_base_url='${fixture.site.origin.replace(/\./g, '\\.')}'\\nAPPII_BASE_URL="\\$\\{APPII_BASE_URL:-\\$appii_default_base_url\\}"\\n`));
     assert.match(content, /\nappii_default_cookie='theme=dark'\nAPPII_COOKIE="\$\{APPII_COOKIE-\$appii_default_cookie\}"\n/);
-    for (const name of ['APPII_CSRF', 'APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
+    assert.ok(content.includes(': "${APPII_CSRF:=}"\n'));
+    for (const name of ['APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`\n  local ${name}="\${${name}:-}"\n`), name);
     assert.ok(!content.includes('X_CSRF_TOKEN'));
-    assert.match(content, /\ncreateItem\(\) \{\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}if \[\[ \$# -gt 0 && "\$1" != -\* \]\]; then printf [^\n]+ >&2; return 2; fi\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
+    assert.match(content, /\ncreateItem\(\) \{\n {2}local appii_value\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n/);
+    assert.match(content, /\n {2}appii_curl_args 'createItem' 'Arguments: \[name=\] \[price=\]\. [^\n]+' "\$@" \|\| return 2\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
     );

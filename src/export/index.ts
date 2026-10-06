@@ -27,9 +27,11 @@ export type { BodyScope, ExchangeSanitizerDeps, ExchangeSanitizerOptions, Saniti
 export { PostmanExporter } from './postman-exporter.js';
 export type { PostmanExporterDeps } from './postman-exporter.js';
 export { PostmanRequestBuilder } from './postman-request-builder.js';
+export { PostmanPathVariables } from './postman-path-variables.js';
+export type { PostmanPathVariable } from './postman-path-variables.js';
 export type { PostmanItemContext, PostmanObject } from './postman-request-builder.js';
 export { CurlExporter } from './curl-exporter.js';
-export type { CurlArguments, CurlPathArgument, CurlQueryArgument } from './curl-exporter.js';
+export type { CurlArguments, CurlBodyArgument, CurlBodyField, CurlPathArgument, CurlQueryArgument, CurlValueArgument } from './curl-exporter.js';
 export { TypeScriptExporter } from './typescript-exporter.js';
 export type { TypeScriptExporterDeps } from './typescript-exporter.js';
 export { TsTypeWriter } from './ts-type-writer.js';

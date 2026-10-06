@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Endpoint, EndpointSample, ParamInfo } from '../src/model/index.js';
+import type { Endpoint, EndpointForm, EndpointSample, FormField, ParamInfo } from '../src/model/index.js';
 import { Samples } from '../src/shared/index.js';
 
 const ORIGIN = 'https://api.realworld.example';
@@ -56,5 +56,76 @@ describe('the example request is a request that the browser sent (SPA-3)', () =>
 
   test('without a captured request the example sends the required parameters only', () => {
     assert.equal(Samples.requestSample(articles([])).url.toString(), `${ORIGIN}/api/articles?limit=10&offset=0`);
+  });
+});
+
+describe('a form example is the observed submission of the chosen submitter (QTS-R1)', () => {
+  const field = (name: string, value: string, type: string): FormField => ({
+    name,
+    order: 0,
+    kind: type === 'submit' ? 'input' : 'select',
+    type,
+    value,
+    hasValueAttribute: true,
+    checked: false,
+    disabled: false,
+    readOnly: false,
+    required: false,
+    multiple: false,
+  });
+  const form: EndpointForm = {
+    pageUrl: `${ORIGIN}/search.aspx`,
+    selector: 'form[name="filterform"]',
+    action: `${ORIGIN}/filter.aspx`,
+    method: 'POST',
+    enctype: 'application/x-www-form-urlencoded',
+    charset: 'UTF-8',
+    fields: [field('author', '----------', 'select-one'), field('tag', '----------', 'select-one'), field('__VIEWSTATE', 'vs', 'hidden')],
+    submitters: [field('submit_button', 'Search', 'submit')],
+    tokenFields: ['__VIEWSTATE'],
+  };
+  const filter = (examples: Record<string, string>[]): Endpoint => ({
+    ...articles([]),
+    id: 'filter',
+    key: `POST ${ORIGIN}/filter.aspx`,
+    method: 'POST',
+    path: '/filter.aspx',
+    kind: 'form',
+    queryParams: [],
+    form,
+    requestBody: { mimeType: 'application/x-www-form-urlencoded', kind: 'form', examples },
+  });
+  const postback = { author: 'Jane Austen', tag: '----------', __VIEWSTATE: 'vs' };
+  const search = { author: 'Jane Austen', tag: 'aliteracy', submit_button: 'Search', __VIEWSTATE: 'vs' };
+
+  test('the example that carries the submitter is used, not the first example plus the submitter', () => {
+    const sample = Samples.requestSample(filter([postback, search]));
+    assert.deepEqual(Samples.plainValue(sample.body?.value), search);
+  });
+
+  test('without an example of the submitter the first example gets the submitter', () => {
+    const sample = Samples.requestSample(filter([postback]));
+    assert.deepEqual(Samples.plainValue(sample.body?.value), { ...postback, submit_button: 'Search' });
+  });
+});
+
+describe('a partly redacted value keeps its text and names each secret after its key (NEW-2)', () => {
+  test('text around the redaction stays literal', () => {
+    const text = Samples.redactedText('token=<redacted>\nnote=hello', 'body');
+    assert.deepEqual(text.parts, [
+      { kind: 'literal', text: 'token=' },
+      { kind: 'placeholder', name: 'token' },
+      { kind: 'literal', text: '\nnote=hello' },
+    ]);
+    assert.equal(Samples.redactedText('<redacted>', 'password').toString(), '{{password}}');
+    assert.equal(Samples.redactedText('Bearer <redacted>', 'authorization').toString(), 'Bearer {{authorization}}');
+    assert.equal(Samples.redactedText('<redacted>:<redacted>', 'pair').toString(), '{{pair}}:{{pair_2}}');
+    assert.equal(Samples.redactedText('https://x.test/cb?code=<redacted>&state=1', 'next').toString(), 'https://x.test/cb?code={{code}}&state=1');
+  });
+
+  test('query values and JSON strings keep the text around a redaction', () => {
+    const endpoint = articles([sample('next=https%3A%2F%2Fx.test%2F%3Ftoken%3D%3Credacted%3E&offset=0')]);
+    assert.equal(Samples.requestSample(endpoint).url.toString(), `${ORIGIN}/api/articles?next=https%3A%2F%2Fx.test%2F%3Ftoken%3D{{token}}&offset=0&limit=10`);
+    assert.deepEqual(Samples.plainValue(Samples.capturedValue({ note: 'see <redacted> here', key: '<redacted>' })), { note: 'see {{note}} here', key: '{{key}}' });
   });
 });

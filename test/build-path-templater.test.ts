@@ -357,3 +357,64 @@ describe('EndpointIndex.matchPath', () => {
     assert.equal(Object.getPrototypeOf(values), Object.prototype);
   });
 });
+
+describe('PathTemplater evidence: what a status or a shared shape proves (NEW-SPA-1, WIKI-N1)', () => {
+  const slugs = ['how-to-learn-javascript-efficiently', 'react-hooks-best-practices', 'building-scalable-apis-with-node-js'];
+  const article = (slug: string): PathObservation => observation({ article: { slug, title: 'T', body: 'b' } });
+  const listed = { references: new Set([2]) };
+
+  test('an unlisted value that the server answers with 404 or 410 joins the parameter as an unknown id', () => {
+    const stale = '/api/articles/an-old-link-that-was-removed';
+    for (const status of [404, 410]) {
+      const evidence = seen(
+        { ...Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, article(slug)])), [stale]: observation({ errors: { article: ['not found'] } }, { status }) },
+        Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, listed])),
+      );
+      const map = templates([...evidence.keys()], evidence);
+      for (const path of evidence.keys()) assert.equal(map[path], '/api/articles/{article}', `${status} ${path}`);
+    }
+    const one = seen({ [`/api/articles/${slugs[0]}`]: article(slugs[0] ?? ''), [stale]: observation({ errors: { article: ['not found'] } }, { status: 404 }) }, { [`/api/articles/${slugs[0]}`]: listed });
+    assert.deepEqual(Object.values(templates([...one.keys()], one)), ['/api/articles/{article}', '/api/articles/{article}']);
+  });
+
+  test('a sibling that refuses the same anonymous client stays literal, one the client lacked credentials for joins', () => {
+    const feed = '/api/articles/feed';
+    const anonymous = seen(
+      { [`/api/articles/${slugs[0]}`]: article(slugs[0] ?? ''), [feed]: observation({ errors: { token: ['is missing'] } }, { status: 401 }) },
+      { [`/api/articles/${slugs[0]}`]: listed },
+    );
+    assert.equal(templates([...anonymous.keys()], anonymous)[feed], feed);
+    const signedIn = (slug: string): PathObservation => observation({ article: { slug, title: 'T', body: 'b' } }, { credentials: ['authorization'] });
+    const draft = '/api/articles/my-draft-article';
+    const lacked = seen(
+      {
+        ...Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, signedIn(slug)])),
+        [draft]: observation({ errors: { token: ['is missing'] } }, { status: 401 }),
+      },
+      Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, listed])),
+    );
+    assert.equal(templates([...lacked.keys()], lacked)[draft], '/api/articles/{article}');
+  });
+
+  test('sibling operations with one JSON shape under a singular parent stay apart without identifier evidence', () => {
+    const results = { pages: [{ id: 1, key: 'Hedy_Lamarr', title: 'Hedy Lamarr', excerpt: 'x', description: 'd' }] };
+    const search = seen({ '/w/rest.php/v1/search/title': observation(results, { query: ['q', 'limit'] }), '/w/rest.php/v1/search/page': observation(results, { query: ['q', 'limit'] }) });
+    assert.deepEqual(Object.values(templates([...search.keys()], search)), ['/w/rest.php/v1/search/title', '/w/rest.php/v1/search/page']);
+    const feeds = seen({ '/api/feed/top': observation({ items: [{ id: 1 }] }), '/api/feed/hot': observation({ items: [{ id: 2 }] }) });
+    assert.deepEqual(Object.values(templates([...feeds.keys()], feeds)), ['/api/feed/top', '/api/feed/hot']);
+    const three = seen({ '/api/feed/top': observation({ items: [{ id: 1 }] }), '/api/feed/hot': observation({ items: [{ id: 2 }] }), '/api/feed/rising': observation({ items: [{ id: 3 }] }) });
+    assert.deepEqual(Object.values(templates([...three.keys()], three)), ['/api/feed/{feed}', '/api/feed/{feed}', '/api/feed/{feed}']);
+    const users = seen({ '/api/users/alice/profile': observation({ bio: 'a', followers: 1 }), '/api/users/bob/profile': observation({ bio: 'b', followers: 2 }) });
+    assert.deepEqual(Object.values(templates([...users.keys()], users)), ['/api/users/{user}/profile', '/api/users/{user}/profile']);
+  });
+
+  test('two summaries that echo their title still share one endpoint (WIKI-1)', () => {
+    const summary = (title: string) => ({ type: 'standard', title: title.replace(/_/g, ' '), extract: 'x', lang: 'en' });
+    const titles = ['Logic', 'Grace_Hopper'];
+    const evidence = seen(
+      Object.fromEntries(titles.map((title) => [`/api/rest_v1/page/summary/${title}`, observation(summary(title))])),
+      Object.fromEntries(titles.map((title) => [`/api/rest_v1/page/summary/${title}`, { echoes: new Map([[4, [{ key: 'title', identifier: false, depth: 1, exact: false }]]]) }])),
+    );
+    for (const path of evidence.keys()) assert.equal(templates([...evidence.keys()], evidence)[path], '/api/rest_v1/page/summary/{title}', path);
+  });
+});

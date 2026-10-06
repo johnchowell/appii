@@ -3,6 +3,7 @@ import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, SampleText, Sam
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import type { PostmanPathVariables } from './postman-path-variables.js';
 
 export type PostmanObject = Record<string, unknown>;
 
@@ -11,6 +12,7 @@ export interface PostmanItemContext {
   index: EndpointIndex;
   options: ExportOptions;
   variable: string;
+  pathVariables: PostmanPathVariables;
 }
 
 export class PostmanRequestBuilder {
@@ -41,7 +43,7 @@ export class PostmanRequestBuilder {
     const request: PostmanObject = {
       method: endpoint.method,
       header: sample.headers.map((header) => PostmanRequestBuilder.entry(header.name, header.value, { type: 'text' })),
-      url: this.url(endpoint, sample, ctx.variable),
+      url: this.url(endpoint, sample, ctx),
       description: this.description(endpoint, ctx),
     };
     const body = this.body(sample);
@@ -58,16 +60,21 @@ export class PostmanRequestBuilder {
     return request;
   }
 
-  url(endpoint: Endpoint, sample: Samples.RequestSample, variable: string): PostmanObject {
-    const host = `{{${variable}}}`;
+  url(endpoint: Endpoint, sample: Samples.RequestSample, ctx: Pick<PostmanItemContext, 'variable' | 'pathVariables'>): PostmanObject {
+    const host = `{{${ctx.variable}}}`;
     const values = new Map(sample.pathParams.map((param) => [param.name, PostmanRequestBuilder.urlText(param.value)]));
+    const own = new Map(sample.pathParams.flatMap((param) => (param.value.parts.length === 1 && param.value.parts[0]?.kind === 'placeholder' ? [[param.name, param.value.parts[0].name]] : [])));
     const variables: PostmanObject[] = [];
+    const inSegment = (name: string): string => {
+      const key = own.get(name) ?? ctx.pathVariables.key(name, endpoint.pathParams.find((p) => p.name === name), values.get(name) ?? '');
+      return `{{${key}}}`;
+    };
     const path = endpoint.path
       .slice(1)
       .split('/')
       .map((part) => {
         const whole = /^\{([^{}]+)\}$/.exec(part);
-        if (!whole) return part.replace(/\{([^{}]+)\}/g, (_match: string, name: string) => values.get(name) ?? '');
+        if (!whole) return part.replace(/\{([^{}]+)\}/g, (_match: string, name: string) => inSegment(name));
         const name = whole[1] ?? '';
         const param = endpoint.pathParams.find((p) => p.name === name);
         const entry: PostmanObject = { key: name, value: values.get(name) ?? '' };

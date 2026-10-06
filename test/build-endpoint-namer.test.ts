@@ -61,7 +61,7 @@ describe('EndpointNamer', () => {
         ['get-login', 'getLoginPage'],
         ['post-login', 'postLogin'],
         ['get-root', 'getHomePage'],
-        ['get-products-productid', 'getProductPage'],
+        ['get-products-productid', 'getProductPageByProductId'],
         ['get-search', 'getSearch'],
         ['post-signup', 'postSignup'],
         ['post-graphql-getitem', 'getItem'],
@@ -169,13 +169,44 @@ describe('EndpointNamer', () => {
     assert.deepEqual(first, named(list()));
     assert.deepEqual(
       first.map(([, name]) => name),
-      ['getPage', 'getTagPage', 'getTagPageByPage', 'getCataloguePage', 'getCataloguePageByCatalogue', 'getIndex', 'getBytes', 'getUser'],
+      ['getPageByPage', 'getTagPageByTag', 'getTagPageByTagAndPage', 'getCataloguePage', 'getCataloguePageByCatalogue', 'getIndex', 'getBytes', 'getUser'],
     );
     assert.equal(new Set(first.map(([id]) => id)).size, first.length);
     assert.deepEqual(EndpointNamer.segments('/catalogue/page-{page}.html'), [
       { text: 'catalogue', param: false },
-      { text: 'page-', param: false },
+      { text: 'page-', param: false, embedded: ['page'] },
     ]);
+    assert.deepEqual(EndpointNamer.params('/catalogue/category/books/{book}/page-{page}.html'), ['book', 'page']);
+  });
+
+  test('a page name depends on its own path, not on which sibling pages were captured (BOOKS-R4)', () => {
+    const shared = ['/catalogue/{catalogue}/index.html', '/catalogue/category/books/{book}/index.html', '/tag/{tag}/'];
+    const extra = ['/catalogue/page-{page}.html', '/catalogue/category/books/{book}/page-{page}.html', '/tag/{tag}/page/{page}/', '/'];
+    const names = (paths: readonly string[]): Map<string, string> => {
+      const list = paths.map((path) => endpoint('GET', path, 'document'));
+      namer.name(list);
+      return new Map(list.map((e) => [e.path, e.name]));
+    };
+    const alone = names(shared);
+    const all = names([...shared, ...extra]);
+    const reversed = names([...extra, ...shared].reverse());
+    for (const path of shared) {
+      assert.equal(all.get(path), alone.get(path), path);
+      assert.equal(reversed.get(path), alone.get(path), path);
+    }
+    assert.deepEqual([...all.values()], [
+      'getCataloguePageByCatalogue',
+      'getCatalogueCategoryBookPageByBook',
+      'getTagPageByTag',
+      'getCataloguePageByPage',
+      'getCatalogueCategoryBookPageByBookAndPage',
+      'getTagPageByTagAndPage',
+      'getHomePage',
+    ]);
+    const values = [...all.values()];
+    assert.equal(new Set(values).size, values.length);
+    for (const name of values) assert.doesNotMatch(name, /[0-9]$/);
+    for (const name of values) assert.ok(!values.includes(name.replace(/Book/g, 'Books')) || !name.includes('Book'), name);
   });
 });
 

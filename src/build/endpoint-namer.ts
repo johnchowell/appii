@@ -4,6 +4,7 @@ import { Http, Text } from '../shared/index.js';
 interface Segment {
   readonly text: string;
   readonly param: boolean;
+  readonly embedded?: readonly string[];
 }
 
 interface Candidate {
@@ -24,6 +25,7 @@ export class EndpointNamer {
   static readonly AND_WORD = 'And';
   static readonly INDEX_DOCUMENT: RegExp = /^index\.html?$/i;
   static readonly DOCUMENT_EXTENSION: RegExp = /\.html?$/i;
+  static readonly EMBEDDED_PARAM: RegExp = /\{([^{}]+)\}/g;
   static readonly ITEM_PHRASE_WORDS = 3;
 
   static segments(path: string): Segment[] {
@@ -33,8 +35,14 @@ export class EndpointNamer {
       .map((segment) => {
         const whole = /^\{([^{}]+)\}$/.exec(segment);
         if (whole) return { text: whole[1] ?? '', param: true };
-        return { text: Http.decodeComponent(segment.replace(/\{[^{}]*\}/g, '')).replace(EndpointNamer.DOCUMENT_EXTENSION, ''), param: false };
+        const text = Http.decodeComponent(segment.replace(EndpointNamer.EMBEDDED_PARAM, '')).replace(EndpointNamer.DOCUMENT_EXTENSION, '');
+        const embedded = [...segment.matchAll(EndpointNamer.EMBEDDED_PARAM)].map((match) => match[1] ?? '');
+        return embedded.length > 0 ? { text, param: false, embedded } : { text, param: false };
       });
+  }
+
+  static params(path: string): string[] {
+    return EndpointNamer.segments(path).flatMap((segment) => (segment.param ? [segment.text] : (segment.embedded ?? [])));
   }
 
   static isPlural(word: string): boolean {
@@ -82,9 +90,11 @@ export class EndpointNamer {
   }
 
   static #params(endpoint: Endpoint): string[] {
-    return EndpointNamer.segments(endpoint.path)
-      .filter((segment) => segment.param)
-      .map((segment) => segment.text);
+    return EndpointNamer.params(endpoint.path);
+  }
+
+  static #by(params: readonly string[]): string {
+    return params.length === 0 ? '' : `${EndpointNamer.BY_WORD}${params.map((name) => Text.pascalCase(name)).join(EndpointNamer.AND_WORD)}`;
   }
 
   slug(endpoint: Endpoint): string {
@@ -118,7 +128,8 @@ export class EndpointNamer {
       const words = EndpointNamer.#resource(segments, qualified);
       const resource = words.length > 0 ? words : [EndpointNamer.HOME_WORD];
       const tail = Text.words(resource[resource.length - 1] ?? '');
-      return EndpointNamer.#camel(['get', ...resource, ...(tail[tail.length - 1] === EndpointNamer.PAGE_WORD ? [] : [EndpointNamer.PAGE_WORD])]);
+      const page = EndpointNamer.#camel(['get', ...resource, ...(tail[tail.length - 1] === EndpointNamer.PAGE_WORD ? [] : [EndpointNamer.PAGE_WORD])]);
+      return page + EndpointNamer.#by(EndpointNamer.params(endpoint.path));
     }
     const collection = parent !== undefined && !parent.param && EndpointNamer.isPlural(parent.text) && !EndpointNamer.STOP_SEGMENTS.test(parent.text);
     const itemVerb = EndpointNamer.ITEM_VERBS[method];
@@ -144,8 +155,7 @@ export class EndpointNamer {
     segments.forEach((segment, i) => {
       if (segment.param) return;
       if (!qualified && EndpointNamer.STOP_SEGMENTS.test(segment.text)) return;
-      const next = segments[i + 1];
-      words.push(next?.param && i === segments.length - 2 ? Text.singularizePhrase(segment.text) : segment.text);
+      words.push(segments[i + 1]?.param === true ? Text.singularizePhrase(segment.text) : segment.text);
     });
     return words;
   }

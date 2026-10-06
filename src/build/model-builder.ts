@@ -73,8 +73,8 @@ export class ModelBuilder {
     this.#origins = options.origins === undefined ? undefined : Helpers.distinct(options.origins.map((origin) => ModelBuilder.normalizeOrigin(origin))).sort(Text.compare);
     this.#parts = parts;
     this.#redactor = parts.redactor ?? Redactor.create({ redact: options.redact ?? true });
-    this.#secrets = parts.secrets ?? new SecretCollector({ redactor: this.#redactor, body: BodyParser.create(), cookies: new CookieClassifier() });
     this.#credentials = parts.credentials ?? CredentialAnalyzer.create();
+    this.#secrets = parts.secrets ?? new SecretCollector({ redactor: this.#redactor, body: BodyParser.create(), cookies: new CookieClassifier(), credentials: this.#credentials });
     this.#options = { ...options };
   }
 
@@ -82,9 +82,9 @@ export class ModelBuilder {
     const maxExamples = ModelBuilder.#checkMaxExamples(options.maxExamples);
     const body = BodyParser.create();
     const schemas = SchemaInferrer.create();
-    const paths = PathTemplater.create();
     const tokens = new TokenDetector();
     const redactor = new Redactor(options.redact ?? true, { tokens });
+    const paths = PathTemplater.create((segment) => redactor.values.label(segment));
     const headers = new HeaderPolicy({ tokens });
     const extractor = new FormExtractor({ tokens });
     const documents = new PageDocuments({ pages: new HtmlPages({ body }), extractor });
@@ -124,8 +124,8 @@ export class ModelBuilder {
       params,
       redactor,
     });
-    const secrets = new SecretCollector({ redactor, body, cookies: classifier });
     const credentials = new CredentialAnalyzer({ cookies: classifier, body, headers, redactor });
+    const secrets = new SecretCollector({ redactor, body, cookies: classifier, credentials });
     return new ModelBuilder({ grouper, auth, cookies, forms, namer: new EndpointNamer(), redactor, secrets, credentials }, options);
   }
 
@@ -140,7 +140,8 @@ export class ModelBuilder {
   }
 
   build(capture: Capture): ApiModel {
-    this.#redactor.useValues(this.#secrets.collect(capture, this.#parts.forms.secretFields(capture)));
+    const evidence = this.#credentials.analyze(capture, { passwordFields: this.#parts.forms.passwordFields(capture), loginPages: this.#parts.forms.loginPages(capture) });
+    this.#redactor.useValues(this.#secrets.collect(capture, this.#parts.forms.secretFields(capture), evidence));
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
@@ -148,11 +149,11 @@ export class ModelBuilder {
       forms: this.#parts.forms.targets(capture),
       encoding: this.#parts.forms.submissionEncoding(capture),
       submitted: this.#parts.forms.submitted(capture),
+      credentials: (exchange) => this.#parts.auth.credentialSet(exchange, evidence),
     };
     const grouped = this.#parts.grouper.group(exchanges, context);
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
-    const evidence = this.#credentials.analyze(capture, { passwordFields: this.#parts.forms.passwordFields(capture), loginPages: this.#parts.forms.loginPages(capture) });
     this.#parts.auth.detect(endpoints, capture, evidence);
     endpoints.sort(ModelBuilder.#compare);
     this.#parts.namer.name(endpoints);

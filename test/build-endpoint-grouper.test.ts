@@ -479,8 +479,8 @@ describe('EndpointGrouper content from script requests (HTTPBIN-2, HTTPBIN-5, HT
     f.exchange({ url: '/doc', resourceType: 'document', status: 206, requestHeaders: { range: 'bytes=0-1' }, responseHeaders: { 'content-type': 'text/html' } });
     const endpoints = grouper().group(f.capture().exchanges);
     const params = (key: string) => byKey(endpoints, key).headerParams.map((param) => [param.name, param.required, param.examples]);
-    assert.deepEqual(params(`GET ${ORIGIN}/range/{range}`), [['range', true, ['bytes=0-15']]]);
-    assert.deepEqual(params(`GET ${ORIGIN}/etag/abc`), [['if-none-match', true, ['"abc"']]]);
+    assert.deepEqual(params(`GET ${ORIGIN}/range/{range}`), [['range', false, ['bytes=0-15']]]);
+    assert.deepEqual(params(`GET ${ORIGIN}/etag/abc`), [['if-none-match', false, ['"abc"']]]);
     assert.deepEqual(params(`GET ${ORIGIN}/api/me`), []);
     assert.deepEqual(params(`GET ${ORIGIN}/doc`), []);
     assert.equal(new HeaderPolicy().isParam('range'), false);
