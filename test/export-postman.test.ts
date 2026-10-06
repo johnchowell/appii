@@ -71,9 +71,9 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
     for (const name of referenced(collection.item)) assert.ok(keys.has(name), `variable ${name} is not defined`);
   });
 
-  test('folders follow the first meaningful path segment and every endpoint is one request', () => {
+  test('folders follow the first meaningful path segment, the login folder runs first, and every endpoint is one request', () => {
     const folders = (collection.item as Item[]).map((folder) => folder.name);
-    assert.deepEqual(folders, ['root', 'account', 'items', 'me', 'app', 'graphql', 'login', 'products', 'search', 'signup']);
+    assert.deepEqual(folders, ['login', 'root', 'account', 'items', 'me', 'app', 'graphql', 'products', 'search', 'signup']);
     assert.equal(requests(collection).length, model.endpoints.length);
   });
 

@@ -1,6 +1,7 @@
-import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
+import type { ApiModel, BodyKind, BodyShape, CsrfToken, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
 import { Ansi, Credentials, Curl, EndpointIndex, Json, RequestBodies, Samples, Schema, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
+import { SessionGuide } from '../export/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { EndpointListPresenter } from './endpoint-list-presenter.js';
 import { BasePresenter } from './presenter.js';
@@ -49,6 +50,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     { header: 'SOURCE NAME', flex: true, minWidth: 8, optional: true, priority: 2 },
     { header: 'SOURCE URL', flex: true, wrap: true, minWidth: 12, optional: true, priority: 1 },
   ];
+  static readonly BOUND_COLUMN: TableColumn = { header: 'BOUND TO', flex: true, wrap: true, minWidth: 8, optional: true, priority: 3 };
   static readonly SAMPLE_COLUMNS: readonly TableColumn[] = [
     { header: 'STATUS', align: 'right' },
     { header: 'URL', flex: true, wrap: true, minWidth: 16 },
@@ -101,6 +103,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       this.#responses(endpoint),
       this.#samples(endpoint),
       this.#curl(endpoint),
+      this.#steps(input.model, endpoint),
     ]);
   }
 
@@ -228,14 +231,30 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       ]),
     ];
     if (auth.csrf.length === 0) return lines;
-    const rows = auth.csrf.map((token) => [
-      this.ansi.clean(token.location),
-      this.ansi.clean(token.name),
-      this.ansi.clean(token.source),
-      this.ansi.clean(token.sourceName ?? ''),
-      this.ansi.clean(token.sourceUrl ?? ''),
-    ]);
-    return [...lines, this.table().render(EndpointDetailPresenter.CSRF_COLUMNS, rows)];
+    const bound = auth.csrf.some((token) => (token.sessionCookies?.length ?? 0) > 0);
+    const columns = bound ? [...EndpointDetailPresenter.CSRF_COLUMNS, EndpointDetailPresenter.BOUND_COLUMN] : EndpointDetailPresenter.CSRF_COLUMNS;
+    const rows = auth.csrf.map((token) => {
+      const row = [this.ansi.clean(token.location), this.ansi.clean(token.name), this.ansi.clean(token.source), this.ansi.clean(token.sourceName ?? ''), this.ansi.clean(token.sourceUrl ?? '')];
+      if (bound) row.push(this.ansi.clean(EndpointDetailPresenter.boundTo(token)));
+      return row;
+    });
+    return [...lines, this.table().render(columns, rows)];
+  }
+
+  static boundTo(token: CsrfToken): string {
+    const cookies = token.sessionCookies ?? [];
+    return cookies.length > 0 ? cookies.map((name) => `cookie ${name}`).join(', ') : '';
+  }
+
+  #steps(model: ApiModel, endpoint: Endpoint): PresenterBlock {
+    const plain = (value: string): string => value;
+    const guide = SessionGuide.create(model).steps(endpoint, { code: plain, url: plain }, BasePresenter.fileArgument(this.file, this.ansi));
+    if (!guide) return undefined;
+    const wrap = (text: string): string[] => TextLayout.wrap(this.ansi.clean(text), this.width);
+    const lines = [this.heading(SessionGuide.TITLE), ...guide.steps.flatMap(wrap), ...wrap(guide.lead)];
+    for (const command of guide.commands) lines.push(...this.#shell.fold(`  ${command}`, this.width));
+    lines.push(...guide.notes.flatMap(wrap));
+    return lines;
   }
 
   #responses(endpoint: Endpoint): PresenterBlock {

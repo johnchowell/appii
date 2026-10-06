@@ -141,6 +141,7 @@ export class TrafficRecorder {
       bufferBytes,
       resourceBufferBytes,
       bodies: this.#captureBodies,
+      streamBytes: this.#maxBodyBytes,
       ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#onWorker(channel) }),
     };
     this.#openTap = deps.tap ?? PageNetworkTap.open;

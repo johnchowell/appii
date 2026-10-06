@@ -10,7 +10,7 @@ type Item = {
   event?: { listen: string; script: { type: string; exec: string[] } }[];
   request: { method: string; description: string; url: { raw: string }; body?: { urlencoded?: { key: string; value: string }[] } };
 };
-type Collection = { item: { name: string; item: Item[] }[]; variable: { key: string; value: string; description?: string }[] };
+type Collection = { info: { description: string }; item: { name: string; item: Item[] }[]; variable: { key: string; value: string; description?: string }[] };
 
 const ORIGIN = 'https://quotes.example.test';
 const nodeRequire = createRequire(import.meta.url);
@@ -100,5 +100,74 @@ describe('Postman carries the login flow (L3, QL-7, QL-8, QL-9)', () => {
     assert.deepEqual([...json], [['x_request_token', 'j-2']]);
     const header = sandbox(me?.event?.[0]?.script.exec ?? [], { text: '{}', headers: { 'X-Request-Token': 'unused', requestToken: 'h-3' } });
     assert.deepEqual([...header], [['x_request_token', 'h-3']]);
+  });
+
+  test('a Collection Runner run logs in first, sends the requests that need the login next, and logs out last (P4)', () => {
+    const doc = collection(LoginModels.form(ORIGIN));
+    assert.deepEqual(doc.item.map((each) => each.name), ['login', 'root', 'account', 'page', 'logout']);
+    const run = doc.item.flatMap((each) => each.item.map((item) => `${item.request.method} ${item.request.url.raw}`));
+    assert.deepEqual(run, ['GET {{baseUrl}}/login', 'POST {{baseUrl}}/login', 'GET {{baseUrl}}/', 'GET {{baseUrl}}/account', 'GET {{baseUrl}}/page/:page/', 'GET {{baseUrl}}/logout']);
+  });
+
+  test('a logout in the folder of the login moves to the last folder, after every request that needs the login', () => {
+    const model = LoginModels.bearer(ORIGIN);
+    const me = LoginModels.endpoint(model, 'GET', '/api/me');
+    model.endpoints.splice(1, 0, { ...structuredClone(me), id: 'post-api-auth-logout', name: 'postAuthLogout', key: 'POST /api/auth/logout', method: 'POST', path: '/api/auth/logout', role: 'logout', auth: { ...structuredClone(me.auth), anonymous: 'untested' } });
+    const doc = collection(model);
+    assert.deepEqual(doc.item.map((each) => [each.name, each.item.map((item) => item.request.url.raw)]), [
+      ['auth', ['{{baseUrl}}/api/auth/login']],
+      ['me', ['{{baseUrl}}/api/me']],
+      ['notes', ['{{baseUrl}}/api/notes']],
+      ['app', ['{{baseUrl}}/app']],
+      ['logout', ['{{baseUrl}}/api/auth/logout']],
+    ]);
+    assert.match(doc.info.description, /the logout requests come last, in the folder "logout", so the requests between them are logged in\./);
+  });
+
+  test('the folder of the page that holds the CSRF token of the login runs before the folder of the login', () => {
+    const model = LoginModels.form(ORIGIN);
+    const login = LoginModels.endpoint(model, 'POST', '/login');
+    Object.assign(login, { path: '/session', key: 'POST /session', name: 'postSession' });
+    login.auth.csrf = login.auth.csrf.map((token) => ({ ...token, sourceUrl: `${ORIGIN}/login` }));
+    const doc = collection(model);
+    assert.deepEqual(doc.item.slice(0, 2).map((each) => [each.name, each.item.map((item) => `${item.request.method} ${item.request.url.raw}`)]), [
+      ['login', ['GET {{baseUrl}}/login']],
+      ['session', ['POST {{baseUrl}}/session']],
+    ]);
+  });
+
+  test('the login finds its CSRF source page even when another request that sends the same token comes first', () => {
+    const model = LoginModels.form(ORIGIN);
+    const login = LoginModels.endpoint(model, 'POST', '/login');
+    const account = LoginModels.endpoint(model, 'GET', '/account');
+    model.endpoints.unshift({ ...structuredClone(login), id: 'post-account', name: 'postAccount', key: 'POST /account', path: '/account', role: undefined, login: undefined, auth: { ...structuredClone(account.auth), csrf: structuredClone(login.auth.csrf) } } as typeof login);
+    const doc = collection(model);
+    const posted = folder(doc, 'login')[1];
+    assert.match(posted?.request.description ?? '', /Send "Get login page" \(GET \/login\) first: its test script stores the token in `\{\{csrf_token\}\}`\./);
+    assert.match(doc.info.description, /the login and the page that holds its CSRF token come first/);
+  });
+
+  test('the collection description names the login request, the variables without a default and the test scripts', () => {
+    const doc = collection(LoginModels.form(ORIGIN));
+    const text = doc.info.description;
+    assert.match(text, /Log in with "Post login" \(POST \/login\) in the folder "login"\. Set the collection variables \{\{username\}\} and \{\{password\}\} first; they have no default\./);
+    assert.match(text, /Test scripts fill variables from the responses: "Get login page" \(GET \/login\) stores the CSRF token csrf_token in \{\{csrf_token\}\}\./);
+    assert.match(text, /In a Collection Runner run the login and the page that holds its CSRF token come first and the logout requests come last, in the folder "logout", so the requests between them are logged in\./);
+    assert.ok(!text.includes('must be filled in before sending'), text);
+    const model = LoginModels.form(ORIGIN);
+    LoginModels.endpoint(model, 'GET', '/account').headerParams.push({ name: 'x-api-key', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] });
+    assert.match(collection(model).info.description, /Variables without a default, to fill in before sending: \{\{x_api_key\}\}\./);
+  });
+
+  test('a login that returns a bearer token stores it in {{access_token}} with a test script, and the description says so', () => {
+    const doc = collection(LoginModels.bearer(ORIGIN));
+    const login = folder(doc, 'auth')[0];
+    const exec = login?.event?.[0]?.script.exec ?? [];
+    assert.deepEqual([...sandbox(exec, { text: JSON.stringify({ token: 'bearer-1', user: { name: 'x' } }) })], [['access_token', 'bearer-1']]);
+    assert.deepEqual([...sandbox(exec, { text: JSON.stringify({ error: 'bad credentials' }) })], []);
+    assert.deepEqual([...sandbox(exec, { text: 'not json' })], []);
+    assert.match(login?.request.description ?? '', /Its test script stores the bearer token from the response field `token` in `\{\{access_token\}\}`/);
+    assert.match(doc.info.description, /"Post auth login" \(POST \/api\/auth\/login\) stores the bearer token from the response field token in \{\{access_token\}\}/);
+    assert.ok(!/Variables without a default[^\n]*access_token/.test(doc.info.description), doc.info.description);
   });
 });

@@ -36,6 +36,8 @@ export class PageSnapshotter {
   ];
   static readonly INSPECT_EVENTS: readonly string[] = ['focusin', 'pointerdown', 'keydown', 'input'];
   static readonly ROUTE_EVENTS: readonly string[] = ['popstate'];
+  static readonly EDIT_EVENTS: readonly string[] = ['input', 'change'];
+  static readonly EDITABLE_CONTROLS: readonly string[] = ['input', 'select', 'textarea'];
   static readonly NAVIGATION_EVENT = 'currententrychange';
   static readonly LOADED_STATE = 'complete';
   static readonly FORM_CONTROLS: readonly string[] = ['form', ...LiveDom.LISTED_CONTROLS];
@@ -47,6 +49,7 @@ export class PageSnapshotter {
   readonly #token = randomBytes(6).toString('hex');
   readonly #binding = `appiiSnapshot_${this.#token}`;
   readonly #marks = `appiiSensitive_${this.#token}`;
+  readonly #edited = `appiiEdited_${this.#token}`;
   readonly #pages = new Map<Page, TrackedPage>();
   readonly #snapshots: PageSnapshot[] = [];
   readonly #seen = new Set<string>();
@@ -58,7 +61,7 @@ export class PageSnapshotter {
     this.#debounceMs = options.debounceMs ?? PageSnapshotter.DEFAULT_DEBOUNCE_MS;
     this.#timeoutMs = options.timeoutMs ?? PageSnapshotter.DEFAULT_TIMEOUT_MS;
     this.#world = options.world ?? ((context, page, worldOptions) => PageWorld.open(context, page, worldOptions));
-    this.#dom = options.dom ?? ((page, world) => new LiveDom(page, world ? { evaluate: (expression) => world.evaluate(expression), marks: this.#marks } : {}));
+    this.#dom = options.dom ?? ((page, world) => new LiveDom(page, world ? { evaluate: (expression) => world.evaluate(expression), marks: this.#marks, edited: this.#edited } : {}));
   }
 
   get snapshots(): PageSnapshot[] {
@@ -69,14 +72,17 @@ export class PageSnapshotter {
     const listeners = PageSnapshotter.HOOK_EVENTS.map((e) => `window.addEventListener(${JSON.stringify(e.type)}, send, ${e.capture});`).join('\n  ');
     const routes = PageSnapshotter.ROUTE_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, route, false);`).join('\n  ');
     const inspectors = PageSnapshotter.INSPECT_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, inspect, true);`).join('\n  ');
+    const editors = PageSnapshotter.EDIT_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, edit, true);`).join('\n  ');
     return `(function () {
   if (window.top !== window) return;
   var marks = new WeakSet();
+  var edited = new WeakSet();
   var watched = new WeakSet();
   var shapes = new Set();
   var timer = 0;
   var sentUrl = '';
   var CONTROLS = ${JSON.stringify(PageSnapshotter.FORM_CONTROLS.join(','))};
+  var EDITABLE = ${JSON.stringify(PageSnapshotter.EDITABLE_CONTROLS.join(','))};
   function getter(proto, name) {
     return Object.getOwnPropertyDescriptor(proto, name).get;
   }
@@ -88,6 +94,7 @@ export class PageSnapshotter {
   var readyState = getter(Document.prototype, 'readyState');
   var isConnected = getter(Node.prototype, 'isConnected');
   window[${JSON.stringify(this.#marks)}] = marks;
+  window[${JSON.stringify(this.#edited)}] = edited;
   function isPassword(node) {
     return node instanceof HTMLInputElement && node.type === 'password';
   }
@@ -156,7 +163,7 @@ export class PageSnapshotter {
       sentUrl = location.href;
       var call = window[${JSON.stringify(this.#binding)}];
       if (typeof call !== 'function') return;
-      var doc = ${LiveDom.expression(this.#marks)};
+      var doc = ${LiveDom.expression({ marks: this.#marks, edited: this.#edited })};
       call(JSON.stringify(doc));
     } catch (e) {}
   }
@@ -185,11 +192,17 @@ export class PageSnapshotter {
       else if (isPassword(path[i])) marks.add(path[i]);
     }
   }
+  function edit(event) {
+    if (!event.isTrusted) return;
+    var target = event.composedPath()[0];
+    if (target instanceof Element && matches.call(target, EDITABLE)) edited.add(target);
+  }
   watch(document);
   document.addEventListener('readystatechange', function () {
     if (readyState.call(document) === 'interactive') baseline();
   });
   ${inspectors}
+  ${editors}
   ${listeners}
   ${routes}
   if (typeof navigation === 'object' && navigation !== null) navigation.addEventListener(${JSON.stringify(PageSnapshotter.NAVIGATION_EVENT)}, route);

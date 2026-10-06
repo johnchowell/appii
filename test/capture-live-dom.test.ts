@@ -258,7 +258,10 @@ describe('LiveDom shadow trees', () => {
       await snapshotter.attach(context);
       const page = await context.newPage();
       await page.goto(server.url('/shadow-submit'));
-      await page.fill('login-box input[name=user]', 'bob');
+      await page.evaluate(() => {
+        const user = document.querySelector('login-box')!.shadowRoot!.querySelector('input[name=user]') as HTMLInputElement;
+        user.value = 'bob';
+      });
       await page.fill('login-box input[name=pass]', SECRET);
       await page.click('login-box button');
       await page.waitForFunction(() => document.title === 'sent');
@@ -266,7 +269,7 @@ describe('LiveDom shadow trees', () => {
       await snapshotter.settled();
       snapshotter.detach();
       const snapshots = snapshotter.snapshots.filter((s) => s.url === server.url('/shadow-submit'));
-      assert.ok(snapshots.some((s) => /<input name="user"[^>]*value="bob">/.test(s.html)), 'submit-time snapshot of the shadow form');
+      assert.ok(snapshots.some((s) => /<input name="user"[^>]*value="bob">/.test(s.html)), 'submit-time snapshot of the shadow form, with the value its script set');
       assert.ok(snapshots.every((s) => !s.html.includes(SECRET)));
     } finally {
       await context.close();
@@ -282,13 +285,15 @@ describe('PageSnapshotter privacy and stealth', () => {
       idleMs: 100,
       script: async (page) => {
         await page.fill('#pw', SECRET);
-        await page.fill('#other', 'visible-value');
+        await page.evaluate(() => {
+          (document.getElementById('other') as HTMLInputElement).value = 'visible-value';
+        });
         await page.click('#show');
         assert.equal(await page.getAttribute('#pw', 'type'), 'text');
       },
     }).run();
     const pages = capture.pages.filter((p) => p.url === server.url('/toggle'));
-    assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), 'a snapshot was taken after typing');
+    assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), 'a snapshot was taken after the password was typed');
     assert.ok(capture.pages.every((p) => !p.html.includes(SECRET)), 'the typed password is not in any snapshot');
   });
 
@@ -303,11 +308,13 @@ describe('PageSnapshotter privacy and stealth', () => {
           await page.click('#show');
           assert.equal(await page.getAttribute('#pw', 'type'), 'text');
           assert.equal(await page.inputValue('#pw'), SECRET);
-          await page.fill('#other', 'visible-value');
+          await page.evaluate(() => {
+            (document.getElementById('other') as HTMLInputElement).value = 'visible-value';
+          });
         },
       }).run();
       const pages = capture.pages.filter((p) => p.url === server.url(path));
-      assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), `${path}: a snapshot was taken after typing`);
+      assert.ok(pages.some((p) => p.html.includes('value="visible-value"')), `${path}: a snapshot was taken after the password was typed`);
       assert.ok(capture.pages.every((p) => !p.html.includes(SECRET)), `${path}: the typed password is not in any snapshot`);
     }
   });
@@ -318,14 +325,16 @@ describe('PageSnapshotter privacy and stealth', () => {
       headless: true,
       idleMs: 100,
       script: async (page) => {
-        await page.fill('[name=who]', 'typed-before-submit');
+        await page.evaluate(() => {
+          (document.querySelector('[name=who]') as HTMLInputElement).value = 'set-before-submit';
+        });
         await Promise.all([page.waitForURL('**/report'), page.click('button')]);
       },
     }).run();
     const report = server.requests.find((r) => r.method === 'POST' && r.path === '/report');
     assert.ok(report);
     assert.equal(new URLSearchParams(report.body.toString()).get('globals'), '');
-    assert.ok(capture.pages.some((p) => p.url === server.url('/globals') && p.html.includes('value="typed-before-submit"')));
+    assert.ok(capture.pages.some((p) => p.url === server.url('/globals') && p.html.includes('value="set-before-submit"')));
   });
 });
 

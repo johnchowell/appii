@@ -45,13 +45,27 @@ the requests recorded until then and exits with an error that says so. Pages
 that the site opens in new tabs or windows are recorded too. appii asks for a
 response body as soon as the browser reports the request finished, before a
 script that waits for the page load can start the next navigation (Chromium
-discards the bodies of a page once it navigates away). The first requests of a
+discards the bodies of a page once it navigates away). A page script can
+navigate faster than that, for example a script login that reads the JSON
+answer, stores the token and moves to the next page at once. So the responses
+to `fetch()` and `XMLHttpRequest` calls are held at their headers until appii
+has asked the browser to stream their body to it (one round trip to the
+browser, about 2 ms on a local machine), and the body then reaches the page and
+appii together. Nothing is buffered: the page receives every chunk as it
+arrives, an event stream (`text/event-stream`) and a response whose
+`Content-Length` is above `--max-body` are let through without streaming, and
+routes that a Playwright script sets still answer. Responses that a service
+worker gives the page are not held and are read after they finish, so a page
+that navigates away at once loses them. The first requests of a
 new tab can start before appii's own browser session is attached to it; their
 bodies are then read from the browser session that opened the tab, unless that
 could make the browser send the request again (a compressed response with a
-`Content-Length`), in which case the body is marked as not read. `-o -` writes the
-capture to stdout and the summary to stderr, so `appii capture ... -o - | jq`
-works.
+`Content-Length`), in which case the body is marked as not read. Page
+snapshots record the values that page scripts put into form controls, but not
+what was typed, checked or chosen by a trusted user action (yours, or
+`--login`), so the model never takes a typed value, such as a login name, for
+the default value of a field. `-o -` writes the capture to stdout and the
+summary to stderr, so `appii capture ... -o - | jq` works.
 
 #### Several URLs and logging in
 
@@ -60,8 +74,10 @@ appii capture https://example.com/ https://example.com/pricing https://example.c
 ```
 
 opens the URLs in order in the same tab and waits until the network is idle
-after each one. With a window, appii opens them in order and then leaves the
-window to you.
+after each one, the first one included, so a login form that a script renders
+after a fetch is recorded, and the requests the page still has in flight
+finish, before the next URL opens. With a window, appii opens them in order and
+then leaves the window to you.
 
 To log in during the capture, name the fields of the login form with
 `--login`, once per field:
@@ -173,6 +189,17 @@ the inputs.
 `appii run` takes `--with <file>` (repeatable) to do the same in one step: it
 records, then builds `api.json` from the earlier captures and the new one.
 
+The captures are the source of the model, so to update a model, build it again
+from its captures plus the new ones. Given an `api.json`, `appii build` stops
+with an error that names the captures the model was made from (`source.file`
+or `source.captures`) and the command that does that:
+
+```
+error: api.json is an API model (api.json), not a capture or HAR file; to update a model, build it again from the captures it was made from (anon.json) plus the new ones
+Did you mean:
+  appii build anon.json authed.json
+```
+
 #### Credentials
 
 A cookie, header or `Authorization` scheme is a credential of an endpoint only
@@ -218,6 +245,35 @@ request sends only the credential cookies and the cookies that a CSRF token
 depends on (`csrfToken.sessionCookies`, or the cookie a double-submit token
 comes from).
 
+For an endpoint known only from a form, appii has no request to read the
+credentials from. It takes the cookies the browser held when it showed the
+form: the cookies of the last request to that origin before the page snapshot
+(or the page load), updated by the `Set-Cookie` headers of the responses that
+came in before the snapshot, with the cookie rules of RFC 6265bis for the
+form target. So a sign-up form seen before logging in needs no credential
+even when the capture ends logged in, and a profile form seen only after
+logging in needs the session even when a logout deleted it later.
+`auth.anonymous` stays `untested`.
+
+The source of a CSRF token (`auth.csrf[].source`) is what the server sent:
+appii looks for the token value first in a cookie the request carried, then
+in a meta tag or hidden field of the HTML that the server returned, then in a
+JSON field or header of an earlier response (`response`, with `sourceUrl`,
+`sourceMethod` and the field name in `sourceName`; GET responses first), and
+only then in a meta tag or hidden field that exists only in the page snapshot.
+A login form that a script renders with the token it fetched from
+`/api/csrf` therefore names `GET /api/csrf` and its `csrfToken` field, which
+the TypeScript client, the `curl` script and Postman fetch before they log in.
+`sessionCookies` names the cookies the token is bound to.
+
+The login role goes to an endpoint that accepts the password field of the
+login form (in its query or request body) or that received a credential
+submission. The page load of a form without an action, which a script
+submits, is never the login; when no request of the form was recorded,
+`list` names the form instead (see list). A page such as `/logout` that only
+starts a sign-out request is a page, not the logout: the logout is the request
+that revoked the credential.
+
 #### Redaction
 
 appii redacts secrets by name (passwords, tokens, API keys, `Cookie` and
@@ -241,7 +297,14 @@ value of another cookie. `--no-redact` keeps every value.
 The user name of a login is personal data: the identifier field of a login
 form or login request (`username`, `email` or the field that `autocomplete`
 names) is redacted in examples, schemas and form descriptors, and its value is
-replaced wherever it appears, unless `--no-redact` is given.
+replaced wherever it appears, unless `--no-redact` is given. When the user
+name is an e-mail address, sites often show its local part as the account
+name (`appii-test` for `appii-test@example.com`). If a response to a logged-in
+request returns that local part (at least 3 characters) as a whole JSON string
+or as a whole HTML text node, it is personal data too, and appii replaces it
+where it is a whole value: a JSON string, a text node, a URL path segment or a
+query value equal to it. Text that merely contains it (`Hello appii-test`,
+`appii-test-notes`) is kept, so no other content is replaced.
 
 #### Path templates
 
@@ -315,6 +378,12 @@ After login: 2,5-7 (seen only with a logged-in credential)
 ```
 
 A login known only from a form says `known from a form; not submitted yet`.
+A login form whose request was not recorded, such as a form without an action
+that a script submits, has no login endpoint yet; `list` names the form:
+
+```text
+Login form:   on /login (username, password) has no action, so a script probably sends it; log in with --login to record its request
+```
 The `AUTH` column marks the rows `login` and `logout`. A credential label that
 ends in `?` means that the endpoint also answered a request without that
 credential (`auth.anonymous` is `allowed`), a label that ends in `~` means that
@@ -323,9 +392,21 @@ and a label without a mark means that requests without it were refused
 (`refused`). A refusal can be a 401, a 403 or a redirect to the login page
 (`302?` when no credential was captured). `--show` prints the role, the login
 fields and what the login issues, `Anonymous: allowed | refused | not tested`
-and `Seen: anonymous, authenticated`. `--cookies` adds a `Login and logout:`
-block that says which login issues each credential cookie (`issuedBy`) and
-which logout revokes it (`revokedBy`).
+and `Seen: anonymous, authenticated`. Its CSRF table has a `BOUND TO` column
+with the cookies each token belongs to (`sessionCookies`). For a login, and for
+an endpoint whose CSRF token comes from another request (a hidden field, a
+meta tag or a JSON response), `--show` adds `Session steps`: which request
+gives the token, which cookie it goes with, and the two commands that do the
+steps with a cookie jar, because the single example command cannot fetch the
+token itself:
+
+```text
+appii export api.json --format curl -o endpoints.sh
+bash endpoints.sh postLogin username=VALUE password=VALUE
+```
+
+`--cookies` adds a `Login and logout:` block that says which login issues each
+credential cookie (`issuedBy`) and which logout revokes it (`revokedBy`).
 
 When the submit buttons of a form send different fields, or several forms post
 to one endpoint, the request body table marks a field that only some
@@ -437,11 +518,38 @@ arguments or in `APPII_USERNAME` and `APPII_PASSWORD` (the variable names come
 from the field names), or the function stops with a message that names the
 variable. A token that only JavaScript puts into the page cannot be read from
 the HTML; the function then prints a warning that names the variable to set.
-A login that answers with a token in its JSON body prints how to put it into
-`APPII_ACCESS_TOKEN`; the TypeScript client stores such a token by itself.
+
+A login that answers with a bearer token in its JSON body
+(`login.issues.tokens`, a field path such as `accessToken` or
+`data.session.token`) saves the token in the file `APPII_TOKEN_FILE` (default:
+`<api name>-token.txt` next to the cookie jar, readable only by you). A
+function that sends a bearer token takes it from `APPII_ACCESS_TOKEN` or, when
+that is empty, from the token file, so the login function and a protected
+function work in the same shell like the cookie jar does:
+
+```sh
+source endpoints.sh
+postAuthLogin username=me password="$MY_PASSWORD"
+getProfile
+```
+
+The script never sends an empty `Authorization: Bearer` header. Without a
+token, a function whose endpoint refused every anonymous request stops with
+`getProfile: no bearer token: run postAuthLogin first or set
+APPII_ACCESS_TOKEN.` and sends nothing; a function whose anonymous access was
+not tested warns and sends the request without the header; one whose
+anonymous access is allowed sends it without the header. An `Authorization`
+header given as a curl argument (`-H`) is sent instead of the token. A login
+response without the token leaves the token file as it was and says so, and
+the logout function deletes the token file after its request.
 
 The `typescript` client fills CSRF tokens from the pages and responses that
 the site uses. It keeps a page while the cookies for that page stay the same.
+If the page that should hold a CSRF token has none (for example a hidden
+field that only a script adds) and the server rejects the request with a 4xx
+status, the client throws `MissingTokenError`, which names the token, the page
+it loaded and the field it looked for (`missing[].expected`), as the curl
+script warns in the same case.
 The client never sends a request two times on its own. If the server rejects
 a request with status 400, 403, 419 or 422 and the client took a token from a
 page that it loaded before, `response.staleTokens` names the token and the
@@ -467,9 +575,31 @@ In OpenAPI, the login operation has `security: []` and `x-appii-role: login`
 (the logout has `x-appii-role: logout`), and the description of each
 credential security scheme names the login operation that issues it. An
 operation whose anonymous access was not tested lists `{}` as an alternative
-to its credentials and says so. Postman puts the login first in its folder,
-right after the page that holds its CSRF token, and a test script on that page
-stores the token in the variable that the login request sends.
+to its credentials and says so.
+
+Postman orders the collection for a Collection Runner run: the folder of the
+login comes first (after the folder of the page that holds its CSRF token,
+when that is another folder), the requests that need the login come next,
+and the logout requests come last, in the folder `logout`. In its folder the
+login comes right after the page that holds its CSRF token, and a test script
+on that page stores the token in the variable that the login request sends. A
+login that returns a bearer token has a test script that stores it in
+`{{access_token}}`, the variable the bearer requests send. The collection
+description names the login request and its folder, the variables without a
+default that you set first (the user name and the password), the variables
+that the test scripts fill, and the order.
+
+The Markdown and HTML reports name the session cookie a CSRF token is bound to
+(`csrfToken.sessionCookies`: the token is only valid with the cookie that the
+same response set). Their example request is one curl command; for a login,
+and for an endpoint whose CSRF token comes from a page, a `Session steps`
+paragraph says how to get the token and gives the curl export commands that
+do it with a cookie jar, with the name of the curl function:
+
+```sh
+appii export api.json --format curl -o endpoints.sh
+bash endpoints.sh postLogin username=VALUE password=VALUE
+```
 
 The Markdown and HTML reports list the distinct forms with how many times and
 on which pages each one appears. Their constraint cells list every enum value

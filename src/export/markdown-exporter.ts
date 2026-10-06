@@ -6,6 +6,7 @@ import { Helpers } from './helpers.js';
 import { LoginGuide } from './login-guide.js';
 import { MarkdownWriter } from './markdown-writer.js';
 import { SchemaFieldList } from './schema-field-list.js';
+import { SessionGuide } from './session-guide.js';
 
 export interface MarkdownExporterDeps {
   writer?: MarkdownWriter;
@@ -39,13 +40,14 @@ export class MarkdownExporter extends BaseExporter {
     const opts = Helpers.normalizeOptions(options);
     const index = EndpointIndex.of(model);
     const guide = new LoginGuide(model);
+    const session = SessionGuide.create(model);
     const sections = [
       this.#md.heading(1, Helpers.title(model, opts)),
       this.#summary(model, endpoints, index, guide),
       this.#md.heading(2, 'Endpoints'),
       ...this.#tables(model, endpoints, index),
       this.#md.heading(2, 'Endpoint details'),
-      ...endpoints.map((endpoint) => this.#detail(model, endpoint, index, opts, guide)),
+      ...endpoints.map((endpoint) => this.#detail(model, endpoint, index, opts, guide, session)),
       this.#md.heading(2, 'Cookies'),
       this.#cookies(model),
       this.#md.heading(2, 'Forms'),
@@ -122,7 +124,7 @@ export class MarkdownExporter extends BaseExporter {
     return this.#md.text(parts.join('; '));
   }
 
-  #detail(model: ApiModel, endpoint: Endpoint, index: EndpointIndex, options: ExportOptions, guide: LoginGuide): string {
+  #detail(model: ApiModel, endpoint: Endpoint, index: EndpointIndex, options: ExportOptions, guide: LoginGuide, session: SessionGuide): string {
     const md = this.#md;
     const number = index.numberOf(endpoint);
     const out: string[] = [
@@ -146,7 +148,8 @@ export class MarkdownExporter extends BaseExporter {
     if (endpoint.auth.bearer) facts.push('- **Bearer:** Authorization: Bearer token');
     for (const token of endpoint.auth.csrf) {
       const source = Helpers.tokenSource(token, { text: (value) => md.text(value), code: (value) => md.code(value), url: (value) => md.code(Helpers.mapUrl(model, value, options)) });
-      facts.push(`- **CSRF:** ${md.code(token.name)} in the ${md.text(token.location)}, from ${source}`);
+      const bound = SessionGuide.bound(token, (value) => md.code(value));
+      facts.push(`- **CSRF:** ${md.code(token.name)} in the ${md.text(token.location)}, from ${source}${bound === '' ? '' : `, ${bound}`}`);
     }
     if (endpoint.form) {
       facts.push(`- **Form:** ${md.code(endpoint.form.selector)} on ${md.code(Helpers.mapUrl(model, endpoint.form.pageUrl, options))} (${md.text(endpoint.form.enctype)})`);
@@ -177,6 +180,11 @@ export class MarkdownExporter extends BaseExporter {
     if (MarkdownExporter.#unsafePatterns(endpoint)) out.push(md.text(MarkdownExporter.UNSAFE_PATTERN_NOTE));
     out.push('**Example request**', ...this.#example(model, endpoint, options));
     for (const variant of RequestBodies.variants(endpoint)) out.push(`**Example request** (${md.code(variant.mediaType)})`, ...this.#example(model, variant.endpoint, options));
+    const steps = session.steps(endpoint, { code: (value) => md.code(value), url: (value) => md.code(Helpers.mapUrl(model, value, options)) });
+    if (steps !== undefined) {
+      out.push(`**${SessionGuide.TITLE}**`, [...steps.steps, md.text(steps.lead)].join(' '), md.block(steps.commands.join('\n'), 'bash'));
+      if (steps.notes.length > 0) out.push(steps.notes.join(' '));
+    }
     return out.join('\n\n');
   }
 

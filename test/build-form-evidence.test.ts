@@ -362,7 +362,7 @@ describe('forms on client-side routes (SPA-4)', () => {
     assert.equal(find(model, 'GET', '/api/user').form, undefined);
   });
 
-  test('a route the server also sent as a page keeps that page a document, and the form describes its script request', () => {
+  test('a route the server also sent as a page keeps that page a document, and the form describes its script request, not the page load (LL-4)', () => {
     const f = new CaptureFactory('https://app.example');
     f.document('/login', CaptureFactory.page('App', '<main id="app"></main>'));
     f.snapshot('/login', 'App', CaptureFactory.page('App', `<main id="app">${login}</main>`));
@@ -377,7 +377,7 @@ describe('forms on client-side routes (SPA-4)', () => {
     assert.deepEqual(page.queryParams, []);
     const api = find(model, 'POST', '/api/users/login');
     assert.equal(api.form?.pageUrl, f.url('/login'));
-    assert.deepEqual([...(model.forms[0]?.endpoints ?? [])].sort(), [page.id, api.id].sort());
+    assert.deepEqual(model.forms[0]?.endpoints, [api.id]);
   });
 
   test('the model validator checks the recorded action, instance and page fields', () => {

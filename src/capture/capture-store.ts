@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { open, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { AppiiError, Fs, Json, Text } from '../shared/index.js';
 import type { Capture } from '../model/index.js';
 import { CaptureValidator } from './capture-validator.js';
@@ -15,6 +15,11 @@ export interface CaptureStoreDeps {
 }
 
 export type StoredKind = 'model' | 'capture' | 'har';
+
+export interface ModelInputAdvice {
+  label?: string;
+  suggestion?: string;
+}
 
 export type StoredInput = { kind: 'model'; value: unknown } | { kind: 'capture' | 'har'; capture: Capture };
 
@@ -74,6 +79,21 @@ export class CaptureStore {
     return Json.isPlainObject(value) && Array.isArray(value.endpoints) && !Array.isArray(value.exchanges) && !Json.isPlainObject(value.log);
   }
 
+  static modelCaptures(value: unknown, path: string): string[] {
+    if (!Json.isPlainObject(value) || !Json.isPlainObject(value.source)) return [];
+    const source = value.source;
+    const named = Array.isArray(source.captures) ? source.captures.map((item) => (Json.isPlainObject(item) ? item.file : undefined)) : [source.file];
+    const base = dirname(resolve(path));
+    return [...new Set(named.filter((file): file is string => typeof file === 'string' && file !== '').map((file) => resolve(base, file)))];
+  }
+
+  static modelInput(path: string, value: unknown, advice: ModelInputAdvice = {}): AppiiError {
+    const captures = CaptureStore.modelCaptures(value, path);
+    const from = captures.length > 0 ? `the captures it was made from (${captures.map((file) => basename(file)).join(', ')})` : 'the captures it was made from (it does not name them)';
+    const message = `${advice.label ?? path} is an API model (api.json), not a capture or HAR file; to update a model, build it again from ${from} plus the new ones`;
+    return new AppiiError('BAD_INPUT', message, { details: { captures, ...(advice.suggestion === undefined ? {} : { suggestions: [advice.suggestion] }) } });
+  }
+
   static kind(value: unknown): StoredKind {
     if (CaptureStore.isHar(value)) return 'har';
     return CaptureStore.isModel(value) ? 'model' : 'capture';
@@ -107,7 +127,7 @@ export class CaptureStore {
 
   async load(path: string): Promise<Capture> {
     const input = await this.read(path);
-    if (input.kind === 'model') throw new AppiiError('BAD_INPUT', `${path} is an API model (api.json), not a capture or HAR file`);
+    if (input.kind === 'model') throw CaptureStore.modelInput(path, input.value);
     return input.capture;
   }
 

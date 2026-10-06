@@ -69,6 +69,21 @@ export interface CdpResponseReceived {
 export interface CdpDataReceived {
   requestId: string;
   dataLength: number;
+  data?: string;
+}
+
+export interface CdpRequestPaused {
+  requestId: string;
+  request: CdpRequest;
+  resourceType?: string;
+  responseErrorReason?: string;
+  responseStatusCode?: number;
+  responseHeaders?: { name: string; value: string }[];
+  networkId?: string;
+}
+
+export interface CdpStreamedContent {
+  bufferedData: string;
 }
 
 export interface CdpLoadingFinished {

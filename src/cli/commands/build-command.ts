@@ -1,6 +1,7 @@
 import { dirname, relative, sep } from 'node:path';
 import { CaptureMerger, CaptureStore } from '../../capture/index.js';
 import type { CaptureInput } from '../../capture/index.js';
+import { BasePresenter } from '../../present/index.js';
 import { Meta } from '../../shared/index.js';
 import { BuildOptionGroup } from '../build-option-group.js';
 import { BuildStep } from '../build-step.js';
@@ -23,6 +24,7 @@ export interface BuildCommandDeps extends CommandDeps {
 
 export class BuildCommand extends Command {
   static readonly DEFAULT_OUT = 'api.json';
+  static readonly CAPTURES_PLACEHOLDER = '<capture.json>...';
 
   readonly spec: CommandSpec;
   readonly #store: CaptureStore;
@@ -60,6 +62,16 @@ export class BuildCommand extends Command {
     return relative(dirname(out), input).split(sep).join('/');
   }
 
+  static rebuild(model: string, value: unknown, positionals: readonly string[], explicit: string | undefined, ctx: CliContext): string {
+    const captures = CaptureStore.modelCaptures(value, model);
+    const others = positionals.map((file) => ctx.resolve(file)).filter((file) => file !== model);
+    const named = [...new Set([...captures, ...others])].map((file) => BasePresenter.fileArgument(ctx.display(file)));
+    const inputs = captures.length > 0 ? named : [BuildCommand.CAPTURES_PLACEHOLDER, ...named];
+    const target = explicit === undefined ? model : ctx.resolve(explicit);
+    const out = explicit === OutputTarget.STDOUT ? [`-o ${OutputTarget.STDOUT}`] : target === ctx.resolve(BuildCommand.DEFAULT_OUT) ? [] : [`-o ${BasePresenter.fileArgument(ctx.display(target))}`];
+    return [Meta.APP_NAME, 'build', ...inputs, ...out].join(' ');
+  }
+
   protected async execute(values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
     const options = this.#build.read(values, ctx);
     this.argument(positionals, 0, '<capture.json|file.har>');
@@ -69,9 +81,10 @@ export class BuildCommand extends Command {
     const inputs: CaptureInput[] = [];
     for (const file of positionals) {
       const input = ctx.resolve(file);
-      const capture = await this.#store.load(input);
+      const stored = await this.#store.read(input);
+      if (stored.kind === 'model') throw CaptureStore.modelInput(input, stored.value, { label: ctx.display(input), suggestion: BuildCommand.rebuild(input, stored.value, positionals, explicit, ctx) });
       if (await out.overwrites(input)) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
-      inputs.push({ capture, file: BuildCommand.source(base, input) });
+      inputs.push({ capture: stored.capture, file: BuildCommand.source(base, input) });
     }
     const merged = this.#merger.merge(inputs);
     const source = inputs.length === 1 ? inputs[0]?.file : undefined;

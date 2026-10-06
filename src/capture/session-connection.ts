@@ -22,6 +22,7 @@ export class SessionConnection implements NetworkConnection {
     'Network.dataReceived',
     'Network.loadingFinished',
     'Network.loadingFailed',
+    'Fetch.requestPaused',
     'Target.attachedToTarget',
     'Target.detachedFromTarget',
     'Target.receivedMessageFromTarget',

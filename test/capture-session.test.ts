@@ -474,14 +474,21 @@ describe('LiveDom, PageSnapshotter and NetworkIdleMonitor', () => {
       const page = await context.newPage();
       assert.equal(await snapshotter.prepare(page), true);
       await page.goto(site.origin + '/login');
+      await page.evaluate(() => {
+        const search = document.querySelector('input[name=q]') as HTMLInputElement;
+        search.value = 'set by a script';
+      });
       await page.fill('#email', FIXTURE_USER.email);
       await page.fill('#password', FIXTURE_USER.password);
+      await page.check('input[name=remember]');
       await Promise.all([page.waitForURL('**/account'), page.click('#login button[type=submit]')]);
       await snapshotter.settled();
       snapshotter.detach();
       const logins = snapshotter.snapshots.filter((s) => s.url === site.origin + '/login');
-      assert.ok(logins.some((s) => s.html.includes(`value="${FIXTURE_USER.email}"`)), 'submit-time snapshot has the typed email');
-      assert.ok(logins.some((s) => /<input id="email" type="email" name="email" required="" autocomplete="username" value="">/.test(withoutLiveAttributes(s.html))), 'load-time snapshot');
+      assert.ok(logins.some((s) => s.html.includes('value="set by a script"')), 'submit-time snapshot has the value a script set');
+      assert.ok(logins.every((s) => !s.html.includes(FIXTURE_USER.email)), 'what the user typed is not recorded as the default value');
+      assert.ok(logins.every((s) => /<input type="checkbox" name="remember" value="yes">/.test(withoutLiveAttributes(s.html))), 'a box the user checked is not recorded as checked by default');
+      assert.ok(logins.every((s) => /<input id="email" type="email" name="email" required="" autocomplete="username" value="">/.test(withoutLiveAttributes(s.html))), 'the email keeps its empty default');
       assert.ok(snapshotter.snapshots.every((s) => !s.html.includes(FIXTURE_USER.password)));
       assert.ok(logins.some((s) => /<input type="hidden" name="csrf_token" value="[0-9a-f]+">/.test(withoutLiveAttributes(s.html))));
     } finally {

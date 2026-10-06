@@ -5,6 +5,7 @@ import { FormExtractor, TokenDetector } from '../forms/index.js';
 import { Credentials, Http, Json, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
+import { CookieJarTimeline } from './cookie-jar-timeline.js';
 import { CredentialAnalyzer } from './credential-analyzer.js';
 import { CredentialEvidence } from './credential-evidence.js';
 import { CsrfSourceResolver } from './csrf-source-resolver.js';
@@ -26,6 +27,7 @@ export interface AuthDetectorDeps {
   sources?: (capture: Capture) => CsrfSourceResolver;
   cookies?: CookieClassifier;
   analyzer?: CredentialAnalyzer;
+  parser?: CookieParser;
 }
 
 interface TokenCandidate {
@@ -66,6 +68,8 @@ export class AuthDetector {
   readonly #sources: (capture: Capture) => CsrfSourceResolver;
   readonly #cookies: CookieClassifier;
   readonly #analyzer: CredentialAnalyzer;
+  readonly #documents: PageDocuments;
+  readonly #parser: CookieParser;
 
   constructor(deps: AuthDetectorDeps) {
     this.#tokens = deps.tokens;
@@ -76,6 +80,8 @@ export class AuthDetector {
     this.#analyzer = deps.analyzer ?? new CredentialAnalyzer({ cookies: this.#cookies, body: deps.body, headers: this.#headers, redactor: this.#redactor });
     const headers = this.#headers;
     const documents = deps.documents ?? new PageDocuments({ pages: new HtmlPages({ body: deps.body }), extractor: deps.extractor });
+    this.#documents = documents;
+    this.#parser = deps.parser ?? new CookieParser();
     this.#sources = deps.sources ?? ((capture) => new CsrfSourceResolver(capture, { tokens: deps.tokens, body: deps.body, documents, headers }));
   }
 
@@ -95,6 +101,7 @@ export class AuthDetector {
       redactor,
       cookies,
       analyzer: new CredentialAnalyzer({ cookies, body, headers, redactor }),
+      parser: new CookieParser(),
     });
   }
 
@@ -102,14 +109,16 @@ export class AuthDetector {
     const groups = new EndpointMatcher(endpoints, { body: this.#body }).group(capture.exchanges);
     let resolver: CsrfSourceResolver | undefined;
     const resolve = (): CsrfSourceResolver => (resolver ??= this.#sources(capture));
+    let timeline: CookieJarTimeline | undefined;
+    const jar = (): CookieJarTimeline => (timeline ??= new CookieJarTimeline(capture, { parser: this.#parser }));
     for (const endpoint of endpoints) {
       const exchanges = (groups.get(endpoint) ?? []).filter((exchange) => Http.reachedServer(exchange));
       const state: EndpointAuthState = { cookies: new Set(), headers: new Set(), schemes: new Set(), bearer: false, csrf: new Map() };
       for (const exchange of exchanges) this.#observe(state, exchange, resolve, evidence);
-      const predicted = exchanges.length === 0 ? AuthDetector.#predicted(endpoint, capture) : [];
-      for (const cookie of predicted) state.cookies.add(cookie.name);
-      const sessions = exchanges.length > 0 ? exchanges.flatMap((exchange) => CredentialAnalyzer.sent(exchange)) : predicted;
-      this.#formTokens(state, endpoint, Helpers.distinct(sessions.filter((cookie) => evidence.isCredentialRole(cookie.name)).map((cookie) => cookie.name)).sort(Text.compare));
+      const predicted = exchanges.length === 0 ? this.#predicted(endpoint, capture, jar) : [];
+      for (const cookie of predicted.flat()) state.cookies.add(cookie.name);
+      const sessions = exchanges.length > 0 ? exchanges.flatMap((exchange) => CredentialAnalyzer.sent(exchange)) : predicted.flat();
+      this.#formTokens(state, endpoint, Helpers.distinct(sessions.filter((cookie) => evidence.isCredentialRole(cookie.name)).map((cookie) => cookie.name)).sort(Text.compare), resolve);
       const found = exchanges.length > 0 ? this.#credentialSets(exchanges, evidence) : AuthDetector.#predictedSets(predicted, evidence);
       endpoint.auth = {
         cookies: [...state.cookies].sort(Text.compare),
@@ -192,25 +201,47 @@ export class AuthDetector {
     );
   }
 
-  static #predictedSets(predicted: readonly Cookie[], evidence: CredentialEvidence): CredentialSets {
-    const set = Helpers.distinct(predicted.filter((cookie) => evidence.isCredential(cookie.name, cookie.value)).map((cookie) => Credentials.entry(Credentials.COOKIE, cookie.name))).sort(Text.compare);
-    return { sets: set.length > 0 ? [set] : [], anonymous: AuthDetector.UNTESTED, seen: [] };
+  static #predictedSets(predicted: readonly (readonly Cookie[])[], evidence: CredentialEvidence): CredentialSets {
+    const sets = new Map<string, string[]>();
+    for (const cookies of predicted) {
+      const set = Helpers.distinct(cookies.filter((cookie) => evidence.isCredential(cookie.name, cookie.value)).map((cookie) => Credentials.entry(Credentials.COOKIE, cookie.name))).sort(Text.compare);
+      if (set.length > 0) sets.set(JSON.stringify(set), set);
+    }
+    return { sets: [...sets.values()].sort((a, b) => a.length - b.length || Text.compare(a.join(' '), b.join(' '))), anonymous: AuthDetector.UNTESTED, seen: [] };
   }
 
   static predictCookies(endpoint: Endpoint, capture: Capture): string[] {
-    return Helpers.distinct(AuthDetector.#predicted(endpoint, capture).map((cookie) => cookie.name));
+    const detector = AuthDetector.create();
+    return Helpers.distinct(detector.#predicted(endpoint, capture, () => new CookieJarTimeline(capture, { parser: detector.#parser })).flat().map((cookie) => cookie.name));
   }
 
-  static #predicted(endpoint: Endpoint, capture: Capture): Cookie[] {
+  #predicted(endpoint: Endpoint, capture: Capture, jar: () => CookieJarTimeline): Cookie[][] {
     const url = Helpers.httpUrl(endpoint.origin + endpoint.path);
     if (!url) return [];
+    const moments = this.#sightings(endpoint, capture);
+    if (moments.length === 0) return [AuthDetector.#sendable(endpoint, url, capture.cookies, Date.parse(capture.endedAt))];
+    return moments.map((at) => AuthDetector.#sendable(endpoint, url, jar().jarAt(at, url), at));
+  }
+
+  #sightings(endpoint: Endpoint, capture: Capture): number[] {
+    const form = endpoint.form;
+    if (!form) return [];
+    const page = HtmlPages.documentKey(form.pageUrl);
+    const documents = [...this.#documents.of(capture).filter((document) => document.page.source === 'snapshot'), ...this.#documents.served(capture)];
+    const times = documents
+      .filter((document) => HtmlPages.documentKey(this.#redactor.url(document.page.url)) === page && document.forms.some((candidate) => candidate.selector === form.selector))
+      .map((document) => document.page.at)
+      .filter((at) => Number.isFinite(at));
+    return Helpers.distinct(times).sort((a, b) => a - b);
+  }
+
+  static #sendable(endpoint: Endpoint, url: URL, jar: readonly Cookie[], at: number): Cookie[] {
     const host = url.hostname.toLowerCase();
-    const end = Date.parse(capture.endedAt);
     const page = Helpers.httpUrl(endpoint.form?.pageUrl);
     const crossSite = page !== undefined && !Http.isSameSite(page.href, url.href);
     const partition = CookieParser.site((page ?? url).href);
-    return capture.cookies
-      .filter((cookie) => !(Number.isFinite(end) && CookieParser.isExpired(cookie, end)))
+    return jar
+      .filter((cookie) => !(Number.isFinite(at) && CookieParser.isExpired(cookie, at)))
       .filter((cookie) => (cookie.hostOnly ? host === cookie.domain : CookieParser.domainMatches(host, cookie.domain)))
       .filter((cookie) => CookieParser.pathMatches(url.pathname, cookie.path))
       .filter((cookie) => !cookie.secure || Http.isPotentiallyTrustworthy(url))
@@ -259,8 +290,8 @@ export class AuthDetector {
   }
 
   #pageEvidence(name: string, origin: TokenOrigin): boolean {
-    if (origin.source === 'meta') return true;
-    if (origin.source === 'hidden-field') return origin.sourceName === name || this.#tokens.isHiddenTokenField(origin.sourceName ?? '');
+    if (origin.page?.kind === 'meta') return true;
+    if (origin.page?.kind === 'hidden-field') return origin.page.name === name || this.#tokens.isHiddenTokenField(origin.page.name);
     return origin.source === 'cookie' && this.#tokens.isCsrfName(origin.sourceName ?? '');
   }
 
@@ -273,15 +304,18 @@ export class AuthDetector {
     return token;
   }
 
-  #formTokens(state: EndpointAuthState, endpoint: Endpoint, sessions: readonly string[]): void {
+  #formTokens(state: EndpointAuthState, endpoint: Endpoint, sessions: readonly string[], resolve: () => CsrfSourceResolver): void {
     const form = endpoint.form;
     if (!form) return;
     const location: CsrfToken['location'] = endpoint.method === 'GET' ? 'query' : 'body';
+    const page = HtmlPages.documentKey(form.pageUrl);
+    const onPage = (url: string): boolean => HtmlPages.documentKey(this.#redactor.url(url)) === page;
     for (const name of form.tokenFields) {
       const key = `${location}\u0000${name}`;
       const existing = state.csrf.get(key);
       if (existing && existing.source !== 'unknown') continue;
-      state.csrf.set(key, { location, name, source: 'hidden-field', sourceName: name, sourceUrl: this.#redactor.url(form.pageUrl), ...(sessions.length > 0 ? { sessionCookies: [...sessions] } : {}) });
+      const origin = resolve().formToken(name, onPage) ?? { source: 'hidden-field', sourceName: name, sourceUrl: form.pageUrl };
+      state.csrf.set(key, this.#token({ location, name, value: '', evidence: false }, origin, sessions));
     }
   }
 }

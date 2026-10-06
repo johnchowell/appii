@@ -1,6 +1,6 @@
 import type { Capture, CapturedRequest, CapturedResponse, CookieRole, Exchange, Header } from '../model/index.js';
 import { TokenDetector } from '../forms/index.js';
-import { Http, Json, SecretNames } from '../shared/index.js';
+import { Http, Json, SecretNames, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
@@ -58,6 +58,8 @@ export class SecretCollector {
   static readonly PASSWORD_LABEL = 'password';
   static readonly CREDENTIALS_LABEL = 'authorization';
   static readonly MIN_CONTENT_PLACES = 2;
+  static readonly EMAIL: RegExp = /^([^@\s]+)@[^@\s]+\.[^@\s]+$/;
+  static readonly LOCAL_PART_LABEL = 'identifier';
 
   readonly #redactor: Redactor;
   readonly #body: BodyParser;
@@ -93,10 +95,11 @@ export class SecretCollector {
     const known = evidence ?? this.#credentials.analyze(capture, input);
     const role: RoleOf = (name) => known.role(name);
     const out: Candidates = new Map();
+    const derived = new Set<string>();
     for (const cookie of capture.cookies) this.#cookie(cookie.name, cookie.value, role, out);
     for (const exchange of capture.exchanges) {
       this.#exchange(exchange, names, role, out);
-      this.#login(exchange, input, out);
+      this.#login(exchange, input, out, derived);
     }
     let corpus: Corpus | undefined;
     const kept = [...out].filter(([value, candidate]) => {
@@ -107,10 +110,46 @@ export class SecretCollector {
       corpus ??= SecretCollector.#corpus(capture);
       return SecretCollector.#contentPlaces(value, corpus) < SecretCollector.MIN_CONTENT_PLACES;
     });
+    const whole = [...derived].filter((value) => !out.has(value) && this.#echoed(value, capture, known));
     return new SecretValues(
       kept.map(([value]) => value),
-      new Map(kept.map(([value, candidate]) => [value, candidate.label])),
+      new Map([...kept.map(([value, candidate]): [string, string] => [value, candidate.label]), ...whole.map((value): [string, string] => [value, SecretCollector.LOCAL_PART_LABEL])]),
+      whole,
     );
+  }
+
+  static localPart(value: string): string | undefined {
+    const local = SecretCollector.EMAIL.exec(value)?.[1];
+    return local !== undefined && SecretValues.worthHidingWhole(local) ? local : undefined;
+  }
+
+  #echoed(value: string, capture: SecretSource, evidence: CredentialEvidence): boolean {
+    const text = new RegExp(`>\\s*${Text.escapeHtml(value).replace(SecretValues.REGEX_SPECIAL, '\\$&')}\\s*<`);
+    for (const exchange of capture.exchanges) {
+      const response = exchange.response;
+      if (!response?.body || !SecretCollector.#authenticated(exchange, evidence)) continue;
+      let parsed: ParsedBody | undefined;
+      try {
+        parsed = this.#body.response(response);
+      } catch {
+        continue;
+      }
+      if (parsed.kind === 'json' || parsed.kind === 'graphql') {
+        let found = false;
+        Json.walk(parsed.value, (node) => {
+          if (node === value) found = true;
+        });
+        if (found) return true;
+      } else if (parsed.kind === 'html' && typeof parsed.value === 'string' && text.test(parsed.value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static #authenticated(exchange: Exchange, evidence: CredentialEvidence): boolean {
+    if (exchange.request.headers.some((header) => header.name.toLowerCase() === SecretCollector.CREDENTIALS_LABEL && header.value.trim() !== '')) return true;
+    return CredentialAnalyzer.sent(exchange).some((cookie) => evidence.isCredential(cookie.name, cookie.value, exchange));
   }
 
   #exchange(exchange: Exchange, names: ReadonlySet<string>, role: RoleOf, out: Candidates): void {
@@ -124,10 +163,15 @@ export class SecretCollector {
     }
   }
 
-  #login(exchange: Exchange, input: CredentialInput, out: Candidates): void {
+  #login(exchange: Exchange, input: CredentialInput, out: Candidates, derived: Set<string>): void {
     for (const { name, value, password } of this.#credentials.loginSubmission(exchange, input)?.values ?? []) {
-      if (password) SecretCollector.#add(value, name, true, out);
-      else if (SecretValues.worthHiding(value)) out.set(value, { label: name, strong: true, personal: true });
+      if (password) {
+        SecretCollector.#add(value, name, true, out);
+        continue;
+      }
+      if (SecretValues.worthHiding(value)) out.set(value, { label: name, strong: true, personal: true });
+      const local = SecretCollector.localPart(value);
+      if (local !== undefined) derived.add(local);
     }
   }
 

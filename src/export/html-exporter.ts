@@ -5,6 +5,7 @@ import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { LoginGuide } from './login-guide.js';
+import { SessionGuide } from './session-guide.js';
 import { HtmlChartRenderer } from './html-chart-renderer.js';
 import type { ChartDatum } from './html-chart-renderer.js';
 import { HtmlEndpointRenderer } from './html-endpoint-renderer.js';
@@ -149,7 +150,8 @@ export class HtmlExporter extends BaseExporter {
       '</div>',
     ].join('');
     const guide = new LoginGuide(model);
-    const items = endpoints.map((endpoint) => this.#endpoints.item(endpoint, { model, index, options, guide })).join('\n');
+    const session = SessionGuide.create(model);
+    const items = endpoints.map((endpoint) => this.#endpoints.item(endpoint, { model, index, options, guide, session })).join('\n');
     return `<section id="endpoints"><h2>Endpoints</h2>${filters}<ol class="endpoints">\n${items}\n</ol>${endpoints.length === 0 ? '<p class="empty">No endpoints selected.</p>' : ''}</section>`;
   }
 

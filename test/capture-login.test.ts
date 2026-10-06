@@ -1,10 +1,11 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { ModelBuilder } from '../src/build/index.js';
 import { CaptureSession } from '../src/capture/index.js';
 import type { LoginField, LoginOutcome } from '../src/capture/index.js';
 import type { Capture, Exchange } from '../src/model/index.js';
 import { AppiiError, Http } from '../src/shared/index.js';
-import { BAD_PASSWORD, LOGIN_USER, startFormLoginSite, startFormVariantsSite, startSpaLoginSite, startTokenLoginSite } from './fixtures/login-sites.js';
+import { BAD_PASSWORD, LOGIN_USER, startFormLoginSite, startFormVariantsSite, startLateLoginPageSite, startSpaLoginSite, startTokenLoginSite } from './fixtures/login-sites.js';
 import type { LoginSite } from './fixtures/login-sites.js';
 
 interface LoggedIn {
@@ -147,6 +148,20 @@ describe('capture --login: a single-page app that renders its login form late, i
     assert.deepEqual(outcome.submission, { method: 'POST', url: `${site.origin}/api/login`, status: 200 });
     assert.equal(outcome.finalUrl, `${site.origin}/dashboard`);
     assert.deepEqual(outcome.warnings, []);
+  });
+
+  test('the user name typed into the late-rendered form is not recorded as its default value, so the model gives the field no default', async () => {
+    const { capture: result } = await capture(`${site.origin}/`, CREDENTIALS);
+    const snapshots = result.pages.filter((page) => page.html.includes('name="username"'));
+    assert.ok(snapshots.length > 0, result.pages.map((page) => page.url).join('\n'));
+    assert.ok(result.pages.every((page) => !page.html.includes(`value="${LOGIN_USER.username}"`)), 'no snapshot holds the typed user name as a value');
+    const model = ModelBuilder.create({ now: new Date(0) }).build(result);
+    const fields = model.forms.flatMap((form) => form.fields).filter((field) => field.name === 'username');
+    assert.ok(fields.length > 0, JSON.stringify(model.forms));
+    for (const field of fields) {
+      assert.equal(field.hasValueAttribute, false, JSON.stringify(field));
+      assert.equal(field.value, '');
+    }
   });
 
   test('a wrong password in a script login is reported by the 401 and by the cleared password', async () => {
@@ -339,5 +354,33 @@ describe('capture --login: finding, filling and submitting the form the way the 
       capture(`${site.origin}/owner`, [{ name: 'help', value: 'x' }], [], 1000),
       rejectsWith(/^--login help: the control named help \(button\) cannot be filled like a user would/),
     );
+  });
+});
+
+describe('capture of several URLs without --login: each page settles before the next one opens', () => {
+  test('a login form that a script renders after a slow fetch is recorded before the second URL opens, and the build knows the login endpoint from it', async () => {
+    const site = await startLateLoginPageSite();
+    try {
+      const result = await CaptureSession.create({ url: `${site.origin}/login`, visits: [`${site.origin}/about`], headless: true, idleMs: 800, recorder: { readTimeoutMs: 5000 } }).run();
+      const config = find(result, 'GET', '/api/config');
+      assert.equal(config.length, 1, paths(result).join('\n'));
+      assert.equal(config[0]!.response?.status, 200, config[0]!.error);
+      assert.equal(config[0]!.error, undefined);
+      const sequence = paths(result);
+      assert.ok(sequence.indexOf('GET /api/config') < sequence.indexOf('GET /about'), sequence.join('\n'));
+      assert.ok(
+        result.pages.some((page) => page.url === `${site.origin}/login` && page.html.includes('action="/session"')),
+        result.pages.map((page) => page.url).join('\n'),
+      );
+      const model = ModelBuilder.create({ now: new Date(0) }).build(result);
+      const login = model.endpoints.find((endpoint) => endpoint.method === 'POST' && endpoint.path === '/session');
+      assert.ok(login, model.endpoints.map((endpoint) => `${endpoint.method} ${endpoint.path}`).join(', '));
+      assert.equal(login.count, 0);
+      assert.equal(login.role, 'login');
+      assert.equal(login.login?.evidence, 'form');
+      assert.equal(login.login?.password, 'pass');
+    } finally {
+      await site.close();
+    }
   });
 });

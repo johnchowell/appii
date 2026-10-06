@@ -41,7 +41,7 @@ export class PostmanTokenScripts {
     const out = new Map<Endpoint, TokenTarget[]>();
     for (const user of endpoints) {
       for (const token of user.auth.csrf) {
-        const source = PostmanTokenScripts.#source(model, user, token, endpoints);
+        const source = PostmanTokenScripts.source(model, user, token, endpoints);
         if (source === undefined || source === user) continue;
         const targets = out.get(source) ?? [];
         const variable = PostmanTokenScripts.variable(token);
@@ -52,7 +52,7 @@ export class PostmanTokenScripts {
     return out;
   }
 
-  static #source(model: ApiModel, user: Endpoint, token: CsrfToken, endpoints: readonly Endpoint[]): Endpoint | undefined {
+  static source(model: ApiModel, user: Endpoint, token: CsrfToken, endpoints: readonly Endpoint[]): Endpoint | undefined {
     if (token.source === 'cookie') {
       const seed = token.sourceName ? Helpers.tokenSeed(model, token.sourceName) : undefined;
       return seed === undefined ? undefined : PostmanTokenScripts.#page(seed, endpoints);
@@ -88,7 +88,19 @@ export class PostmanTokenScripts {
     return `pm.response.headers.get(${name}) || appiiFind(appiiJson(), ${name}, 0) || appiiInput(${name}) || appiiMeta(${name})`;
   }
 
-  event(targets: readonly TokenTarget[]): Record<string, unknown>[] {
-    return [{ listen: PostmanTokenScripts.LISTEN, script: { type: PostmanTokenScripts.LANGUAGE, exec: this.exec(targets) } }];
+  bearer(paths: readonly string[], variable: string): string[] {
+    return [
+      '{',
+      '  const appiiBody = (() => { try { return pm.response.json(); } catch (e) { return undefined; } })();',
+      "  const appiiAt = (value, path) => path.split('.').reduce((current, key) => (current !== null && typeof current === 'object' && !Array.isArray(current) && Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined), value);",
+      `  const value = ${JSON.stringify(paths)}.map((path) => appiiAt(appiiBody, path)).find((item) => typeof item === 'string' && item !== '');`,
+      `  if (value) pm.collectionVariables.set(${JSON.stringify(variable)}, value);`,
+      '}',
+    ];
+  }
+
+  event(targets: readonly TokenTarget[], extra: readonly string[] = []): Record<string, unknown>[] {
+    const exec = [...(targets.length > 0 ? this.exec(targets) : []), ...extra];
+    return [{ listen: PostmanTokenScripts.LISTEN, script: { type: PostmanTokenScripts.LANGUAGE, exec } }];
   }
 }

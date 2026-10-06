@@ -204,6 +204,8 @@ export class FormLinker {
     const created: Endpoint[] = [];
     const sent = new Map<FormDescriptor, Endpoint[]>();
     const contributing = new Set<FormDescriptor>();
+    const native = new Map<FormDescriptor, Endpoint[]>();
+    const scripted = new Set<FormDescriptor>();
     const record = (form: FormDescriptor, endpoint: Endpoint): void => {
       const list = sent.get(form) ?? [];
       if (!list.includes(endpoint)) list.push(endpoint);
@@ -214,8 +216,11 @@ export class FormLinker {
     for (const submission of submissions) {
       const existing = FormLinker.#find(endpoints, submission.target.method, submission.url, matcher);
       if (existing) {
+        if (!FormLinker.#contributes(submission, existing)) {
+          FormLinker.#entry(native, submission.form, () => []).push(existing);
+          continue;
+        }
         record(submission.form, existing);
-        if (!FormLinker.#contributes(submission, existing)) continue;
         FormLinker.#entry(links, existing.key, () => ({ endpoint: existing, submissions: [] })).submissions.push(submission);
         contributing.add(submission.form);
         continue;
@@ -248,8 +253,12 @@ export class FormLinker {
         const endpoint = url ? FormLinker.#find(endpoints, script.request.method, url, matcher) : undefined;
         if (!url || !endpoint) continue;
         record(form, endpoint);
+        scripted.add(form);
         FormLinker.#entry(links, endpoint.key, () => ({ endpoint, submissions: [] })).submissions.push({ form, target: this.#schemas.target(form, null), url, observed: [] });
       }
+    }
+    for (const [form, targets] of native) {
+      if (!scripted.has(form)) for (const endpoint of targets) record(form, endpoint);
     }
     for (const link of links.values()) this.#apply(link, open);
     const all = [...endpoints, ...created];
@@ -473,13 +482,13 @@ export class FormLinker {
     return best;
   }
 
-  static #entry(links: Map<string, Link>, key: string, create: () => Link): Link {
-    let link = links.get(key);
-    if (!link) {
-      link = create();
-      links.set(key, link);
+  static #entry<K, V>(map: Map<K, V>, key: K, create: () => V): V {
+    let value = map.get(key);
+    if (value === undefined) {
+      value = create();
+      map.set(key, value);
     }
-    return link;
+    return value;
   }
 
   static #endpointForm(form: FormDescriptor, enctype: FormEnctype): EndpointForm {

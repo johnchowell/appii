@@ -100,6 +100,37 @@ function json(s, key,   i, e, c, rest, out) {
   }
   return ""
 }
+function jstring(s,   c, e, out) {
+  out = ""; J++
+  while (J <= length(s)) {
+    c = substr(s, J, 1)
+    if (c == "\"") { J++; return out }
+    if (c == "\\") {
+      e = substr(s, J + 1, 1)
+      if (e == "u") { out = out utf8(hexval(substr(s, J + 2, 4))); J += 6; continue }
+      out = out (e == "n" ? "\n" : e == "t" ? "\t" : e == "r" ? "\r" : e == "b" ? "\b" : e == "f" ? "\f" : e); J += 2; continue
+    }
+    out = out c; J++
+  }
+  return out
+}
+function jpath(s, want,   n, d, c, k, key, path, value, T, K) {
+  n = length(s); d = 0; key = 0; J = 1
+  while (J <= n) {
+    c = substr(s, J, 1)
+    if (c == "{") { d++; T[d] = "o"; K[d] = ""; key = 1; J++; continue }
+    if (c == "[") { d++; T[d] = "a"; K[d] = "\001"; key = 0; J++; continue }
+    if (c == "}" || c == "]") { if (d > 0) d--; key = 0; J++; continue }
+    if (c == ",") { key = (d > 0 && T[d] == "o"); J++; continue }
+    if (c != "\"") { J++; continue }
+    value = jstring(s)
+    if (key) { K[d] = value; key = 0; continue }
+    path = ""
+    for (k = 1; k <= d; k++) path = path (k > 1 ? "." : "") K[k]
+    if (d > 0 && path == want) return value
+  }
+  return ""
+}
 function scan(html, kind, want,   n, k, part, t, tag, raw, end, rest) {
   n = split(html, P, "<"); raw = ""
   for (k = 2; k <= n; k++) {
@@ -144,6 +175,7 @@ BEGIN { RS = "\001"; mode = ENVIRON["appii_mode"]; want = ENVIRON["appii_want"] 
 { body = (NR == 1) ? $0 : body "\001" $0 }
 END {
   if (mode == "input" || mode == "meta") value = scan(body, mode, want)
+  else if (mode == "json") value = jpath(headers(body), want)
   else {
     body = headers(body)
     value = H[tolower(want)]

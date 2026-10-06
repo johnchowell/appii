@@ -25,6 +25,7 @@ export class PageDocuments {
   readonly #pages: HtmlPages;
   readonly #extractor: FormExtractor;
   readonly #cache = new WeakMap<Capture, CacheEntry>();
+  readonly #served = new WeakMap<Capture, CacheEntry>();
 
   constructor(deps: PageDocumentsDeps) {
     this.#pages = deps.pages;
@@ -40,10 +41,30 @@ export class PageDocuments {
   }
 
   of(capture: Capture): readonly PageDocument[] {
-    const cached = this.#cache.get(capture);
-    if (cached && cached.pages === capture.pages.length && cached.exchanges === capture.exchanges.length) return cached.documents;
+    const cached = PageDocuments.#cached(this.#cache, capture);
+    if (cached) return cached;
+    const documents = this.#parse(this.#pages.collect(capture), new Map());
+    this.#cache.set(capture, { pages: capture.pages.length, exchanges: capture.exchanges.length, documents });
+    return documents;
+  }
+
+  served(capture: Capture): readonly PageDocument[] {
+    const cached = PageDocuments.#cached(this.#served, capture);
+    if (cached) return cached;
+    const known = new Map(this.of(capture).flatMap((document): [string, PageDocument][] => (document.page.exchange === undefined ? [] : [[document.page.exchange, document]])));
+    const documents = this.#parse(this.#pages.served(capture), known);
+    this.#served.set(capture, { pages: capture.pages.length, exchanges: capture.exchanges.length, documents });
+    return documents;
+  }
+
+  #parse(pages: readonly HtmlPage[], known: ReadonlyMap<string, PageDocument>): PageDocument[] {
     const documents: PageDocument[] = [];
-    for (const page of this.#pages.collect(capture)) {
+    for (const page of pages) {
+      const reused = page.exchange === undefined ? undefined : known.get(page.exchange);
+      if (reused) {
+        documents.push(reused);
+        continue;
+      }
       let doc: HtmlDocument;
       try {
         doc = HtmlDocument.parse(page.html, page.url, { encoding: page.encoding });
@@ -53,7 +74,11 @@ export class PageDocuments {
       }
       documents.push({ page, doc, forms: this.#extractor.extractDocument(doc) });
     }
-    this.#cache.set(capture, { pages: capture.pages.length, exchanges: capture.exchanges.length, documents });
     return documents;
+  }
+
+  static #cached(cache: WeakMap<Capture, CacheEntry>, capture: Capture): readonly PageDocument[] | undefined {
+    const cached = cache.get(capture);
+    return cached && cached.pages === capture.pages.length && cached.exchanges === capture.exchanges.length ? cached.documents : undefined;
   }
 }

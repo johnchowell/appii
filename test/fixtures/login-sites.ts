@@ -305,3 +305,90 @@ export async function startFormVariantsSite(): Promise<LoginSite> {
     return LoginServer.send(res, 404, LoginServer.page('Not found', ''));
   });
 }
+
+export async function startLateLoginPageSite(): Promise<LoginSite> {
+  const csrf = new Map<string, string>();
+  const shell = LoginServer.page(
+    'Sign in',
+    `<div id="app">Loading...</div><script>
+fetch('/api/config').then((res) => res.json()).then((config) => {
+  setTimeout(() => {
+    document.getElementById('app').innerHTML = '<form method="post" action="/session"><input type="hidden" name="_csrf" value="' + config.csrf + '"><input type="email" name="email" autocomplete="email"><input type="password" name="pass" autocomplete="current-password"><button>Sign in</button></form>';
+  }, 400);
+});
+</script>`,
+  );
+  return LoginServer.start(async (req, res, url) => {
+    const method = req.method ?? 'GET';
+    const path = url.pathname;
+    if (method === 'GET' && path === '/login') return LoginServer.send(res, 200, shell);
+    if (method === 'GET' && path === '/about') return LoginServer.send(res, 200, LoginServer.page('About', '<p>About us</p>'));
+    if (method === 'GET' && path === '/api/config') {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const id = randomBytes(12).toString('hex');
+      csrf.set(id, randomBytes(16).toString('hex'));
+      res.setHeader('set-cookie', `sid=${id}; HttpOnly; Path=/; SameSite=Lax`);
+      return LoginServer.json(res, 200, { csrf: csrf.get(id) });
+    }
+    return LoginServer.json(res, 404, { error: 'not found' });
+  });
+}
+
+export interface NavigatingTokenSiteOptions {
+  bearer?: boolean;
+  xhr?: boolean;
+}
+
+export async function startNavigatingTokenSite(options: NavigatingTokenSiteOptions = {}): Promise<LoginSite> {
+  const tokens = new Map<string, string>();
+  const bearer = options.bearer === true;
+  const send = options.xhr === true
+    ? `new Promise((resolve) => { const xhr = new XMLHttpRequest(); xhr.open('POST', '/api/auth/login'); xhr.setRequestHeader('content-type', 'application/json'); xhr.onload = () => resolve({ ok: xhr.status === 200, data: JSON.parse(xhr.responseText) }); xhr.send(body); })`
+    : `fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body }).then(async (res) => ({ ok: res.ok, data: await res.json() }))`;
+  const signin = LoginServer.page(
+    'Sign in',
+    `<form id="signin"><label>User <input name="username" autocomplete="username"></label><label>Password <input name="password" type="password" autocomplete="current-password"></label><button type="submit">Sign in</button></form><script>
+const form = document.getElementById('signin');
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const body = JSON.stringify({ username: form.elements.username.value, password: form.elements.password.value });
+  const result = await ${send};
+  if (!result.ok) return;
+  if (result.data.accessToken) sessionStorage.setItem('accessToken', result.data.accessToken);
+  location.href = '/home';
+});
+</script>`,
+  );
+  const home = LoginServer.page(
+    'Home',
+    `<h1 id="hello">...</h1><script>
+const token = sessionStorage.getItem('accessToken');
+fetch('/api/profile', { headers: token ? { authorization: 'Bearer ' + token } : {} }).then((res) => res.json()).then((data) => { document.getElementById('hello').textContent = data.name ?? 'anonymous'; });
+</script>`,
+  );
+  const user = (req: IncomingMessage): string | undefined => {
+    const header = req.headers.authorization ?? '';
+    const token = bearer ? (header.startsWith('Bearer ') ? header.slice(7) : undefined) : LoginServer.cookies(req).auth_token;
+    return token === undefined ? undefined : tokens.get(token);
+  };
+  return LoginServer.start((req, res, url, body) => {
+    const method = req.method ?? 'GET';
+    const path = url.pathname;
+    if (method === 'GET' && path === '/signin') return LoginServer.send(res, 200, signin);
+    if (method === 'GET' && path === '/home') return LoginServer.send(res, 200, home);
+    if (method === 'POST' && path === '/api/auth/login') {
+      const data = JSON.parse(body || '{}') as { username?: string; password?: string };
+      if (data.username !== LOGIN_USER.username || data.password !== LOGIN_USER.password) return LoginServer.json(res, 401, { error: 'bad credentials' });
+      const token = randomBytes(24).toString('hex');
+      tokens.set(token, data.username);
+      if (bearer) return LoginServer.json(res, 200, { accessToken: token, tokenType: 'Bearer', user: { name: data.username } });
+      res.setHeader('set-cookie', `auth_token=${token}; HttpOnly; Path=/; SameSite=Lax`);
+      return LoginServer.json(res, 200, { ok: true, user: { name: data.username } });
+    }
+    if (method === 'GET' && path === '/api/profile') {
+      const name = user(req);
+      return name ? LoginServer.json(res, 200, { name, plan: 'free' }) : LoginServer.json(res, 401, { error: 'unauthorized' });
+    }
+    return LoginServer.json(res, 404, { error: 'not found' });
+  });
+}

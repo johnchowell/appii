@@ -9,6 +9,7 @@ export interface HtmlPage {
   at: number;
   source: 'snapshot' | 'response';
   encoding?: string;
+  exchange?: string;
 }
 
 export interface HtmlPagesDeps {
@@ -51,13 +52,22 @@ export class HtmlPages {
       HtmlPages.#page(page.url, page.html, Date.parse(page.capturedAt), 'snapshot', page.characterSet ?? charsets.get(HtmlPages.documentKey(page.url))),
     );
     const covered = new Set(pages.map((page) => HtmlPages.documentKey(page.url)));
+    return [...pages, ...this.#responses(capture, (key) => !covered.has(key))];
+  }
+
+  served(capture: Capture): HtmlPage[] {
+    return this.#responses(capture, () => true);
+  }
+
+  #responses(capture: Capture, wanted: (key: string) => boolean): HtmlPage[] {
+    const pages: HtmlPage[] = [];
     for (const exchange of capture.exchanges) {
       const response = exchange.response;
       if (exchange.resourceType !== 'document' || !response?.body || response.body.truncated) continue;
-      if (covered.has(HtmlPages.documentKey(exchange.request.url))) continue;
+      if (!wanted(HtmlPages.documentKey(exchange.request.url))) continue;
       const parsed = this.#body.response(response);
       if (parsed.kind !== 'html' || typeof parsed.value !== 'string') continue;
-      pages.push(HtmlPages.#page(exchange.request.url, parsed.value, Helpers.startMs(exchange) + exchange.durationMs, 'response', HtmlPages.documentEncoding(response)));
+      pages.push({ ...HtmlPages.#page(exchange.request.url, parsed.value, Helpers.startMs(exchange) + exchange.durationMs, 'response', HtmlPages.documentEncoding(response)), exchange: exchange.id });
     }
     return pages;
   }

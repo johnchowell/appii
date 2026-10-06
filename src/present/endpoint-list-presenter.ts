@@ -1,5 +1,6 @@
-import type { ApiModel, Endpoint, EndpointLogin } from '../model/index.js';
-import { Ansi, Credentials, EndpointIndex, Text } from '../shared/index.js';
+import type { ApiModel, Endpoint, EndpointLogin, FormDescriptor } from '../model/index.js';
+import { LoginFormDetector } from '../forms/index.js';
+import { Ansi, Credentials, EndpointIndex, Http, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { BarChart } from './bar-chart.js';
 import { CookieListPresenter } from './cookie-list-presenter.js';
@@ -33,6 +34,9 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   static readonly NOTHING_ISSUED = 'submitted, but no credential was issued';
   static readonly AUTHENTICATED_ONLY = 'seen only with a logged-in credential';
   static readonly REFUSED_ONLY = 'refused requests without credentials';
+  static readonly SCRIPTED_FORM = 'has no action, so a script probably sends it';
+  static readonly UNRECORDED_FORM = 'no request with its password was recorded';
+  static readonly RECORD_LOGIN = 'log in with --login to record its request';
   static readonly REFUSED_HINT = `a status such as 401${Credentials.UNKNOWN_MARK} means the endpoint refused a request without credentials and the credential it expects was not captured`;
 
   readonly #format: EndpointFormatter;
@@ -163,6 +167,25 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     return parts.join(' and ');
   }
 
+  static unlinkedLogins(model: ApiModel): FormDescriptor[] {
+    const logins = new Set(model.endpoints.filter((endpoint) => endpoint.role === 'login').map((endpoint) => endpoint.id));
+    return model.forms.filter((form) => LoginFormDetector.isLogin(form) && !(form.endpoints ?? []).some((id) => logins.has(id)));
+  }
+
+  static loginForm(model: ApiModel, form: FormDescriptor): string {
+    const fields = LoginFormDetector.detect(form);
+    const names = [fields?.identifier, fields?.password].filter((name): name is string => name !== undefined && name !== '');
+    const where = `on ${EndpointListPresenter.#place(model, form.pageUrl)}${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
+    if (form.explicitAction === false) return `${where} ${EndpointListPresenter.SCRIPTED_FORM}; ${EndpointListPresenter.RECORD_LOGIN}`;
+    return `${where} submits to ${form.method} ${EndpointListPresenter.#place(model, form.action)}, but ${EndpointListPresenter.UNRECORDED_FORM}; ${EndpointListPresenter.RECORD_LOGIN}`;
+  }
+
+  static #place(model: ApiModel, value: string): string {
+    const url = Http.parseUrl(value);
+    if (!url) return value;
+    return url.origin === model.primaryOrigin ? `${url.pathname}${url.search}` : `${url.origin}${url.pathname}${url.search}`;
+  }
+
   static revoked(model: ApiModel, endpoint: Endpoint): string[] {
     return [...new Set(model.cookies.filter((cookie) => cookie.revokedBy?.includes(endpoint.id) === true).map((cookie) => cookie.name))];
   }
@@ -174,6 +197,7 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
       if (endpoint.role !== 'login' || !endpoint.login) continue;
       entries.push(['Login', `${where(endpoint)} ${this.ansi.clean(EndpointListPresenter.loginSummary(endpoint.login, endpoint.count > 0))}`]);
     }
+    if (!this.filter.active) for (const form of EndpointListPresenter.unlinkedLogins(model)) entries.push(['Login form', this.ansi.clean(EndpointListPresenter.loginForm(model, form))]);
     for (const endpoint of endpoints) {
       if (endpoint.role !== 'logout') continue;
       const revoked = EndpointListPresenter.revoked(model, endpoint);

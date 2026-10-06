@@ -143,6 +143,7 @@ export interface MissingToken {
   token: string;
   source: string;
   call?: string;
+  expected?: string;
 }
 
 export class MissingTokenError extends Error {
@@ -150,10 +151,11 @@ export class MissingTokenError extends Error {
   readonly missing: MissingToken[];
 
   constructor(response: ApiResponse, missing: MissingToken[]) {
-    const steps = missing.map(
-      (item) =>
-        'The client did not send the token ' + item.token + '. This token comes from the response of ' + item.source + '. ' +
-        (item.call === undefined ? 'Send that request first.' : 'Call ' + item.call + '() first.'),
+    const steps = missing.map((item) =>
+      item.expected !== undefined
+        ? 'The client did not send the token ' + item.token + '. It loaded ' + item.source + ' and found no ' + item.expected + '. Give ' + item.token + ' in the request to send it.'
+        : 'The client did not send the token ' + item.token + '. This token comes from the response of ' + item.source + '. ' +
+          (item.call === undefined ? 'Send that request first.' : 'Call ' + item.call + '() first.'),
     );
     super(['The server rejected the request with status ' + response.status + '.', ...steps].join(' '));
     this.name = 'MissingTokenError';
@@ -2169,7 +2171,14 @@ class AppiiHtml {
     const loaded = await this.#document(page);
     const value = BaseApiClient.#extract(loaded.document, token, name, form !== undefined && source === form.page ? form.form : undefined);
     if (value !== undefined && loaded.cached) state.cached.push({ token: token.name, page });
+    if (AppiiRuntime.blank(value)) state.missing.push({ token: token.name, source: page, expected: BaseApiClient.#expected(token, name) });
     return value;
+  }
+
+  static #expected(token: CsrfSpec, name: string): string {
+    if (token.source === 'hidden-field') return 'hidden field ' + name;
+    if (token.source === 'meta') return 'meta ' + name;
+    return name + ' in the response';
   }
 
   static #extract(document: FetchedDocument, token: CsrfSpec, name: string, identity: FormIdentity | undefined): string | string[] | undefined {

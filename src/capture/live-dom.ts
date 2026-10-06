@@ -12,11 +12,16 @@ export interface SerializeRules {
   formOwner: string;
   selector: string;
   marks?: string;
+  edited?: string;
 }
 
-export interface LiveDomOptions {
-  evaluate?: (expression: string) => Promise<unknown>;
+export interface LiveDomNames {
   marks?: string;
+  edited?: string;
+}
+
+export interface LiveDomOptions extends LiveDomNames {
+  evaluate?: (expression: string) => Promise<unknown>;
 }
 
 interface SerializedDocument {
@@ -68,6 +73,7 @@ export class LiveDom {
   var BACKSLASH = String.fromCharCode(92);
   var inert = doc.implementation.createHTMLDocument('');
   var marks = rules.marks && window[rules.marks] instanceof WeakSet ? window[rules.marks] : null;
+  var edited = rules.edited && window[rules.edited] instanceof WeakSet ? window[rules.edited] : null;
   var copy = inert.importNode(live, true);
   var pairs = [];
   var templates = [];
@@ -239,6 +245,7 @@ export class LiveDom {
     }
   }
   function patchValue(el, out) {
+    if (edited && edited.has(el)) return;
     if (el instanceof HTMLInputElement) {
       var type = el.type;
       if (type === 'checkbox' || type === 'radio') {
@@ -275,15 +282,15 @@ export class LiveDom {
 
   readonly #page: Page;
   readonly #evaluate: (expression: string) => Promise<unknown>;
-  readonly #marks: string | undefined;
+  readonly #names: LiveDomNames;
 
   constructor(page: Page, options: LiveDomOptions = {}) {
     this.#page = page;
     this.#evaluate = options.evaluate ?? ((expression) => page.evaluate(expression));
-    this.#marks = options.marks;
+    this.#names = { ...(options.marks === undefined ? {} : { marks: options.marks }), ...(options.edited === undefined ? {} : { edited: options.edited }) };
   }
 
-  static rules(marks?: string): SerializeRules {
+  static rules(names: LiveDomNames = {}): SerializeRules {
     return {
       valueTypes: LiveDom.VALUE_MODE_TYPES,
       sensitiveAutocomplete: LiveDom.SENSITIVE_AUTOCOMPLETE,
@@ -292,12 +299,13 @@ export class LiveDom {
       formIndex: LiveDom.FORM_INDEX_ATTRIBUTE,
       formOwner: LiveDom.FORM_OWNER_ATTRIBUTE,
       selector: LiveDom.SELECTOR_ATTRIBUTE,
-      ...(marks === undefined ? {} : { marks }),
+      ...(names.marks === undefined ? {} : { marks: names.marks }),
+      ...(names.edited === undefined ? {} : { edited: names.edited }),
     };
   }
 
-  static expression(marks?: string): string {
-    return `(${LiveDom.PAGE_FUNCTION})(${JSON.stringify(LiveDom.rules(marks))})`;
+  static expression(names: LiveDomNames = {}): string {
+    return `(${LiveDom.PAGE_FUNCTION})(${JSON.stringify(LiveDom.rules(names))})`;
   }
 
   async serialize(): Promise<string> {
@@ -315,7 +323,7 @@ export class LiveDom {
   }
 
   async #capture(): Promise<SerializedDocument> {
-    const result: unknown = await this.#evaluate(LiveDom.expression(this.#marks));
+    const result: unknown = await this.#evaluate(LiveDom.expression(this.#names));
     const doc = (result ?? {}) as Partial<SerializedDocument>;
     return {
       url: typeof doc.url === 'string' ? doc.url : this.#page.url(),

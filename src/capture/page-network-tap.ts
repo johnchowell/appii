@@ -9,6 +9,7 @@ import type {
   CdpLoadingFinished,
   CdpPostData,
   CdpRequest,
+  CdpRequestPaused,
   CdpRequestWillBeSent,
   CdpResourceContent,
   CdpResponse,
@@ -17,6 +18,7 @@ import type {
   CdpScriptParsed,
   CdpScriptSource,
   CdpServedFromCache,
+  CdpStreamedContent,
   CdpTargetInfo,
   CdpTiming,
 } from './cdp-network-types.js';
@@ -49,6 +51,13 @@ export interface TapRecord {
   claimed: boolean;
   body: Promise<TapBody | undefined> | undefined;
   postData: Promise<string | undefined> | undefined;
+  stream: TapStream | undefined;
+}
+
+export interface TapStream {
+  readonly chunks: Buffer[];
+  kept: number;
+  received: number;
 }
 
 export interface TapBody {
@@ -78,6 +87,8 @@ export interface PageNetworkTapOptions {
   bufferBytes?: number;
   resourceBufferBytes?: number;
   bodies?: boolean;
+  streamBytes?: number;
+  holdLimitMs?: number;
   onWorker?: (channel: TargetChannel) => Promise<void>;
 }
 
@@ -129,6 +140,7 @@ export class PageNetworkTap {
   static readonly DEFAULT_RESOURCE_BUFFER_BYTES = 64 * 1024 * 1024;
   static readonly PREPARE_TIMEOUT_MS = 5000;
   static readonly SESSION_LAG_MS = 2000;
+  static readonly HOLD_LIMIT_MS = 5000;
   static readonly SERVICE_WORKER = 'service_worker';
   static readonly WORKER = 'worker';
   static readonly SCRIPT_PARSED = 'Debugger.scriptParsed';
@@ -138,6 +150,11 @@ export class PageNetworkTap {
   static readonly TIMING_FIELDS: readonly (keyof TapTiming)[] = ['dnsStart', 'dnsEnd', 'connectStart', 'sslStart', 'connectEnd', 'sendStart', 'receiveHeadersEnd'];
   static readonly UNSET_TIMING = -1;
   static readonly SIGNATURE_HASH = 'sha256';
+  static readonly RESPONSE_PATTERNS: readonly { resourceType: string; requestStage: string }[] = [
+    { resourceType: 'XHR', requestStage: 'Response' },
+    { resourceType: 'Fetch', requestStage: 'Response' },
+  ];
+  static readonly ENDLESS_TYPES: ReadonlySet<string> = new Set(['text/event-stream', 'multipart/x-mixed-replace']);
 
   readonly #root: RootConnection;
   readonly #options: PageNetworkTapOptions;
@@ -173,7 +190,7 @@ export class PageNetworkTap {
   static async attach(root: RootConnection, options: PageNetworkTapOptions = {}): Promise<PageNetworkTap | undefined> {
     const tap = PageNetworkTap.create(root, options);
     try {
-      await tap.#prepare(tap.#root);
+      await tap.#prepare(tap.#root, true);
       return tap;
     } catch {
       await tap.close();
@@ -246,7 +263,7 @@ export class PageNetworkTap {
   prefetch(query: TapQuery): void {
     if (this.#closed || this.#options.bodies === false) return;
     const record = this.#choose(query);
-    if (!record || record.body !== undefined || record.state === 'failed' || record.state === 'redirected') return;
+    if (!record || record.body !== undefined || record.stream !== undefined || record.state === 'failed' || record.state === 'redirected') return;
     record.body = this.#read(record);
   }
 
@@ -328,8 +345,13 @@ export class PageNetworkTap {
     await this.#root.detach().catch(() => undefined);
   }
 
-  async #prepare(connection: NetworkConnection): Promise<void> {
+  get #streamBytes(): number {
+    return this.#options.bodies === false ? 0 : (this.#options.streamBytes ?? this.#options.resourceBufferBytes ?? PageNetworkTap.DEFAULT_RESOURCE_BUFFER_BYTES);
+  }
+
+  async #prepare(connection: NetworkConnection, intercept: boolean): Promise<void> {
     await PageNetworkTap.enable(connection, this.#options);
+    if (intercept && this.#streamBytes > 0) await connection.send('Fetch.enable', { patterns: PageNetworkTap.RESPONSE_PATTERNS }).catch(() => undefined);
     const filter = PageNetworkTap.targetFilter(this.#options.onWorker !== undefined);
     await connection.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: false, filter }).catch(() => undefined);
   }
@@ -357,9 +379,14 @@ export class PageNetworkTap {
         case 'Network.dataReceived': {
           const event = params as unknown as CdpDataReceived;
           const record = this.#record(connection, event.requestId);
-          if (record) record.dataLength += event.dataLength;
+          if (!record) break;
+          record.dataLength += event.dataLength;
+          if (record.stream && event.data !== undefined) this.#append(record.stream, Buffer.from(event.data, 'base64'));
           break;
         }
+        case 'Fetch.requestPaused':
+          void this.#onPaused(connection, params as unknown as CdpRequestPaused);
+          break;
         case 'Network.loadingFinished':
           this.#end(connection, (params as unknown as CdpLoadingFinished).requestId, 'finished');
           break;
@@ -404,7 +431,7 @@ export class PageNetworkTap {
         for (const child of nested.values()) child.close();
         nested.clear();
       });
-      prepare = this.#prepare(channel);
+      prepare = this.#prepare(channel, event.targetInfo.type !== PageNetworkTap.WORKER);
     } else if (event.targetInfo.type === PageNetworkTap.SERVICE_WORKER && this.#options.onWorker) {
       prepare = this.#options.onWorker(channel);
     }
@@ -435,6 +462,52 @@ export class PageNetworkTap {
     if (live.record.bodyPending) live.record.postData = this.#readPostData(live.record);
     this.#live.set(key, live);
     this.#waiters.find((waiter) => PageNetworkTap.#matches(waiter.query, live.record))?.arrive(live.record);
+  }
+
+  async #onPaused(connection: NetworkConnection, event: CdpRequestPaused): Promise<void> {
+    try {
+      const record = event.networkId === undefined ? undefined : this.#liveById(event.networkId);
+      if (record && this.#streamable(record, event)) await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
+    } finally {
+      const response = event.responseStatusCode !== undefined && event.responseErrorReason === undefined;
+      await connection.send(response ? 'Fetch.continueResponse' : 'Fetch.continueRequest', { requestId: event.requestId }).catch(() => undefined);
+    }
+  }
+
+  #liveById(requestId: string): TapRecord | undefined {
+    for (const live of this.#live.values()) if (live.record.requestId === requestId) return live.record;
+    return undefined;
+  }
+
+  #streamable(record: TapRecord, event: CdpRequestPaused): boolean {
+    const status = event.responseStatusCode;
+    if (this.#closed || record.stream !== undefined || event.responseErrorReason !== undefined || status === undefined) return false;
+    if (Helpers.REDIRECT_STATUSES.has(status) || Helpers.NO_BODY_STATUSES.has(status)) return false;
+    if (PageNetworkTap.BODYLESS_METHODS.has(record.method.toUpperCase()) || !Helpers.isNetworkUrl(record.url)) return false;
+    const headers = event.responseHeaders ?? [];
+    if (PageNetworkTap.ENDLESS_TYPES.has(Http.mimeEssence(Http.getHeader(headers, 'content-type')))) return false;
+    const declared = Helpers.contentLength(headers);
+    return declared === undefined || declared <= this.#streamBytes;
+  }
+
+  async #stream(record: TapRecord): Promise<void> {
+    const stream: TapStream = { chunks: [], kept: 0, received: 0 };
+    record.stream = stream;
+    try {
+      const result = await record.connection.send<CdpStreamedContent>('Network.streamResourceContent', { requestId: record.requestId });
+      this.#append(stream, Buffer.from(result.bufferedData, 'base64'));
+    } catch {
+      if (record.stream === stream) record.stream = undefined;
+    }
+  }
+
+  #append(stream: TapStream, bytes: Buffer): void {
+    stream.received += bytes.length;
+    const room = this.#streamBytes + 1 - stream.kept;
+    if (room <= 0 || bytes.length === 0) return;
+    const part = bytes.length > room ? bytes.subarray(0, room) : bytes;
+    stream.chunks.push(part);
+    stream.kept += part.length;
   }
 
   #arrival(query: TapQuery, timeoutMs: number): Promise<TapRecord | undefined> {
@@ -482,7 +555,8 @@ export class PageNetworkTap {
     const { key, live } = found;
     this.#live.delete(key);
     live.record.state = state;
-    if (state === 'finished' && this.#wantsBody(live.record)) live.record.body = this.#readOnce(live.record);
+    if (state === 'finished' && this.#wantsBody(live.record)) live.record.body = PageNetworkTap.#streamed(live.record) ?? this.#readOnce(live.record);
+    live.record.stream = undefined;
     live.end();
     if (live.record.claimed) return;
     this.#kept.push(live.record);
@@ -530,6 +604,12 @@ export class PageNetworkTap {
       (result) => ({ bytes: Buffer.from(result.body, result.base64Encoded ? 'base64' : 'utf8'), text: !result.base64Encoded }),
       () => undefined,
     );
+  }
+
+  static #streamed(record: TapRecord): Promise<TapBody | undefined> | undefined {
+    const stream = record.stream;
+    if (!stream || stream.received < record.dataLength) return undefined;
+    return Promise.resolve(stream.kept > 0 ? { bytes: Buffer.concat(stream.chunks), text: false } : undefined);
   }
 
   static #respond(record: TapRecord, response: CdpResponse): void {
@@ -601,6 +681,7 @@ export class PageNetworkTap {
       claimed: false,
       body: undefined,
       postData: undefined,
+      stream: undefined,
     };
     return { record, end };
   }

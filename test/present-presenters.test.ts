@@ -456,7 +456,8 @@ describe('EndpointDetailPresenter', () => {
       ['header', 'x-csrf-token', 'cookie', 'csrf', ''],
     ]);
     const login = tableRows(section(detail(9), 'Auth').join('\n'));
-    assert.deepEqual(login[1], ['body', 'csrf_token', 'hidden-field', 'csrf_token', 'https://shop.example.com/login']);
+    assert.deepEqual(login[0], ['LOCATION', 'NAME', 'SOURCE', 'SOURCE NAME', 'SOURCE URL', 'BOUND TO']);
+    assert.deepEqual(login[1], ['body', 'csrf_token', 'hidden-field', 'csrf_token', 'https://shop.example.com/login', 'cookie sid']);
     const bearer = section(detail('createOrder', { width: 100 }, MIXED), 'Auth');
     assert.ok(bearer.includes('Credentials:        bearer (anonymous access not tested)'));
     assert.ok(bearer.includes('Bearer:             yes'));
@@ -577,8 +578,8 @@ describe('CookieListPresenter', () => {
     assert.equal(lines(out)[0], 'shop.example.com: 4 cookies');
     assert.deepEqual(rows[0], ['NAME', 'DOMAIN', 'PATH', 'ROLE', 'FLAGS', 'EXPIRES', 'SET BY', 'USED BY', 'VALUE']);
     assert.deepEqual(rows.slice(1), [
-      ['auth', 'shop.example.com', '/', 'auth', 'HttpOnly SameSite=Lax', 'session', '9', '2-7,10-12', '<redacted> (32 characters)'],
-      ['csrf', 'shop.example.com', '/', 'csrf', 'SameSite=Strict', 'session', '6', '3-5,7,10-12', '<redacted> (32 characters)'],
+      ['auth', 'shop.example.com', '/', 'auth', 'HttpOnly SameSite=Lax', 'session', '9', '2-7,11,12', '<redacted> (32 characters)'],
+      ['csrf', 'shop.example.com', '/', 'csrf', 'SameSite=Strict', 'session', '6', '3-5,7,11,12', '<redacted> (32 characters)'],
       ['sid', 'shop.example.com', '/', 'session', 'HttpOnly SameSite=Lax', 'session', '1', '2-12', '<redacted> (24 characters)'],
       ['theme', 'shop.example.com', '/', 'preference', 'SameSite=Lax', '2026-01-01T01:00:00Z', '1', '2-12', 'dark'],
     ]);

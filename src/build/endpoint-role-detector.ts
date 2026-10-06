@@ -1,4 +1,4 @@
-import type { Capture, Endpoint, EndpointLogin, Exchange, FormDescriptor } from '../model/index.js';
+import type { Capture, Endpoint, EndpointLogin, Exchange, FormDescriptor, JsonSchema } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormSchemaBuilder, LoginFormDetector, TokenDetector } from '../forms/index.js';
 import type { LoginFields } from '../forms/index.js';
@@ -11,6 +11,7 @@ import type { CredentialEvidence } from './credential-evidence.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
+import { HtmlPages } from './html-pages.js';
 import { Redactor } from './redactor.js';
 
 export interface EndpointRoleDetectorDeps {
@@ -48,6 +49,8 @@ export class EndpointRoleDetector {
   static readonly BEARER: RegExp = /^bearer[ \t]+(\S+)$/i;
   static readonly AUTHORIZATION = 'authorization';
   static readonly PATH_SEPARATOR = '.';
+  static readonly MAX_DEPTH = 8;
+  static readonly DOCUMENT = 'document';
 
   readonly #analyzer: CredentialAnalyzer;
   readonly #body: BodyParser;
@@ -72,6 +75,7 @@ export class EndpointRoleDetector {
     const groups = new EndpointMatcher(endpoints, { body: this.#body }).group(capture.exchanges);
     const timeline = EndpointRoleDetector.#timeline(capture.exchanges);
     const forms = this.#loginForms(endpoints, context.forms ?? new Map());
+    const delegated = this.#delegated(capture.exchanges, context);
     for (const endpoint of endpoints) {
       delete endpoint.role;
       delete endpoint.login;
@@ -80,7 +84,7 @@ export class EndpointRoleDetector {
       if (login) {
         endpoint.role = 'login';
         endpoint.login = login;
-      } else if (exchanges.some((exchange) => this.#signsOut(exchange, context))) {
+      } else if (exchanges.some((exchange) => this.#signsOut(exchange, context, delegated))) {
         endpoint.role = 'logout';
       }
     }
@@ -92,7 +96,8 @@ export class EndpointRoleDetector {
       return submission ? [this.#issued(exchange, submission, timeline, context.evidence)] : [];
     });
     const issuing = forms.other.has(endpoint) ? [] : submitted.filter((item) => item.cookies.length > 0 || item.tokens.length > 0);
-    const form = forms.login.get(endpoint);
+    const linked = forms.login.get(endpoint);
+    const form = linked !== undefined && (submitted.length > 0 || EndpointRoleDetector.#accepts(endpoint, linked.password)) ? linked : undefined;
     if (issuing.length === 0 && form === undefined) return undefined;
     const first = issuing[0] ?? submitted[0];
     const password = first?.submission.password ?? form?.password ?? '';
@@ -105,6 +110,21 @@ export class EndpointRoleDetector {
       password,
       issues: { cookies, tokens },
     };
+  }
+
+  static #accepts(endpoint: Endpoint, name: string): boolean {
+    if (endpoint.queryParams.some((param) => param.name === name)) return true;
+    return [endpoint.requestBody, ...(endpoint.otherRequestBodies ?? [])].some((body) => EndpointRoleDetector.#hasProperty(body?.schema, name, EndpointRoleDetector.MAX_DEPTH));
+  }
+
+  static #hasProperty(schema: JsonSchema | undefined, name: string, depth: number): boolean {
+    if (!schema || depth < 0) return false;
+    const properties = Schema.properties(schema);
+    if (Object.hasOwn(properties, name)) return true;
+    const nested = [...Object.values(properties), ...Schema.variants(schema)];
+    const items = Schema.items(schema);
+    if (items) nested.push(items);
+    return nested.some((child) => EndpointRoleDetector.#hasProperty(child, name, depth - 1));
   }
 
   static #sent(endpoint: Endpoint, name: string | undefined): string | undefined {
@@ -185,9 +205,25 @@ export class EndpointRoleDetector {
     return matching.length > 0 ? matching : linked;
   }
 
-  #signsOut(exchange: Exchange, context: RoleContext): boolean {
+  #signsOut(exchange: Exchange, context: RoleContext, delegated: ReadonlySet<string>): boolean {
     if (!CredentialAnalyzer.isSignOut(exchange)) return false;
-    return this.#revokes(exchange, context.evidence) || (context.credentials?.(exchange).length ?? 0) > 0;
+    if (this.#revokes(exchange, context.evidence)) return true;
+    if (exchange.resourceType === EndpointRoleDetector.DOCUMENT && delegated.has(HtmlPages.documentKey(exchange.request.url))) return false;
+    return EndpointRoleDetector.#credentialed(exchange, context);
+  }
+
+  #delegated(exchanges: readonly Exchange[], context: RoleContext): Set<string> {
+    const pages = new Set<string>();
+    for (const exchange of exchanges) {
+      if (exchange.pageUrl === undefined || !Http.reachedServer(exchange) || !CredentialAnalyzer.isSignOut(exchange)) continue;
+      if (HtmlPages.documentKey(exchange.pageUrl) === HtmlPages.documentKey(exchange.request.url)) continue;
+      if (this.#revokes(exchange, context.evidence) || EndpointRoleDetector.#credentialed(exchange, context)) pages.add(HtmlPages.documentKey(exchange.pageUrl));
+    }
+    return pages;
+  }
+
+  static #credentialed(exchange: Exchange, context: RoleContext): boolean {
+    return (context.credentials?.(exchange).length ?? 0) > 0;
   }
 
   #revokes(exchange: Exchange, evidence: CredentialEvidence): boolean {

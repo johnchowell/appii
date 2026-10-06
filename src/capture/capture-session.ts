@@ -259,10 +259,13 @@ export class CaptureSession {
     await Helpers.settle(Promise.all([run.identity?.prepare(page), this.recorder.prepare(page), run.snapshots.prepare(page)]), CaptureSession.PREPARE_TIMEOUT_MS);
     if (!this.#stopped) this.#options.onReady?.();
     const url = this.#options.url;
+    const visits = this.#options.visits ?? [];
+    const login = this.#options.login ?? [];
     if (url) await this.#open(run, page, url);
+    if (login.length > 0 || (url && visits.length > 0)) await run.idle.waitForIdle(this.#idleMs);
     if (this.#stopped) return;
-    await this.#login(run, page);
-    for (const visit of this.#options.visits ?? []) {
+    await this.#login(run, page, login);
+    for (const visit of visits) {
       if (this.#stopped) return;
       await this.#open(run, page, visit);
       await run.idle.waitForIdle(this.#idleMs);
@@ -286,11 +289,8 @@ export class CaptureSession {
     await new Promise<void>(() => undefined);
   }
 
-  async #login(run: CaptureRun, page: Page): Promise<void> {
-    const fields = this.#options.login ?? [];
+  async #login(run: CaptureRun, page: Page, fields: readonly LoginField[]): Promise<void> {
     if (fields.length === 0) return;
-    await run.idle.waitForIdle(this.#idleMs);
-    if (this.#stopped) return;
     const outcome = await this.#factories.login().submit(page, fields, { timeoutMs: this.#readTimeoutMs, settle: () => run.idle.waitForIdle(this.#idleMs) });
     if (!this.#stopped) this.#options.onLogin?.(outcome);
   }

@@ -290,16 +290,49 @@ describe('cli commands', () => {
       assert.equal((await new ModelStore().load(join(dir, 'other.json'))).endpoints.length, 0);
     });
 
+    test('build given a model to update says to build it again from the captures it was made from plus the new ones', async () => {
+      const update = join(dir, 'update');
+      await mkdir(join(update, 'captures'), { recursive: true });
+      const capture = CaptureFactory.fixture().capture;
+      for (const name of ['anon.json', 'authed.json', 'later.json']) await new CaptureStore().save(join(update, 'captures', name), capture);
+      const harness = new CliHarness(update);
+      const made = await harness.run(['build', 'captures/anon.json', 'captures/authed.json', '-o', 'models/api.json']);
+      assert.equal(made.code, 0, made.stderr);
+      const again = await harness.run(['build', 'models/api.json', 'captures/later.json']);
+      assert.equal(again.code, 1);
+      assert.equal(
+        again.stderr,
+        'error: models/api.json is an API model (api.json), not a capture or HAR file; to update a model, build it again from the captures it was made from (anon.json, authed.json) plus the new ones\nDid you mean:\n  appii build captures/anon.json captures/authed.json captures/later.json -o models/api.json\n',
+      );
+      const suggested = await harness.run(['build', 'captures/anon.json', 'captures/authed.json', 'captures/later.json', '-o', 'models/api.json']);
+      assert.equal(suggested.code, 0, suggested.stderr);
+      const stdout = await harness.run(['build', 'models/api.json', 'captures/later.json', '-o', '-']);
+      assert.match(stdout.stderr, /\n  appii build captures\/anon\.json captures\/authed\.json captures\/later\.json -o -\n$/);
+      const bare = JSON.parse(await readFile(join(update, 'models', 'api.json'), 'utf8')) as { source: Record<string, unknown> };
+      delete bare.source.captures;
+      delete bare.source.file;
+      await writeFile(join(update, 'bare.json'), JSON.stringify(bare));
+      const unnamed = await harness.run(['build', 'captures/later.json', 'bare.json', '-o', 'out.json']);
+      assert.equal(unnamed.code, 1);
+      assert.equal(
+        unnamed.stderr,
+        'error: bare.json is an API model (api.json), not a capture or HAR file; to update a model, build it again from the captures it was made from (it does not name them) plus the new ones\nDid you mean:\n  appii build <capture.json>... captures/later.json -o out.json\n',
+      );
+    });
+
     test('build errors', async () => {
       const fromModel = await cli.run(['build', 'api.json', '-o', 'x.json']);
       assert.equal(fromModel.code, 1);
-      assert.match(fromModel.stderr, /^error: .*api\.json is an API model \(api\.json\), not a capture or HAR file\n$/);
+      assert.equal(
+        fromModel.stderr,
+        'error: api.json is an API model (api.json), not a capture or HAR file; to update a model, build it again from the captures it was made from (fixture.json) plus the new ones\nDid you mean:\n  appii build fixture.json -o x.json\n',
+      );
       const overwrite = await cli.run(['build', 'fixture.json', '-o', './fixture.json']);
       assert.equal(overwrite.code, 2);
       assert.match(overwrite.stderr, /^error: --out must not overwrite the input file\n/);
       const modelInput = await cli.run(['build', 'api.json']);
       assert.equal(modelInput.code, 1);
-      assert.match(modelInput.stderr, /^error: .*api\.json is an API model \(api\.json\), not a capture or HAR file\n$/);
+      assert.match(modelInput.stderr, /^error: api\.json is an API model \(api\.json\), not a capture or HAR file; .*\nDid you mean:\n  appii build fixture\.json\n$/);
       const collide = join(dir, 'collide');
       await mkdir(collide, { recursive: true });
       await CaptureStore.create().save(join(collide, 'api.json'), CaptureFactory.fixture().capture);

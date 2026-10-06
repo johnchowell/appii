@@ -4,12 +4,14 @@ import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { LoginGuide } from './login-guide.js';
 import { SchemaFieldList } from './schema-field-list.js';
+import { SessionGuide } from './session-guide.js';
 
 export interface HtmlEndpointContext {
   model: ApiModel;
   index: EndpointIndex;
   options: ExportOptions;
   guide?: LoginGuide;
+  session?: SessionGuide;
 }
 
 export interface HtmlEndpointRendererDeps {
@@ -112,7 +114,8 @@ export class HtmlEndpointRenderer {
     if (endpoint.auth.headers.length > 0) meta.push(['Auth headers', endpoint.auth.headers.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     for (const token of endpoint.auth.csrf) {
       const source = Helpers.tokenSource(token, { text: (value) => esc(value), code: (value) => `<code>${esc(value)}</code>`, url: (value) => `<code>${esc(Helpers.mapUrl(ctx.model, value, ctx.options))}</code>` });
-      meta.push(['CSRF', `<code>${esc(token.name)}</code> in the ${esc(token.location)}, from ${source}`]);
+      const bound = SessionGuide.bound(token, (value) => `<code>${esc(value)}</code>`);
+      meta.push(['CSRF', `<code>${esc(token.name)}</code> in the ${esc(token.location)}, from ${source}${bound === '' ? '' : `, ${bound}`}`]);
     }
     if (endpoint.form) {
       const form = endpoint.form;
@@ -135,6 +138,18 @@ export class HtmlEndpointRenderer {
     RequestBodies.variants(endpoint).forEach((variant, i) => {
       out.push(`<h3>Example request (<code>${esc(variant.mediaType)}</code>)</h3>`, this.example(variant.endpoint, ctx, `curl-${number}-${i + 1}`));
     });
+    out.push(this.steps(endpoint, ctx, `steps-${number}`));
+    return out.join('');
+  }
+
+  steps(endpoint: Endpoint, ctx: HtmlEndpointContext, id: string): string {
+    const esc = HtmlEndpointRenderer.esc;
+    const code = (value: string): string => `<code>${esc(value)}</code>`;
+    const steps = (ctx.session ?? SessionGuide.create(ctx.model)).steps(endpoint, { code, url: (value) => code(Helpers.mapUrl(ctx.model, value, ctx.options)) });
+    if (steps === undefined) return '';
+    const out = [`<h3>${esc(SessionGuide.TITLE)}</h3>`, `<p>${[...steps.steps, esc(steps.lead)].join(' ')}</p>`];
+    out.push(`<div class="copy-block"><button type="button" class="copy" data-target="${esc(id)}">Copy</button><pre id="${esc(id)}">\n${esc(steps.commands.join('\n'))}</pre></div>`);
+    if (steps.notes.length > 0) out.push(`<p>${steps.notes.join(' ')}</p>`);
     return out.join('');
   }
 

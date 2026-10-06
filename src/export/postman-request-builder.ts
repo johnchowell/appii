@@ -27,6 +27,7 @@ export class PostmanRequestBuilder {
   static readonly JSON_INDENT = 2;
   static readonly VARIABLE_OPEN = '{{';
   static readonly DISABLED_NOTE = 'Disabled because Postman reads "{{" as the start of a variable.';
+  static readonly BEARER_VARIABLE = SampleText.placeholderName(Samples.BEARER_TOKEN);
   static readonly RENDERER: SampleRenderer = Object.freeze({
     literal: (text: string): string => text,
     placeholder: (name: string): string => `{{${name}}}`,
@@ -43,8 +44,10 @@ export class PostmanRequestBuilder {
       .filter((response) => Helpers.isHttpStatus(response.status))
       .map((response) => this.response(response, request));
     const item: PostmanObject = { name: Helpers.summary(endpoint) + suffix, request, response: responses };
-    const targets = suffix === '' ? ctx.scripts?.get(endpoint) : undefined;
-    if (targets !== undefined && targets.length > 0) item.event = this.#scripts.event(targets);
+    const targets = (suffix === '' ? ctx.scripts?.get(endpoint) : undefined) ?? [];
+    const tokens = LoginGuide.tokens(endpoint);
+    const bearer = tokens.length === 0 ? [] : this.#scripts.bearer(tokens, PostmanRequestBuilder.BEARER_VARIABLE);
+    if (targets.length > 0 || bearer.length > 0) item.event = this.#scripts.event(targets, bearer);
     return item;
   }
 
@@ -201,6 +204,10 @@ export class PostmanRequestBuilder {
     const inputs = Samples.loginInputs(endpoint).map(([name]) => SampleText.placeholderName(name));
     if (inputs.length > 0) lines.push(`Set the collection ${inputs.length === 1 ? 'variable' : 'variables'} ${inputs.map((name) => `\`${name}\``).join(' and ')} before sending; ${inputs.length === 1 ? 'it has' : 'they have'} no default.`);
     if (LoginGuide.isLogin(endpoint) && (endpoint.login?.issues.cookies.length ?? 0) > 0) lines.push("Postman's cookie jar keeps the cookies it sets, so the requests sent after it are logged in.");
+    const tokens = LoginGuide.tokens(endpoint);
+    if (tokens.length > 0) {
+      lines.push(`Its test script stores the bearer token from the response field ${tokens.map(code).join(' or ')} in \`{{${PostmanRequestBuilder.BEARER_VARIABLE}}}\`, so the requests sent after it send it.`);
+    }
     for (const token of endpoint.auth.csrf) {
       const source = Helpers.tokenSource(token, { text: (value) => value, code, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
       lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}.`);

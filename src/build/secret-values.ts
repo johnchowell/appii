@@ -2,6 +2,7 @@ import { Json, Samples, Text } from '../shared/index.js';
 
 export class SecretValues {
   static readonly MIN_LENGTH = 6;
+  static readonly MIN_WHOLE_LENGTH = 3;
   static readonly COMMON_VALUES: ReadonlySet<string> = new Set([
     'deleted', 'undefined', 'expired', 'invalid', 'anonymous', 'default', 'enabled', 'disabled', 'loggedout', 'logged_out', 'guest',
   ]);
@@ -16,8 +17,11 @@ export class SecretValues {
   readonly #forms: ReadonlyMap<string, string>;
   readonly #labels: ReadonlyMap<string, string>;
   readonly #pattern: RegExp | undefined;
+  readonly #whole: ReadonlySet<string>;
+  readonly #wholeForms: ReadonlyMap<string, string>;
+  readonly #wholePattern: RegExp | undefined;
 
-  constructor(values: Iterable<string> = [], labels: ReadonlyMap<string, string> = new Map()) {
+  constructor(values: Iterable<string> = [], labels: ReadonlyMap<string, string> = new Map(), whole: Iterable<string> = []) {
     const kept = new Set<string>();
     for (const value of values) if (SecretValues.worthHiding(value)) kept.add(value);
     const forms = new Map<string, string>();
@@ -26,9 +30,32 @@ export class SecretValues {
     }
     this.#values = kept;
     this.#forms = forms;
-    this.#labels = new Map([...labels].filter(([value]) => kept.has(value)));
+    const exact = new Set<string>();
+    for (const value of whole) if (SecretValues.worthHidingWhole(value) && !kept.has(value)) exact.add(value);
+    this.#whole = exact;
+    this.#labels = new Map([...labels].filter(([value]) => kept.has(value) || exact.has(value)));
     const sorted = [...forms.keys()].sort((a, b) => b.length - a.length || Text.compare(a, b));
-    this.#pattern = sorted.length === 0 ? undefined : new RegExp(sorted.map((form) => form.replace(SecretValues.REGEX_SPECIAL, '\\$&')).join('|'), 'g');
+    this.#pattern = sorted.length === 0 ? undefined : new RegExp(sorted.map((form) => SecretValues.#escape(form)).join('|'), 'g');
+    const wholeForms = new Map<string, string>();
+    for (const value of [...exact].sort((a, b) => b.length - a.length || Text.compare(a, b))) {
+      for (const form of [JSON.stringify(value).slice(1, -1), Text.escapeHtml(value)]) if (!wholeForms.has(form)) wholeForms.set(form, value);
+    }
+    this.#wholeForms = wholeForms;
+    this.#wholePattern = SecretValues.#wholeRegExp([...wholeForms.keys()]);
+  }
+
+  static worthHidingWhole(value: string): boolean {
+    return value.trim() === value && value.length >= SecretValues.MIN_WHOLE_LENGTH && !SecretValues.COMMON_VALUES.has(value.toLowerCase()) && !Samples.isRedacted(value);
+  }
+
+  static #escape(text: string): string {
+    return text.replace(SecretValues.REGEX_SPECIAL, '\\$&');
+  }
+
+  static #wholeRegExp(forms: readonly string[]): RegExp | undefined {
+    if (forms.length === 0) return undefined;
+    const alternatives = [...forms].sort((a, b) => b.length - a.length || Text.compare(a, b)).map((form) => SecretValues.#escape(form)).join('|');
+    return new RegExp(`(?<quote>")(?<json>${alternatives})"|(?<open>>\\s*)(?<text>${alternatives})(?<close>\\s*<)`, 'g');
   }
 
   static worthHiding(value: string): boolean {
@@ -53,7 +80,7 @@ export class SecretValues {
   }
 
   get size(): number {
-    return this.#values.size;
+    return this.#values.size + this.#whole.size;
   }
 
   values(): string[] {
@@ -61,23 +88,36 @@ export class SecretValues {
   }
 
   has(value: string): boolean {
-    return this.#values.has(value) || this.#forms.has(value);
+    return this.#values.has(value) || this.#forms.has(value) || this.#whole.has(value);
   }
 
   contains(text: string): boolean {
-    return this.#pattern !== undefined && text.search(this.#pattern) >= 0;
+    if (this.#pattern !== undefined && text.search(this.#pattern) >= 0) return true;
+    return this.#wholeValue(text) !== undefined;
   }
 
   label(text: string): string | undefined {
-    if (this.#pattern === undefined) return undefined;
-    const [form] = text.match(this.#pattern) ?? [];
-    const value = form === undefined ? undefined : this.#forms.get(form);
+    const [form] = this.#pattern === undefined ? [] : (text.match(this.#pattern) ?? []);
+    const value = form === undefined ? this.#wholeValue(text) : this.#forms.get(form);
     return value === undefined ? undefined : (this.#labels.get(value) ?? SecretValues.DEFAULT_LABEL);
   }
 
   scrub(text: string, replacement: string = Samples.REDACTED): string {
-    if (!this.#pattern || text.length < SecretValues.MIN_LENGTH) return text;
-    return text.replace(this.#pattern, () => replacement);
+    if (this.#whole.has(text)) return replacement;
+    const scrubbed = this.#pattern && text.length >= SecretValues.MIN_LENGTH ? text.replace(this.#pattern, () => replacement) : text;
+    if (!this.#wholePattern) return scrubbed;
+    return scrubbed.replace(this.#wholePattern, (...args: unknown[]) => {
+      const groups = args[args.length - 1] as Record<string, string | undefined>;
+      return groups.quote !== undefined ? `"${replacement}"` : `${groups.open ?? ''}${replacement}${groups.close ?? ''}`;
+    });
+  }
+
+  #wholeValue(text: string): string | undefined {
+    if (this.#whole.has(text)) return text;
+    if (!this.#wholePattern) return undefined;
+    const groups = new RegExp(this.#wholePattern.source).exec(text)?.groups;
+    const form = groups?.json ?? groups?.text;
+    return form === undefined ? undefined : this.#wholeForms.get(form);
   }
 
   scrubDeep(value: unknown): unknown {

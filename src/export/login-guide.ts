@@ -59,6 +59,10 @@ export class LoginGuide {
     return parts.join(' and ');
   }
 
+  static tokens(endpoint: Endpoint): readonly string[] {
+    return LoginGuide.isLogin(endpoint) ? (endpoint.login?.issues.tokens ?? []) : [];
+  }
+
   static issued(login: EndpointLogin): boolean {
     return login.issues.cookies.length > 0 || login.issues.tokens.length > 0;
   }
