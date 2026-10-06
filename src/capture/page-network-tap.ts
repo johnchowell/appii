@@ -95,6 +95,11 @@ interface LiveRecord {
   readonly end: () => void;
 }
 
+interface ClaimWaiter {
+  readonly query: TapQuery;
+  readonly arrive: (record: TapRecord | undefined) => void;
+}
+
 interface AttachedEvent {
   sessionId: string;
   targetInfo: CdpTargetInfo;
@@ -140,6 +145,7 @@ export class PageNetworkTap {
   readonly #kept: TapRecord[] = [];
   readonly #channels = new Set<TargetChannel>();
   readonly #preparing = new Set<Promise<void>>();
+  readonly #waiters: ClaimWaiter[] = [];
   #closed = false;
 
   constructor(root: RootConnection, options: PageNetworkTapOptions = {}, deps: PageNetworkTapDeps = {}) {
@@ -229,8 +235,7 @@ export class PageNetworkTap {
 
   claim(query: TapQuery): TapRecord | undefined {
     const all = [...this.#kept, ...[...this.#live.values()].map((live) => live.record)];
-    let candidates = all.filter((r) => !r.claimed && r.method === query.method && r.url === query.url);
-    if (query.signature !== undefined) candidates = candidates.filter((r) => r.signature === query.signature);
+    let candidates = all.filter((r) => PageNetworkTap.#matches(query, r));
     if (query.timing !== undefined) {
       candidates = candidates.filter((r) => r.timing === undefined || r.timing === query.timing);
       const exact = candidates.filter((r) => r.timing === query.timing);
@@ -242,6 +247,16 @@ export class PageNetworkTap {
     const index = this.#kept.indexOf(chosen);
     if (index >= 0) this.#kept.splice(index, 1);
     return chosen;
+  }
+
+  async claimWhenSeen(query: TapQuery, timeoutMs: number): Promise<TapRecord | undefined> {
+    const found = this.claim(query);
+    if (found || this.#closed) return found;
+    const started = Date.now();
+    const arrived = await this.#arrival(query, timeoutMs);
+    if (!arrived) return undefined;
+    await Helpers.settle(arrived.ended, Math.max(0, timeoutMs - (Date.now() - started)));
+    return this.claim(query);
   }
 
   async postData(record: TapRecord): Promise<string | undefined> {
@@ -280,6 +295,7 @@ export class PageNetworkTap {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const waiter of [...this.#waiters]) waiter.arrive(undefined);
     for (const live of this.#live.values()) live.end();
     this.#live.clear();
     this.#kept.length = 0;
@@ -391,7 +407,25 @@ export class PageNetworkTap {
       PageNetworkTap.#respond(previous.record, redirect);
       this.#end(connection, event.requestId, 'redirected');
     }
-    this.#live.set(key, PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp));
+    const live = PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp);
+    this.#live.set(key, live);
+    this.#waiters.find((waiter) => PageNetworkTap.#matches(waiter.query, live.record))?.arrive(live.record);
+  }
+
+  #arrival(query: TapQuery, timeoutMs: number): Promise<TapRecord | undefined> {
+    return new Promise((resolve) => {
+      const waiter: ClaimWaiter = {
+        query,
+        arrive: (record) => {
+          clearTimeout(timer);
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          resolve(record);
+        },
+      };
+      const timer = setTimeout(() => waiter.arrive(undefined), timeoutMs);
+      this.#waiters.push(waiter);
+    });
   }
 
   #onResponse(connection: NetworkConnection, event: CdpResponseReceived): void {
@@ -479,6 +513,10 @@ export class PageNetworkTap {
     if (!timing || record.memoryCache) return;
     record.startTime = PageNetworkTap.#startTime(timing, record);
     record.timing = PageNetworkTap.timingKey(timing);
+  }
+
+  static #matches(query: TapQuery, record: TapRecord): boolean {
+    return !record.claimed && record.method === query.method && record.url === query.url && (query.signature === undefined || record.signature === query.signature);
   }
 
   static #closer(candidate: TapRecord, best: TapRecord, startTime: number): boolean {

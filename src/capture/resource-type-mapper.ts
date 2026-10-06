@@ -76,6 +76,10 @@ export class ResourceTypeMapper {
   }
 
   static infer(hints: ResourceTypeHints): ResourceType {
+    return ResourceTypeMapper.evident(hints) ?? 'other';
+  }
+
+  static evident(hints: ResourceTypeHints): ResourceType | undefined {
     const headers = hints.requestHeaders;
     const mime = Http.mimeEssence(hints.mimeType);
     if (hints.status === 101 || /^wss?:/i.test(hints.url) || (Http.getHeader(headers, 'upgrade') ?? '').toLowerCase() === 'websocket') return 'websocket';
@@ -94,6 +98,6 @@ export class ResourceTypeMapper {
     for (const rule of ResourceTypeMapper.MIME_RULES) if (rule.pattern.test(mime)) return rule.type;
     if (mime && Http.isTextMime(mime)) return 'fetch';
     if (!Http.isSafeMethod(hints.method)) return 'fetch';
-    return 'other';
+    return undefined;
   }
 }

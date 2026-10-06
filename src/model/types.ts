@@ -207,6 +207,7 @@ export type BodyKind = (typeof BODY_KINDS)[number];
 export interface BodyShape {
   mimeType: string;
   kind: BodyKind;
+  jsonLines?: boolean;
   schema?: JsonSchema;
   examples: unknown[];
 }
@@ -275,6 +276,7 @@ export interface Endpoint {
   queryParams: ParamInfo[];
   headerParams: ParamInfo[];
   requestBody?: BodyShape;
+  otherRequestBodies?: BodyShape[];
   responses: EndpointResponse[];
   auth: EndpointAuth;
   form?: EndpointForm;

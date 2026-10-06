@@ -37,16 +37,31 @@ export class BodyShaper {
   }
 
   shape(bodies: readonly ParsedBody[], compact = false): BodyShape | undefined {
-    const present = bodies.filter((body) => body.kind !== 'empty');
-    const kind = Helpers.mostFrequent(present.map((body) => body.kind));
-    if (kind === undefined) return undefined;
-    const chosen = present.filter((body) => body.kind === kind);
+    return this.shapes(bodies, compact)[0];
+  }
+
+  shapes(bodies: readonly ParsedBody[], compact = false): BodyShape[] {
+    const byKind = new Map<BodyKind, ParsedBody[]>();
+    for (const body of bodies) {
+      if (body.kind === 'empty') continue;
+      const list = byKind.get(body.kind);
+      if (list) list.push(body);
+      else byKind.set(body.kind, [body]);
+    }
+    return [...byKind.values()].sort((a, b) => b.length - a.length).map((chosen) => this.#shapeOf(chosen, compact));
+  }
+
+  #shapeOf(chosen: readonly ParsedBody[], compact: boolean): BodyShape {
+    const kind = chosen[0]?.kind ?? 'empty';
     const mimeType = Helpers.mostFrequent(chosen.map((body) => body.mimeType)) ?? '';
-    const values = chosen.filter((body) => body.value !== undefined).map((body) => body.value);
+    const valued = chosen.filter((body) => body.value !== undefined);
+    const jsonLines = kind === 'json' && valued.length > 0 && valued.every((body) => body.jsonLines === true);
+    const values = jsonLines ? valued.flatMap((body) => (Array.isArray(body.value) ? body.value : [body.value])) : valued.map((body) => body.value);
     const schema = this.schema(kind, values);
     return {
       mimeType,
       kind,
+      ...(jsonLines ? { jsonLines: true } : {}),
       ...(schema ? { schema } : {}),
       examples: this.#examples(kind, values, compact, mimeType),
     };
@@ -57,9 +72,9 @@ export class BodyShaper {
       case 'json':
       case 'graphql':
       case 'form':
-        return values.length > 0 ? this.#schemas.infer([...values]) : undefined;
+        return values.length > 0 ? this.#schemas.finalize(this.#schemas.infer([...values])) : undefined;
       case 'multipart':
-        return values.length > 0 ? this.#multipart(values) : undefined;
+        return values.length > 0 ? this.#schemas.finalize(this.#multipart(values)) : undefined;
       case 'html':
       case 'text':
         return { type: 'string' };

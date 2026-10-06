@@ -9,6 +9,7 @@ export interface ParsedBody {
   kind: BodyKind;
   mimeType: string;
   value?: unknown;
+  jsonLines?: boolean;
   operationName?: string;
 }
 
@@ -50,6 +51,7 @@ export class BodyParser {
     binary: 'application/octet-stream',
     empty: '',
   };
+  static readonly MIN_JSON_LINES = 2;
   static readonly MULTIPART_FILE_TYPE = 'text/plain';
   static readonly MAX_DECODED_BYTES = 64 * 1024 * 1024;
   static readonly CHARSET_FIELD = '_charset_';
@@ -129,7 +131,8 @@ export class BodyParser {
   parse(body: BodyData | undefined, contentType?: string, options: BodyParseOptions = {}): ParsedBody {
     const declared = contentType ?? body?.mimeType ?? '';
     const mime = Http.mimeEssence(declared);
-    if (!body || body.data === '') return { kind: 'empty', mimeType: mime };
+    if (!body) return { kind: 'empty', mimeType: mime };
+    if (body.data === '') return body.truncated === true ? { kind: BodyParser.kindOf(mime), mimeType: mime } : { kind: 'empty', mimeType: mime };
     if (Http.isContentEncoded(options.contentEncoding)) {
       const decoded = BodyParser.decodeContent(body, options.contentEncoding ?? '');
       if (!decoded) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
@@ -139,10 +142,12 @@ export class BodyParser {
     const text = BodyParser.HTML_MIMES.has(mime) ? BodyParser.#html(body, declared) : BodyParser.#text(body, declared, mime === BodyParser.TEXT_FORM ? options.formEncoding : undefined);
     if (text === undefined) return { kind: 'binary', mimeType: mime || BodyParser.DEFAULT_MIMES.binary };
     if (BodyParser.GRAPHQL_MIMES.has(mime)) return BodyParser.#graphqlDocument(text, mime);
-    if (BodyParser.LINE_JSON_MIMES.has(mime)) return BodyParser.#lines(text, mime, body.truncated === true);
+    if (BodyParser.LINE_JSON_MIMES.has(mime)) return BodyParser.#lines(text, mime, body.truncated === true) ?? { kind: 'text', mimeType: mime, value: text };
     if (Http.isJsonMime(mime)) {
       const parsed = Json.safeParse(Text.stripBom(text));
       if (parsed.ok) return BodyParser.#json(parsed.value, mime);
+      const lines = BodyParser.#lines(Text.stripBom(text), mime, body.truncated === true, BodyParser.MIN_JSON_LINES);
+      if (lines) return lines;
       return body.truncated ? { kind: 'json', mimeType: mime } : { kind: 'text', mimeType: mime, value: text };
     }
     const sniffed = BodyParser.#sniff(text);
@@ -219,15 +224,16 @@ export class BodyParser {
     return parsed;
   }
 
-  static #lines(text: string, mime: string, truncated: boolean): ParsedBody {
+  static #lines(text: string, mime: string, truncated: boolean, minimum = 0): ParsedBody | undefined {
     const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '');
     const values: unknown[] = [];
     for (let i = 0; i < lines.length; i++) {
       const parsed = Json.safeParse(lines[i] ?? '');
       if (parsed.ok) values.push(parsed.value);
-      else if (!(truncated && i === lines.length - 1)) return { kind: 'text', mimeType: mime, value: text };
+      else if (!(truncated && i === lines.length - 1)) return undefined;
     }
-    return { kind: 'json', mimeType: mime, value: values };
+    if (values.length < minimum) return undefined;
+    return { kind: 'json', mimeType: mime, value: values, jsonLines: true };
   }
 
   static #sniff(text: string): unknown {

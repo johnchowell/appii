@@ -295,3 +295,8 @@ export function closest(input: string, candidates: readonly string[]): string | 
   }
   return bestDistance <= limit ? best : undefined;
 }
+
+export function singularizePhrase(phrase: string): string {
+  const match = /^(.*[-_. ])([^-_. ]+)$/.exec(phrase);
+  return match ? (match[1] ?? '') + singularize(match[2] ?? '') : singularize(phrase);
+}

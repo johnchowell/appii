@@ -135,4 +135,47 @@ describe('EndpointNamer', () => {
     assert.equal(EndpointNamer.isPlural('login'), false);
     assert.equal(namer.slug(endpoint('GET', '/caf%C3%A9')), 'get-caf');
   });
+
+  test('multi-word slugs under a plural parent are items, compound collections stay lists (SPA-5)', () => {
+    assert.deepEqual(
+      named([
+        endpoint('GET', '/api/articles/react-hooks-best-practices'),
+        endpoint('GET', '/api/articles/building-scalable-apis-with-node-js'),
+        endpoint('GET', '/api/articles/how-to-learn-javascript-efficiently'),
+        endpoint('GET', '/api/order-items'),
+        endpoint('GET', '/api/line_items'),
+        endpoint('GET', '/api/users/blocked-users'),
+      ]).map(([, name]) => name),
+      ['getArticleReactHooksBestPractices', 'getArticleBuildingScalableApisWithNodeJs', 'getArticleHowToLearnJavascriptEfficiently', 'listOrderItems', 'listLineItems', 'listBlockedUsers'],
+    );
+    assert.equal(Text.singularizePhrase('node-js'), 'node-js');
+    assert.equal(Text.singularizePhrase('order-items'), 'order-item');
+    assert.equal(Text.singularizePhrase('react-hooks-best-practices'), 'react-hooks-best-practice');
+    assert.equal(EndpointNamer.isPlural('building-scalable-apis-with-node-js'), false);
+  });
+
+  test('page and file names stay short, readable and unique', () => {
+    const list = () => [
+      endpoint('GET', '/page/{page}/', 'document'),
+      endpoint('GET', '/tag/{tag}/', 'document'),
+      endpoint('GET', '/tag/{tag}/page/{page}/', 'document'),
+      endpoint('GET', '/catalogue/page-{page}.html', 'other'),
+      endpoint('GET', '/catalogue/{catalogue}/index.html', 'document'),
+      endpoint('GET', '/index.html', 'other'),
+      endpoint('GET', '/bytes/{bytes}', 'other'),
+      endpoint('GET', '/users/{user}', 'json'),
+    ];
+    const first = named(list());
+    assert.deepEqual(first, named(list()));
+    assert.deepEqual(
+      first.map(([, name]) => name),
+      ['getPage', 'getTagPage', 'getTagPageByPage', 'getCataloguePage', 'getCataloguePageByCatalogue', 'getIndex', 'getBytes', 'getUser'],
+    );
+    assert.equal(new Set(first.map(([id]) => id)).size, first.length);
+    assert.deepEqual(EndpointNamer.segments('/catalogue/page-{page}.html'), [
+      { text: 'catalogue', param: false },
+      { text: 'page-', param: false },
+    ]);
+  });
 });
+

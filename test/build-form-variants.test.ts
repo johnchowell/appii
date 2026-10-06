@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FormSchemaCombiner, ModelBuilder, PathTemplater } from '../src/build/index.js';
+import { FormSchemaCombiner, ModelBuilder, PathTemplater, ResponseStructure } from '../src/build/index.js';
 import type { ApiModel, Endpoint, JsonSchema } from '../src/model/index.js';
 import { Schema } from '../src/shared/index.js';
 import { SchemaCheck } from './fixtures/build-schema-check.js';
@@ -165,10 +165,14 @@ describe('distinct actions under a plural parent (FB-15)', () => {
 
   test('the templater keeps rows with conflicting operation evidence literal', () => {
     const paths = ['/accounts/login/', '/accounts/signup/', '/accounts/logout/', '/accounts/alice/', '/accounts/bob/', '/accounts/carol/'];
+    const structure = new ResponseStructure().html('<html><body><div class="profile"><h1>x</h1></div></body></html>', 'https://e.com/');
+    assert.ok(structure);
+    const page = [{ method: 'GET', status: 200, mime: 'text/html', structure, query: [] }];
     const evidence = new Map([
-      ['/accounts/login/', { forms: new Set(['["login","password"]']), names: new Set(['login', 'password']) }],
-      ['/accounts/signup/', { forms: new Set(['["email","password1"]']), names: new Set(['email', 'password1']) }],
-      ['/accounts/logout/', { forms: new Set(['[]']), names: new Set<string>() }],
+      ['/accounts/login/', { forms: new Set(['["login","password"]']), names: new Set(['login', 'password']), observations: page }],
+      ['/accounts/signup/', { forms: new Set(['["email","password1"]']), names: new Set(['email', 'password1']), observations: page }],
+      ['/accounts/logout/', { forms: new Set(['[]']), names: new Set<string>(), observations: page }],
+      ...['/accounts/alice/', '/accounts/bob/', '/accounts/carol/'].map((path): [string, { forms: Set<string>; names: Set<string>; observations: typeof page }] => [path, { forms: new Set<string>(), names: new Set<string>(), observations: page }]),
     ]);
     const templates = new PathTemplater().template(paths, evidence);
     assert.deepEqual(paths.map((path) => templates.get(path)?.template), [
@@ -179,7 +183,7 @@ describe('distinct actions under a plural parent (FB-15)', () => {
       '/accounts/{account}/',
       '/accounts/{account}/',
     ]);
-    const forum = new PathTemplater().template(['/forums/a/post', '/forums/b/post', '/forums/c/post'], new Map(['/forums/a/post', '/forums/b/post', '/forums/c/post'].map((path) => [path, { forms: new Set(['["body","subject"]']), names: new Set(['body', 'subject']) }])));
+    const forum = new PathTemplater().template(['/forums/a/post', '/forums/b/post', '/forums/c/post'], new Map(['/forums/a/post', '/forums/b/post', '/forums/c/post'].map((path) => [path, { forms: new Set(['["body","subject"]']), names: new Set(['body', 'subject']), observations: page }])));
     assert.equal(forum.get('/forums/a/post')?.template, '/forums/{forum}/post');
   });
 });

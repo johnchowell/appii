@@ -515,7 +515,7 @@ export class TrafficRecorder {
     const tracked = page ? this.#pages.get(page) : undefined;
     const tap = tracked ? await tracked.tap : undefined;
     if (!tap) return undefined;
-    const record = tap.claim(TrafficRecorder.#query(request));
+    const record = await tap.claimWhenSeen(TrafficRecorder.#query(request), PageNetworkTap.SESSION_LAG_MS);
     return record ? { tap, record } : undefined;
   }
 

@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CaptureSession, HarConverter, ResourceTypeMapper } from '../src/capture/index.js';
 import type { Har, HarEntry } from '../src/capture/index.js';
+import { ModelBuilder } from '../src/build/index.js';
 import { AppiiError, Http, Json } from '../src/shared/index.js';
 import type { Capture, Exchange } from '../src/model/index.js';
 import { startFixtureSite } from './fixtures/site.js';
@@ -940,5 +941,165 @@ describe('HarConverter pages follow navigations', () => {
     assert.equal(capture.startedAt, '2026-04-01T09:00:00.000Z');
     assert.equal(capture.endedAt, '2026-04-01T09:00:00.012Z');
     assert.ok(capture.pages.every((p) => !Number.isNaN(Date.parse(p.capturedAt))));
+  });
+});
+
+describe('HarConverter.fromHar with Playwright cache entries (BOOKS-5)', () => {
+  const FONT = 'https://books.test/static/oscar/fonts/fontawesome-webfont.woff%3Fv=3.2.1';
+  const UA = [
+    { name: 'sec-ch-ua-platform', value: '"Linux"' },
+    { name: 'Referer', value: 'https://books.test/' },
+    { name: 'User-Agent', value: 'Mozilla/5.0' },
+  ];
+  const at = (second: number): string => `2026-10-06T02:18:${String(30 + second).padStart(2, '0')}.000Z`;
+  const entry = (second: number, url: string, request: Record<string, unknown>, response: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    pageref: 'page@1',
+    startedDateTime: at(second),
+    time: 1,
+    request: { method: 'GET', url, httpVersion: 'HTTP/1.1', cookies: [], queryString: [], headersSize: 300, bodySize: 0, ...request },
+    response: { status: 200, statusText: 'OK', httpVersion: 'HTTP/1.1', cookies: [], redirectURL: '', headersSize: 307, ...response },
+    cache: {},
+    timings: { dns: -1, connect: -1, ssl: -1, send: 0, wait: 2, receive: 1 },
+    ...extra,
+  });
+  const network = { serverIPAddress: '127.0.0.1', _serverPort: 37483 };
+  const fontHeaders = [
+    { name: 'Content-Type', value: 'application/octet-stream' },
+    { name: 'Content-Length', value: '6' },
+  ];
+  const cachedFont = (second: number) =>
+    entry(
+      second,
+      FONT,
+      { headers: [{ name: 'Referer', value: '' }], headersSize: 80 },
+      { headers: fontHeaders, content: { size: -1, mimeType: 'application/octet-stream', compression: 307, text: '' }, bodySize: -307, _transferSize: 0 },
+      { ...network, timings: { dns: -1, connect: -1, ssl: -1, send: 0, wait: -1, receive: 1.09 } },
+    );
+  const page = (second: number, path: string) =>
+    entry(
+      second,
+      `https://books.test${path}`,
+      { headers: [{ name: 'Sec-Fetch-Dest', value: 'document' }, { name: 'Sec-Fetch-Mode', value: 'navigate' }, { name: 'Accept', value: 'text/html' }] },
+      { headers: [{ name: 'Content-Type', value: 'text/html' }], content: { size: 20, mimeType: 'text/html', text: '<title>Books</title>' }, bodySize: 20, _transferSize: 327 },
+      network,
+    );
+  const playwrightHar = {
+    log: {
+      version: '1.2',
+      creator: { name: 'Playwright', version: '1.56.1' },
+      pages: [{ startedDateTime: at(0), id: 'page@1', title: 'Books', pageTimings: { onContentLoad: -1, onLoad: -1 } }],
+      entries: [
+        page(0, '/'),
+        entry(
+          1,
+          'https://books.test/static/oscar/css/styles.css',
+          { headers: [{ name: 'Sec-Fetch-Dest', value: 'style' }, ...UA] },
+          { headers: [{ name: 'Content-Type', value: 'text/css' }], content: { size: 6, mimeType: 'text/css', text: 'body{}' }, bodySize: 6, _transferSize: 313 },
+          network,
+        ),
+        entry(
+          2,
+          FONT,
+          { headers: [{ name: 'Sec-Fetch-Dest', value: 'font' }, { name: 'Sec-Fetch-Mode', value: 'cors' }, ...UA] },
+          { headers: fontHeaders, content: { size: 6, mimeType: 'application/octet-stream', text: 'd09GRgAB', encoding: 'base64' }, bodySize: 6, _transferSize: 313 },
+          network,
+        ),
+        entry(
+          3,
+          'https://books.test/api/basket',
+          { headers: [{ name: 'Sec-Fetch-Dest', value: 'empty' }, ...UA] },
+          { headers: [{ name: 'Content-Type', value: 'application/json' }], content: { size: 11, mimeType: 'application/json', text: '{"lines":0}' }, bodySize: -43, _transferSize: 0 },
+        ),
+        page(4, '/catalogue/page-2.html'),
+        entry(
+          5,
+          'https://books.test/static/oscar/css/styles.css',
+          { headers: UA },
+          { headers: [{ name: 'Content-Type', value: 'text/css' }], content: { size: 6, mimeType: 'text/css', text: 'body{}' }, bodySize: -299, _transferSize: 0 },
+          network,
+        ),
+        cachedFont(6),
+        page(7, '/catalogue/travel_2/index.html'),
+        cachedFont(8),
+        entry(
+          9,
+          'https://books.test/api/mocked',
+          { headers: [{ name: 'Sec-Fetch-Dest', value: 'empty' }, ...UA] },
+          { headers: [{ name: 'Content-Type', value: 'application/json' }], content: { size: 2, mimeType: 'application/json', text: '{}' }, bodySize: -20, _transferSize: 0 },
+          { ...network, _wasFulfilled: true },
+        ),
+        page(10, '/catalogue/book_3/index.html'),
+        cachedFont(11),
+      ],
+    },
+  };
+
+  test('types memory-cache repeats of a font like the font load that preceded them, and marks them served from the cache', () => {
+    const capture = new HarConverter().fromHar(playwrightHar as unknown as Har);
+    const fonts = capture.exchanges.filter((e) => e.request.url === FONT);
+    assert.equal(fonts.length, 4);
+    assert.deepEqual(
+      fonts.map((e) => e.resourceType),
+      ['font', 'font', 'font', 'font'],
+    );
+    assert.deepEqual(
+      fonts.map((e) => [e.servedBy, e.cacheKind, e.response?.remoteAddress]),
+      [
+        [undefined, undefined, '127.0.0.1'],
+        ['cache', undefined, undefined],
+        ['cache', undefined, undefined],
+        ['cache', undefined, undefined],
+      ],
+    );
+    const styles = capture.exchanges.filter((e) => e.request.url.endsWith('/styles.css'));
+    assert.deepEqual(
+      styles.map((e) => [e.resourceType, e.servedBy]),
+      [
+        ['stylesheet', undefined],
+        ['stylesheet', 'cache'],
+      ],
+    );
+    const byPath = new Map(capture.exchanges.map((e) => [new URL(e.request.url).pathname, e]));
+    assert.equal(byPath.get('/api/basket')?.servedBy, undefined, 'a response without a server address came from a service worker, not from the cache');
+    assert.equal(byPath.get('/api/mocked')?.servedBy, undefined, 'a response fulfilled by Playwright did not come from the cache');
+  });
+
+  test('the model lists no endpoint for the font and counts only server hits', () => {
+    const capture = new HarConverter().fromHar(playwrightHar as unknown as Har);
+    const model = ModelBuilder.create().build(capture);
+    assert.deepEqual(
+      model.endpoints.filter((e) => e.path.includes('fontawesome')).map((e) => `${e.method} ${e.path}`),
+      [],
+    );
+    assert.equal(model.endpoints.find((e) => e.path === '/api/basket')?.count, 1);
+  });
+
+  test('keeps a type taken from the request headers and leaves entries without any evidence as other', () => {
+    const har = Json.clone(playwrightHar) as typeof playwrightHar;
+    const unknown = cachedFont(12);
+    unknown.request.url = 'https://books.test/static/oscar/fonts/other.bin';
+    har.log.entries.push(unknown);
+    const capture = new HarConverter().fromHar(har as unknown as Har);
+    assert.equal(capture.exchanges.find((e) => e.request.url.endsWith('/other.bin'))?.resourceType, 'other');
+    assert.equal(capture.exchanges.find((e) => e.request.url.endsWith('/api/basket'))?.resourceType, 'fetch');
+    assert.equal(
+      ResourceTypeMapper.evident({ method: 'GET', url: FONT, requestHeaders: [{ name: 'Referer', value: '' }], status: 200, mimeType: 'application/octet-stream' }),
+      undefined,
+    );
+  });
+
+  test('a cache hit of unknown kind keeps no kind through an appii HAR round trip', () => {
+    const capture = new HarConverter().fromHar(playwrightHar as unknown as Har);
+    const back = new HarConverter().fromHar(new HarConverter().toHar(capture));
+    const fonts = back.exchanges.filter((e) => e.request.url === FONT);
+    assert.deepEqual(
+      fonts.map((e) => [e.resourceType, e.servedBy, e.cacheKind]),
+      [
+        ['font', undefined, undefined],
+        ['font', 'cache', undefined],
+        ['font', 'cache', undefined],
+        ['font', 'cache', undefined],
+      ],
+    );
   });
 });

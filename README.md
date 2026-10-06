@@ -59,6 +59,39 @@ reads form submissions in the charset of the form. Captures larger than the
 largest string Node.js can hold are read piece by piece. A model written by an
 older appii must be built again from its capture.
 
+#### Path templates
+
+appii turns a path segment into a parameter from evidence, not from the word
+before it:
+
+- Integers, UUIDs, hex ids, dates and opaque tokens are parameters at once
+  (`/items/42` becomes `/items/{itemId}`).
+- Other values become a parameter when they vary and the requests behave as one
+  resource: the same method, a 2xx response with the same content type and the
+  same structure. For JSON the structure is the set of keys (optional keys may
+  be missing); for HTML it is the element skeleton near the top of the page
+  (tags and class names, not text). So `/tag/love/`, `/tag/life/` and
+  `/tag/humor/` become `/tag/{tag}/`, while `/account/profile` and
+  `/account/billing` with different pages stay two endpoints.
+- A slug that carries a numeric id (`a-light-in-the-attic_1000`,
+  `how-to-train-your-dragon-38`) is a parameter from two values, and a lone one
+  is a parameter when the same place is already one elsewhere. A single plain
+  word stays literal.
+- A value that an earlier JSON response listed as an identifier (`slug`,
+  `username`, `id` and similar keys), or that its own JSON response echoes in
+  such a field, is a parameter even if it was seen once.
+- A sibling that answers with another structure, sends other query parameters,
+  or is not listed while its siblings are, stays literal: `/api/articles/feed`
+  next to `/api/articles/{slug}`. Action words such as `login`, `new` or
+  `settings` and paths whose forms send different fields also stay literal.
+- A number inside a file name becomes an in-segment parameter
+  (`/catalogue/page-{page}.html`) once two numbers are seen.
+
+A parameter takes the name of the response field that holds its value
+(`{slug}`, `{username}`). Otherwise it is named after the segment before it: an
+id under a plural collection gets `Id` (`{itemId}`), a value under a singular
+word or a unit takes the word itself (`{page}`, `{status}`, `{bytes}`).
+
 ### list: look at the endpoints
 
 ```sh

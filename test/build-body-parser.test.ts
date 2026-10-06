@@ -55,9 +55,16 @@ describe('BodyParser basics', () => {
   });
 
   test('newline-delimited json becomes an array of values', () => {
-    assert.deepEqual(parser.parse(body('{"a":1}\n{"a":2}\n', 'application/x-ndjson')), { kind: 'json', mimeType: 'application/x-ndjson', value: [{ a: 1 }, { a: 2 }] });
+    assert.deepEqual(parser.parse(body('{"a":1}\n{"a":2}\n', 'application/x-ndjson')), { kind: 'json', mimeType: 'application/x-ndjson', value: [{ a: 1 }, { a: 2 }], jsonLines: true });
     assert.equal(parser.parse(body('{"a":1}\nnope', 'application/x-ndjson')).kind, 'text');
     assert.deepEqual(parser.parse(body('{"a":1}\n{"a"', 'application/x-ndjson', { truncated: true })).value, [{ a: 1 }]);
+    assert.deepEqual(parser.parse(body('{"id":0}\n{"id":1}\n', 'application/json')), { kind: 'json', mimeType: 'application/json', value: [{ id: 0 }, { id: 1 }], jsonLines: true });
+    assert.deepEqual(parser.parse(body('{"id":0}\n{"id":1}\n{"id"', 'application/json', { truncated: true })).value, [{ id: 0 }, { id: 1 }]);
+    assert.deepEqual(parser.parse({ mimeType: 'multipart/form-data; boundary=x', encoding: 'base64', data: '', size: 279, truncated: true }, 'multipart/form-data; boundary=x'), { kind: 'multipart', mimeType: 'multipart/form-data' });
+    assert.deepEqual(parser.parse({ mimeType: 'image/png', encoding: 'base64', data: '', size: 0, truncated: true }), { kind: 'binary', mimeType: 'image/png' });
+    assert.deepEqual(parser.parse({ mimeType: 'image/png', encoding: 'base64', data: '', size: 0 }), { kind: 'empty', mimeType: 'image/png' });
+    assert.deepEqual(parser.parse(body('{"id":0} trailing', 'application/json')), { kind: 'text', mimeType: 'application/json', value: '{"id":0} trailing' });
+    assert.deepEqual(parser.parse(body('{\n"id": 0,\n', 'application/json')), { kind: 'text', mimeType: 'application/json', value: '{\n"id": 0,\n' });
   });
 
   test('html, text, svg and binary bodies', () => {

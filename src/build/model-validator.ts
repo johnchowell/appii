@@ -84,6 +84,7 @@ export class ModelValidator {
     this.#number(problems, endpoint, 'count', at);
     for (const key of ['pathParams', 'queryParams', 'headerParams']) this.#array(problems, endpoint, key, at, (item, p) => this.#param(problems, item, p));
     if (endpoint.requestBody !== undefined) this.#body(problems, endpoint.requestBody, at + 'requestBody');
+    if (endpoint.otherRequestBodies !== undefined) this.#array(problems, endpoint, 'otherRequestBodies', at, (item, p) => this.#body(problems, item, p));
     this.#array(problems, endpoint, 'responses', at, (item, p) => {
       const response = this.#object(problems, item, p);
       if (!response) return;
@@ -148,6 +149,7 @@ export class ModelValidator {
     if (!body) return;
     this.#string(problems, body, 'mimeType', path + '.');
     this.#oneOf(problems, body, 'kind', ModelValidator.BODY_KINDS, path + '.');
+    this.#boolean(problems, body, 'jsonLines', path + '.', { optional: true });
     if (body.schema !== undefined) this.#object(problems, body.schema, path + '.schema');
     if (!Array.isArray(body.examples)) problems.push(`${path}.examples: expected an array`);
   }

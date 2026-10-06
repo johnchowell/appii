@@ -1,14 +1,35 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PathTemplater } from '../src/build/index.js';
-import type { PathTemplate } from '../src/build/index.js';
+import { PathTemplater, ResponseStructure } from '../src/build/index.js';
+import type { PathEvidence, PathObservation, PathTemplate } from '../src/build/index.js';
 import { EndpointIndex } from '../src/shared/index.js';
 
 const templater = new PathTemplater();
+const structures = new ResponseStructure();
 
-function templates(paths: string[]): Record<string, string> {
-  const map = templater.template(paths);
+function templates(paths: string[], evidence: ReadonlyMap<string, PathEvidence> = new Map()): Record<string, string> {
+  const map = templater.template(paths, evidence);
   return Object.fromEntries(paths.map((path) => [path, map.get(path)?.template ?? '']));
+}
+
+function observation(body: unknown, extra: Partial<PathObservation> = {}): PathObservation {
+  const html = typeof body === 'string';
+  const structure = html ? structures.html(body, 'https://example.com/') : structures.json(body);
+  return { method: 'GET', status: 200, mime: html ? 'text/html' : 'application/json', ...(structure ? { structure } : {}), query: [], ...extra };
+}
+
+function seen(entries: Record<string, PathObservation | PathObservation[]>, extra: Record<string, Partial<PathEvidence>> = {}): Map<string, PathEvidence> {
+  return new Map(
+    Object.entries(entries).map(([path, found]) => [path, { forms: new Set<string>(), names: new Set<string>(), observations: Array.isArray(found) ? found : [found], ...extra[path] }]),
+  );
+}
+
+function same(paths: string[], body: unknown): Map<string, PathEvidence> {
+  return seen(Object.fromEntries(paths.map((path) => [path, observation(body)])));
+}
+
+function layout(main: string, title = 'x'): string {
+  return `<!doctype html><html><head><title>${title}</title></head><body class="page-${title}"><div class="container"><header class="nav"><a href="/">Home</a></header><div class="row"><div class="col-8">${main}</div></div><footer class="foot">f</footer></div></body></html>`;
 }
 
 function only(paths: string[], path: string): PathTemplate {
@@ -84,21 +105,34 @@ describe('PathTemplater.template', () => {
     assert.deepEqual(templates(['/users/alice']), { '/users/alice': '/users/alice' });
     assert.deepEqual(templates(['/users/123']), { '/users/123': '/users/{userId}' });
     assert.deepEqual(templates(['/users/alice', '/users/bob']), { '/users/alice': '/users/alice', '/users/bob': '/users/bob' });
+    assert.deepEqual(templates(['/users/alice'], same(['/users/alice'], { user: { name: 'Alice' } })), { '/users/alice': '/users/alice' });
   });
 
-  test('three or more distinct literals under a plural parent become a parameter', () => {
-    const map = templates(['/users/alice', '/users/bob', '/users/carol', '/users/alice/posts', '/users/bob/posts', '/users/dave/posts']);
+  test('literals whose responses share one structure become a parameter, whatever the parent word', () => {
+    const paths = ['/users/alice', '/users/bob', '/users/carol', '/users/alice/posts', '/users/bob/posts', '/users/dave/posts'];
+    const evidence = new Map([...same(paths.slice(0, 3), { user: { name: 'A', bio: 'b' } }), ...same(paths.slice(3), { posts: [{ id: 1, title: 't' }] })]);
+    const map = templates(paths, evidence);
     assert.equal(map['/users/alice'], '/users/{user}');
     assert.equal(map['/users/carol'], '/users/{user}');
     assert.equal(map['/users/alice/posts'], '/users/{user}/posts');
-    const params = only(['/users/alice', '/users/bob', '/users/carol'], '/users/bob').params;
+    const params = templater.template(paths.slice(0, 3), evidence).get('/users/bob')?.params;
     assert.deepEqual(params, [{ name: 'user', position: 1, kind: 'literal', examples: ['alice', 'bob', 'carol'] }]);
+    assert.deepEqual(Object.values(templates(paths.slice(0, 3))), paths.slice(0, 3));
   });
 
-  test('literals under non-plural or reserved parents and sub-resources stay literal', () => {
-    assert.deepEqual(Object.values(templates(['/admin/users', '/admin/groups', '/admin/roles'])), ['/admin/users', '/admin/groups', '/admin/roles']);
+  test('literals under reserved parents, distinct pages and sub-resources stay literal', () => {
+    assert.deepEqual(Object.values(templates(['/admin/users', '/admin/groups', '/admin/roles'], same(['/admin/users', '/admin/groups', '/admin/roles'], { items: [{ id: 1 }] }))), [
+      '/admin/users',
+      '/admin/groups',
+      '/admin/roles',
+    ]);
     assert.deepEqual(Object.values(templates(['/api/login', '/api/logout', '/api/me'])), ['/api/login', '/api/logout', '/api/me']);
-    assert.deepEqual(Object.values(templates(['/account/profile', '/account/billing', '/account/security'])), [
+    const account = seen({
+      '/account/profile': observation(layout('<form class="profile"><input name="name"></form>')),
+      '/account/billing': observation(layout('<table class="invoices"><tr><td>1</td></tr></table>')),
+      '/account/security': observation(layout('<ul class="sessions"><li>a</li></ul>')),
+    });
+    assert.deepEqual(Object.values(templates(['/account/profile', '/account/billing', '/account/security'], account)), [
       '/account/profile',
       '/account/billing',
       '/account/security',
@@ -133,8 +167,9 @@ describe('PathTemplater.template', () => {
     assert.deepEqual(mixed, { '/users/123': '/users/{userId}', '/users/featured': '/users/featured', '/users/trending': '/users/trending', '/users/blocked': '/users/blocked' });
     const ids = only(['/x/123', '/x/507f1f77bcf86cd799439011'], '/x/123');
     assert.equal(ids.params[0]?.kind, 'token');
-    const encoded = only(['/tags/caf%C3%A9', '/tags/b', '/tags/c'], '/tags/b');
-    assert.deepEqual(encoded.params[0]?.examples, ['caf\u00e9', 'b', 'c']);
+    const tags = ['/tags/caf%C3%A9', '/tags/b', '/tags/c'];
+    const encoded = templater.template(tags, same(tags, { tag: { name: 'x' } })).get('/tags/b');
+    assert.deepEqual(encoded?.params[0]?.examples, ['caf\u00e9', 'b', 'c']);
   });
 
   test('trailing slashes and non-slash paths are handled', () => {
@@ -145,6 +180,146 @@ describe('PathTemplater.template', () => {
   test('the output is deterministic for the same input', () => {
     const paths = ['/b/1', '/a/2', '/users/x', '/users/y', '/users/z'];
     assert.deepEqual([...templater.template(paths)], [...templater.template(paths)]);
+  });
+});
+
+describe('PathTemplater evidence: structure, value shape and identifiers', () => {
+  const quote = (tag: string): string => layout(`<h3>Viewing tag: ${tag}</h3><div class="quote"><span class="text">q</span><a class="tag" href="/tag/${tag}/">${tag}</a></div><nav><ul class="pager"><li class="next"><a href="#">Next</a></li></ul></nav>`, tag);
+
+  test('singular collection parents open when the pages share one HTML skeleton (QTS-1)', () => {
+    const tags = ['/tag/love/', '/tag/inspirational/', '/tag/life/'];
+    const authors = ['/author/Jane-Austen/', '/author/J-K-Rowling/'];
+    const evidence = seen({
+      ...Object.fromEntries(tags.map((path) => [path, observation(quote(path.split('/')[2] ?? ''))])),
+      ...Object.fromEntries(authors.map((path) => [path, observation(layout(`<div class="author-details"><h3 class="author-title">${path}</h3><span class="born">b</span></div>`))])),
+      '/tag/inspirational/page/1/': observation(quote('inspirational')),
+      '/login': observation(layout('<form action="/login"><input name="username"></form>')),
+    });
+    const paths = [...tags, ...authors, '/tag/inspirational/page/1/', '/login'];
+    const map = templates(paths, evidence);
+    for (const path of tags) assert.equal(map[path], '/tag/{tag}/');
+    for (const path of authors) assert.equal(map[path], '/author/{author}/');
+    assert.equal(map['/tag/inspirational/page/1/'], '/tag/{tag}/page/{page}/');
+    assert.equal(map['/login'], '/login');
+    assert.deepEqual(templater.template(paths, evidence).get('/tag/love/')?.params, [{ name: 'tag', position: 1, kind: 'literal', examples: ['love', 'inspirational', 'life'] }]);
+  });
+
+  test('the skeleton ignores text, repeated items, body classes and digits in class names', () => {
+    const a = structures.html(layout('<div class="quote q-1"><p>One</p></div><div class="quote q-2"><p>Two</p></div>', 'Ada_Lovelace'), 'https://e.com/');
+    const b = structures.html(layout('<div class="quote q-9"><p>Other text entirely</p></div>', 'Charles_Babbage').replace('class="page-', 'class="mw-editable page-'), 'https://e.com/');
+    const c = structures.html(layout('<form><input name="q"></form>'), 'https://e.com/');
+    assert.ok(a && b && c);
+    assert.equal(ResponseStructure.alike(a, b), true);
+    assert.equal(ResponseStructure.alike(a, c), false);
+    const article = structures.json({ article: { slug: 'a', title: 'T', author: { username: 'u', image: null } } });
+    const sparse = structures.json({ article: { slug: 'b', title: 'U', author: { username: 'v' } } });
+    const feed = structures.json({ articles: [{ slug: 'a' }], articlesCount: 1 });
+    assert.ok(article && sparse && feed);
+    assert.equal(ResponseStructure.alike(article, sparse), true);
+    assert.equal(ResponseStructure.alike(article, feed), false);
+    assert.equal(structures.json({}), undefined);
+  });
+
+  test('a sibling that answers with another structure, query or status stays literal (SPA-2)', () => {
+    const slugs = ['how-to-learn-javascript-efficiently', 'react-hooks-best-practices', 'building-scalable-apis-with-node-js'];
+    const paths = [...slugs.map((slug) => `/api/articles/${slug}`), '/api/articles/feed'];
+    const references = { references: new Set([2]) };
+    const listed = seen(
+      {
+        ...Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, observation({ article: { slug, title: 'T', body: 'b' } })])),
+        '/api/articles/feed': observation({ errors: { token: ['is missing'] } }, { status: 401, query: ['limit', 'offset'] }),
+      },
+      Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, references])),
+    );
+    const anonymous = templates(paths, listed);
+    assert.deepEqual(Object.values(anonymous), ['/api/articles/{article}', '/api/articles/{article}', '/api/articles/{article}', '/api/articles/feed']);
+    const signedIn = seen({
+      ...Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, observation({ article: { slug, title: 'T', body: 'b' } })])),
+      '/api/articles/feed': observation({ articles: [{ slug: 'x', title: 'T' }], articlesCount: 1 }, { query: ['limit', 'offset'] }),
+    });
+    assert.equal(templates(paths, signedIn)['/api/articles/feed'], '/api/articles/feed');
+    const quiet = seen({
+      ...Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, observation({ article: { slug, title: 'T', body: 'b' } })])),
+      '/api/articles/feed': observation({ errors: { token: ['is missing'] } }, { status: 401 }),
+    }, Object.fromEntries(slugs.map((slug) => [`/api/articles/${slug}`, references])));
+    assert.equal(templates(paths, quiet)['/api/articles/feed'], '/api/articles/feed');
+  });
+
+  test('values the API itself listed or echoes open with one sample and take the field name (SPA-1)', () => {
+    const echo = (key: string) => ({ echoes: new Map([[2, [{ key, identifier: true, depth: 2, exact: true }]]]) });
+    const evidence = seen(
+      {
+        '/api/profiles/mikewilson': observation({ profile: { username: 'mikewilson', bio: null } }),
+        '/api/articles/react-hooks-best-practices': observation({ article: { slug: 'react-hooks-best-practices' } }),
+        '/api/articles/react-hooks-best-practices/comments': observation({ comments: [] }),
+        '/api/articles/other-article/comments': observation({ comments: [{ id: 1, body: 'x' }] }),
+        '/api/articles/feed': observation({ articles: [], articlesCount: 0 }, { query: ['limit'] }),
+      },
+      {
+        '/api/profiles/mikewilson': { ...echo('username'), references: new Set([2]) },
+        '/api/articles/react-hooks-best-practices': echo('slug'),
+      },
+    );
+    const map = templates(Object.keys(Object.fromEntries(evidence)), evidence);
+    assert.equal(map['/api/profiles/mikewilson'], '/api/profiles/{username}');
+    assert.equal(map['/api/articles/react-hooks-best-practices'], '/api/articles/{slug}');
+    assert.equal(map['/api/articles/react-hooks-best-practices/comments'], '/api/articles/{slug}/comments');
+    assert.equal(map['/api/articles/feed'], '/api/articles/feed');
+    const action = seen({ '/api/profiles/me': observation({ profile: { username: 'me' } }) }, { '/api/profiles/me': echo('username') });
+    assert.equal(templates(['/api/profiles/me'], action)['/api/profiles/me'], '/api/profiles/me');
+  });
+
+  test('slugs that carry a numeric id open from two samples, a lone one stays literal (BOOKS-1)', () => {
+    const books = ['the-exiled_247', 'tipping-the-velvet_999', 'the-requiem-red_995', 'a-light-in-the-attic_1000', 'how-to-train-your-dragon-38'];
+    const paths = [...books.map((book) => `/catalogue/${book}/index.html`), '/catalogue/no-such-book_99999/index.html'];
+    const evidence = seen({
+      ...Object.fromEntries(paths.slice(0, -1).map((path) => [path, observation(layout('<article class="product_page"><h1>Book</h1></article>'))])),
+      '/catalogue/no-such-book_99999/index.html': observation('<html><body><h1>404 Not Found</h1></body></html>', { status: 404 }),
+    });
+    for (const map of [templates(paths), templates(paths, evidence)]) for (const path of paths) assert.equal(map[path], '/catalogue/{catalogue}/index.html', path);
+    assert.deepEqual(Object.values(templates(['/checkout/step-2'])), ['/checkout/step-2']);
+    const categories = ['travel_2', 'mystery_3', 'new-adult_20', 'self-help_41', 'login_7'].map((slug) => `/catalogue/category/books/${slug}/index.html`);
+    const map = templates(categories);
+    assert.deepEqual(categories.map((path) => map[path]), [...categories.slice(0, 4).map(() => '/catalogue/category/books/{book}/index.html'), categories[4]]);
+    assert.equal(templater.classify('a-light-in-the-attic_1000'), 'slug');
+    assert.equal(templater.classify('page-2.html'), 'literal');
+  });
+
+  test('numbered file names become an in-segment parameter and the pattern spreads (BOOKS-2)', () => {
+    const paths = ['/catalogue/page-2.html', '/catalogue/page-3.html', '/catalogue/category/books/mystery_3/index.html', '/catalogue/category/books/poetry_23/index.html', '/catalogue/category/books/mystery_3/page-2.html'];
+    const map = templates(paths);
+    assert.equal(map['/catalogue/page-2.html'], '/catalogue/page-{page}.html');
+    assert.equal(map['/catalogue/category/books/mystery_3/page-2.html'], '/catalogue/category/books/{book}/page-{page}.html');
+    assert.deepEqual(templater.template(paths).get('/catalogue/page-3.html')?.params, [{ name: 'page', position: 1, kind: 'integer', examples: ['2', '3'] }]);
+    assert.deepEqual(EndpointIndex.matchPath('/catalogue/page-{page}.html', '/catalogue/page-50.html'), { page: '50' });
+    assert.deepEqual(Object.values(templates(['/docs/chapter1.html', '/a.html', '/b.html', '/c.html'])), ['/docs/chapter1.html', '/a.html', '/b.html', '/c.html']);
+  });
+
+  test('REST resources under singular parents open on equal JSON shapes; an aborted call joins (WIKI-1)', () => {
+    const titles = ['Charles_Babbage', 'Computer', 'Mathematician', 'Writer'];
+    const summary = (title: string) => ({ type: 'standard', title: title.replace(/_/g, ' '), titles: { canonical: title, normalized: title.replace(/_/g, ' ') }, extract: 'x', lang: 'en' });
+    const evidence = seen(
+      {
+        ...Object.fromEntries(titles.map((title) => [`/api/rest_v1/page/summary/${title}`, observation(summary(title))])),
+        '/api/rest_v1/page/summary/Mechanical_engineer': { method: 'GET', mime: '', query: [] },
+      },
+      Object.fromEntries(titles.map((title) => [`/api/rest_v1/page/summary/${title}`, { echoes: new Map([[4, [{ key: 'title', identifier: false, depth: 1, exact: false }]]]) }])),
+    );
+    const map = templates([...evidence.keys()], evidence);
+    for (const path of evidence.keys()) assert.equal(map[path], '/api/rest_v1/page/summary/{title}', path);
+  });
+
+  test('integers under singular nouns and units are named after the noun', () => {
+    assert.equal(only(['/status/418'], '/status/418').template, '/status/{status}');
+    assert.equal(only(['/bytes/16'], '/bytes/16').template, '/bytes/{bytes}');
+    assert.equal(only(['/page/2/'], '/page/2/').template, '/page/{page}/');
+    assert.equal(only(['/items/2'], '/items/2').template, '/items/{itemId}');
+  });
+
+  test('evidence-based templating is deterministic', () => {
+    const paths = ['/tag/b/', '/tag/a/', '/tag/c/', '/x/1'];
+    const evidence = same(paths, '<html><body><div class="q">x</div></body></html>');
+    assert.deepEqual([...templater.template(paths, evidence)], [...templater.template(paths, evidence)]);
   });
 });
 

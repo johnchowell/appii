@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BodyParser, EndpointGrouper, HeaderPolicy, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { BodyParser, EndpointGrouper, HeaderPolicy, ModelBuilder, ModelValidator, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import type { EndpointGrouperOptions } from '../src/build/index.js';
 import type { Endpoint } from '../src/model/index.js';
 import { Samples } from '../src/shared/index.js';
@@ -134,7 +134,7 @@ describe('EndpointGrouper filtering', () => {
     f.exchange({ url: '/static/app.js', resourceType: 'script', status: 200, responseHeaders: { 'content-type': 'text/javascript' }, responseBody: 'x()' });
     f.exchange({ url: '/logo.png', resourceType: 'image', status: 200, responseHeaders: { 'content-type': 'image/png' } });
     f.exchange({ url: '/favicon.ico', resourceType: 'other', status: 404, responseHeaders: { 'content-type': 'text/html' } });
-    f.exchange({ url: '/fonts/x', resourceType: 'fetch', status: 200, responseHeaders: { 'content-type': 'font/woff2' } });
+    f.exchange({ url: '/fonts/x', resourceType: 'other', status: 200, responseHeaders: { 'content-type': 'font/woff2' } });
     f.exchange({ url: '/styles', resourceType: 'other', status: 200, responseHeaders: { 'content-type': 'text/css' } });
     f.exchange({
       method: 'OPTIONS',
@@ -197,7 +197,8 @@ describe('EndpointGrouper details', () => {
         'accept-language': 'en',
         'sec-ch-ua': 'x',
         referer: 'https://shop.example.com/',
-        'if-none-match': 'W/"1"',
+        'if-match': 'W/"1"',
+        range: 'bytes=0-1',
         priority: 'u=1',
         traceparent: '00-abc-def-01',
       },
@@ -214,6 +215,8 @@ describe('EndpointGrouper details', () => {
         ['authorization', true, ['Bearer <redacted>']],
         ['x-api-key', true, [Samples.REDACTED]],
         ['x-request-id', false, ['r1']],
+        ['if-match', false, ['W/"1"']],
+        ['range', false, ['bytes=0-1']],
         ['traceparent', false, ['00-abc-def-01']],
       ],
     );
@@ -441,5 +444,69 @@ describe('GraphQL detection (FB-22)', () => {
       [`GET ${ORIGIN}/search`, 'json'],
       [`POST ${ORIGIN}/api/search`, 'json'],
     ]);
+  });
+});
+
+describe('EndpointGrouper content from script requests (HTTPBIN-2, HTTPBIN-5, HTTPBIN-7, HTTPBIN-10)', () => {
+  test('a fetch that returns an image is an endpoint, an image element load is a static asset', () => {
+    const f = new CaptureFactory();
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    f.exchange({ url: '/api/avatar', resourceType: 'fetch', status: 200, responseHeaders: { 'content-type': 'image/png' }, responseBody: png, responseType: 'image/png' });
+    f.exchange({ url: '/image/png', resourceType: 'xhr', status: 200, responseHeaders: { 'content-type': 'image/png' }, responseBody: png, responseType: 'image/png' });
+    f.exchange({ url: '/logo', resourceType: 'image', status: 200, responseHeaders: { 'content-type': 'image/png' } });
+    f.exchange({ url: '/bundle.js', resourceType: 'fetch', status: 200, responseHeaders: { 'content-type': 'text/javascript' } });
+    const endpoints = grouper().group(f.capture().exchanges);
+    assert.deepEqual(endpoints.map((endpoint) => endpoint.key), [`GET ${ORIGIN}/api/avatar`, `GET ${ORIGIN}/image/png`]);
+    assert.deepEqual(byKey(endpoints, `GET ${ORIGIN}/api/avatar`).responses[0]?.body, { mimeType: 'image/png', kind: 'binary', examples: [] });
+  });
+
+  test('Range and conditional headers set by page script are parameters; validators the cache sent are not', () => {
+    const f = new CaptureFactory();
+    f.exchange({ url: '/range/64', status: 206, requestHeaders: { range: 'bytes=0-15' }, responseHeaders: { 'content-type': 'application/octet-stream', 'content-range': 'bytes 0-15/64' } });
+    f.exchange({ url: '/etag/abc', status: 304, requestHeaders: { 'if-none-match': '"abc"', 'cache-control': 'max-age=0' }, responseHeaders: { etag: 'abc' } });
+    f.json('GET', '/api/me', 200, { id: 1 }, { responseHeaders: { etag: 'W/"v1"', 'last-modified': 'Tue, 06 Oct 2026 00:00:00 GMT' } });
+    f.exchange({ url: '/api/me', status: 304, requestHeaders: { 'if-none-match': 'W/"v1"', 'if-modified-since': 'Tue, 06 Oct 2026 00:00:00 GMT' } });
+    f.exchange({ url: '/doc', resourceType: 'document', status: 206, requestHeaders: { range: 'bytes=0-1' }, responseHeaders: { 'content-type': 'text/html' } });
+    const endpoints = grouper().group(f.capture().exchanges);
+    const params = (key: string) => byKey(endpoints, key).headerParams.map((param) => [param.name, param.required, param.examples]);
+    assert.deepEqual(params(`GET ${ORIGIN}/range/{range}`), [['range', true, ['bytes=0-15']]]);
+    assert.deepEqual(params(`GET ${ORIGIN}/etag/abc`), [['if-none-match', true, ['"abc"']]]);
+    assert.deepEqual(params(`GET ${ORIGIN}/api/me`), []);
+    assert.deepEqual(params(`GET ${ORIGIN}/doc`), []);
+    assert.equal(new HeaderPolicy().isParam('range'), false);
+    assert.equal(new HeaderPolicy().isParam('range', new Set(['range'])), true);
+  });
+
+  test('newline-delimited JSON served as application/json keeps an item schema', () => {
+    const f = new CaptureFactory();
+    const lines = [0, 1, 2].map((id) => JSON.stringify({ id, url: 'https://e.com/stream/3', args: {} })).join('\n') + '\n';
+    f.exchange({ url: '/stream/3', status: 200, responseHeaders: { 'content-type': 'application/json' }, responseBody: lines, responseType: 'application/json' });
+    const [stream] = grouper().group(f.capture().exchanges);
+    const body = stream?.responses[0]?.body;
+    assert.equal(body?.kind, 'json');
+    assert.equal(body?.mimeType, 'application/json');
+    assert.equal(body?.jsonLines, true);
+    assert.deepEqual(body?.schema, { type: 'object', properties: { id: { type: 'integer' }, url: { type: 'string', format: 'uri' }, args: { type: 'object', properties: {} } }, required: ['id', 'url', 'args'] });
+    assert.deepEqual(body?.examples[0], { id: 0, url: 'https://e.com/stream/3', args: {} });
+  });
+
+  test('one endpoint keeps every request media type it received', async () => {
+    const f = new CaptureFactory();
+    f.exchange({ method: 'POST', url: '/post', resourceType: 'document', status: 200, requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, requestBody: 'custname=a&size=small' });
+    f.json('POST', '/post', 200, { ok: true }, { requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { name: 'n', qty: 2 } } });
+    const form = new FormData();
+    form.append('title', 't');
+    form.append('upload', new Blob(['hello'], { type: 'text/plain' }), 'a.txt');
+    const request = new Request('http://x/', { method: 'POST', body: form });
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    f.json('POST', '/post', 200, { ok: true }, { requestHeaders: { 'content-type': request.headers.get('content-type') ?? '' }, requestBody: bytes });
+    const [post] = grouper().group(f.capture().exchanges);
+    assert.equal(post?.requestBody?.kind, 'form');
+    assert.deepEqual(post?.otherRequestBodies?.map((body) => [body.kind, body.mimeType]), [['json', 'application/json'], ['multipart', 'multipart/form-data']]);
+    const multipart = post?.otherRequestBodies?.[1]?.schema as { properties?: Record<string, unknown> } | undefined;
+    assert.deepEqual(multipart?.properties?.upload, { type: 'string', format: 'binary', contentMediaType: 'text/plain' });
+    const model = ModelBuilder.create({ now: new Date(0) }).build(f.capture());
+    assert.deepEqual(new ModelValidator().validate(model), []);
+    assert.equal(model.endpoints.find((endpoint) => endpoint.path === '/post')?.otherRequestBodies?.length, 2);
   });
 });

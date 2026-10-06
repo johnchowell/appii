@@ -18,6 +18,11 @@ export interface ParamInferrerOptions {
   maxExamples: number;
 }
 
+export interface HeaderSample {
+  readonly headers: readonly Header[];
+  readonly scripted?: ReadonlySet<string>;
+}
+
 interface ParamStats {
   present: number;
   repeated: boolean;
@@ -84,13 +89,13 @@ export class ParamInferrer {
     });
   }
 
-  headers(requests: readonly (readonly Header[])[]): ParamInfo[] {
+  headers(requests: readonly HeaderSample[]): ParamInfo[] {
     const stats = new Map<string, ParamStats>();
-    for (const headers of requests) {
+    for (const { headers, scripted } of requests) {
       const seen = new Set<string>();
       for (const header of headers) {
         const name = header.name.toLowerCase();
-        if (!this.#headers.isParam(name)) continue;
+        if (!this.#headers.isParam(name, scripted)) continue;
         const stat = ParamInferrer.#stat(stats, name);
         stat.values.push(header.value);
         if (seen.has(name)) stat.repeated = true;

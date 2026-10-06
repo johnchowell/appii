@@ -234,3 +234,19 @@ describe('FormatDetector', () => {
     );
   });
 });
+
+describe('SchemaInferrer.finalize (WIKI-6)', () => {
+  test('fields observed only as null carry no type constraint, merged values keep null', () => {
+    const merged = inferrer.infer([{ anchor: null, thumbnail: { duration: null, url: 'u' } }, { anchor: null, thumbnail: null }, { anchor: null, thumbnail: { duration: null, url: 'v' } }]);
+    assert.deepEqual(Schema.properties(merged).anchor, { type: 'null' });
+    const schema = inferrer.finalize(merged);
+    assert.deepEqual(Schema.properties(schema).anchor, { 'x-appii-observed': 'null' });
+    assert.deepEqual(Schema.properties(Schema.asSchema(Schema.properties(schema).thumbnail)).duration, { 'x-appii-observed': 'null' });
+    assert.deepEqual(Schema.properties(merged).anchor, { type: 'null' });
+    assert.equal(SchemaInferrer.isObservedNull({ 'x-appii-observed': 'null' }), true);
+    assert.deepEqual(inferrer.merge({ 'x-appii-observed': 'null' }, { type: 'string' }), { type: ['string', 'null'] });
+    assert.deepEqual(inferrer.finalize(inferrer.infer([{ a: 'x' }, { a: null }])), { type: 'object', properties: { a: { type: ['string', 'null'] } }, required: ['a'] });
+    assert.deepEqual(inferrer.finalize(inferrer.infer([[null], [null]])), { type: 'array', items: { 'x-appii-observed': 'null' } });
+    assert.equal(Schema.typeLabel(Schema.asSchema(Schema.properties(schema).anchor)), 'any');
+  });
+});

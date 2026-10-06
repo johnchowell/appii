@@ -20,6 +20,7 @@ import { HtmlPages } from './html-pages.js';
 import { OriginSelector } from './origin-selector.js';
 import { PageDocuments } from './page-documents.js';
 import { ParamInferrer } from './param-inferrer.js';
+import { PathEvidenceCollector } from './path-evidence-collector.js';
 import { PathTemplater } from './path-templater.js';
 import { Redactor } from './redactor.js';
 import { SchemaInferrer } from './schema-inferrer.js';
@@ -70,7 +71,7 @@ export class ModelBuilder {
     const maxExamples = ModelBuilder.#checkMaxExamples(options.maxExamples);
     const body = BodyParser.create();
     const schemas = SchemaInferrer.create();
-    const paths = new PathTemplater();
+    const paths = PathTemplater.create();
     const tokens = new TokenDetector();
     const redactor = new Redactor(options.redact ?? true, { tokens });
     const headers = new HeaderPolicy({ tokens });
@@ -87,6 +88,7 @@ export class ModelBuilder {
         signatures: new ExchangeSignature({ body }),
         params,
         shaper: new BodyShaper({ schemas, redactor }, { maxExamples }),
+        evidence: PathEvidenceCollector.create(),
       },
       { includeStatic: options.includeStatic ?? false, includeDocuments: options.includeDocuments ?? true, maxExamples },
     );

@@ -20,20 +20,25 @@ export class EndpointNamer {
   static readonly ROOT_WORD = 'root';
   static readonly PAGE_WORD = 'page';
   static readonly IDENTIFIER_SUFFIX = 'Endpoint';
+  static readonly BY_WORD = 'By';
+  static readonly AND_WORD = 'And';
+  static readonly INDEX_DOCUMENT: RegExp = /^index\.html?$/i;
+  static readonly DOCUMENT_EXTENSION: RegExp = /\.html?$/i;
+  static readonly ITEM_PHRASE_WORDS = 3;
 
   static segments(path: string): Segment[] {
-    return path
-      .split('/')
-      .filter((segment) => segment !== '')
+    const parts = path.split('/').filter((segment) => segment !== '');
+    return parts
+      .filter((segment) => parts.length === 1 || !EndpointNamer.INDEX_DOCUMENT.test(segment))
       .map((segment) => {
         const whole = /^\{([^{}]+)\}$/.exec(segment);
         if (whole) return { text: whole[1] ?? '', param: true };
-        return { text: Http.decodeComponent(segment.replace(/[{}]/g, '')), param: false };
+        return { text: Http.decodeComponent(segment.replace(/\{[^{}]*\}/g, '')).replace(EndpointNamer.DOCUMENT_EXTENSION, ''), param: false };
       });
   }
 
   static isPlural(word: string): boolean {
-    return Text.singularize(word).toLowerCase() !== word.toLowerCase();
+    return Text.singularizePhrase(word).toLowerCase() !== word.toLowerCase();
   }
 
   name(endpoints: Endpoint[]): void {
@@ -46,16 +51,40 @@ export class EndpointNamer {
       if (list) list.push(candidate);
       else groups.set(candidate.base, [candidate]);
     }
-    const keep = new Set<Candidate>();
-    for (const group of groups.values()) {
+    const kept = new Map<string, Candidate>();
+    for (const [base, group] of groups) {
       const usable = group.filter((candidate) => Text.isIdentifier(candidate.base));
       const preferred = usable.find((candidate) => candidate.endpoint.kind !== 'graphql') ?? usable[0];
-      if (preferred) keep.add(preferred);
+      if (preferred) kept.set(base, preferred);
     }
-    const taken = new Set([...keep].map((candidate) => candidate.base));
+    const taken = new Set(kept.keys());
     for (const candidate of candidates) {
-      candidate.endpoint.name = keep.has(candidate) ? candidate.base : Text.uniqueName(EndpointNamer.#identifier(candidate.qualified), taken);
+      const owner = kept.get(candidate.base);
+      if (owner === candidate) {
+        candidate.endpoint.name = candidate.base;
+        continue;
+      }
+      const by = owner ? EndpointNamer.#byParams(candidate, owner) : undefined;
+      if (by !== undefined && Text.isIdentifier(by) && !taken.has(by)) {
+        taken.add(by);
+        candidate.endpoint.name = by;
+      } else {
+        candidate.endpoint.name = Text.uniqueName(EndpointNamer.#identifier(candidate.qualified), taken);
+      }
     }
+  }
+
+  static #byParams(candidate: Candidate, owner: Candidate): string | undefined {
+    const known = new Set(EndpointNamer.#params(owner.endpoint));
+    const extra = EndpointNamer.#params(candidate.endpoint).filter((name) => !known.has(name));
+    if (extra.length === 0) return undefined;
+    return `${candidate.base}${EndpointNamer.BY_WORD}${extra.map((name) => Text.pascalCase(name)).join(EndpointNamer.AND_WORD)}`;
+  }
+
+  static #params(endpoint: Endpoint): string[] {
+    return EndpointNamer.segments(endpoint.path)
+      .filter((segment) => segment.param)
+      .map((segment) => segment.text);
   }
 
   slug(endpoint: Endpoint): string {
@@ -87,17 +116,24 @@ export class EndpointNamer {
     const parent = segments[segments.length - 2];
     if (endpoint.kind === 'document' && method === 'GET') {
       const words = EndpointNamer.#resource(segments, qualified);
-      return EndpointNamer.#camel(['get', ...(words.length > 0 ? words : [EndpointNamer.HOME_WORD]), EndpointNamer.PAGE_WORD]);
+      const resource = words.length > 0 ? words : [EndpointNamer.HOME_WORD];
+      const tail = Text.words(resource[resource.length - 1] ?? '');
+      return EndpointNamer.#camel(['get', ...resource, ...(tail[tail.length - 1] === EndpointNamer.PAGE_WORD ? [] : [EndpointNamer.PAGE_WORD])]);
+    }
+    const collection = parent !== undefined && !parent.param && EndpointNamer.isPlural(parent.text) && !EndpointNamer.STOP_SEGMENTS.test(parent.text);
+    const itemVerb = EndpointNamer.ITEM_VERBS[method];
+    if (last && !last.param && parent && collection && itemVerb && Text.words(last.text).length >= EndpointNamer.ITEM_PHRASE_WORDS) {
+      const prefix = qualified ? literals.slice(0, -2) : [];
+      return EndpointNamer.#camel([itemVerb, ...prefix, Text.singularizePhrase(parent.text), last.text]);
     }
     const collectionVerb = EndpointNamer.COLLECTION_VERBS[method];
     if (last && !last.param && collectionVerb && EndpointNamer.isPlural(last.text) && !EndpointNamer.STOP_SEGMENTS.test(last.text)) {
       const prefix = qualified ? literals.slice(0, -1) : [];
-      return EndpointNamer.#camel([collectionVerb, ...prefix, collectionVerb === 'list' ? last.text : Text.singularize(last.text)]);
+      return EndpointNamer.#camel([collectionVerb, ...prefix, collectionVerb === 'list' ? last.text : Text.singularizePhrase(last.text)]);
     }
-    const itemVerb = EndpointNamer.ITEM_VERBS[method];
-    if (last?.param && parent && !parent.param && itemVerb && EndpointNamer.isPlural(parent.text) && !EndpointNamer.STOP_SEGMENTS.test(parent.text)) {
+    if (last?.param && parent && collection && itemVerb && last.text !== Text.camelCase(parent.text)) {
       const prefix = qualified ? literals.slice(0, -1) : [];
-      return EndpointNamer.#camel([itemVerb, ...prefix, Text.singularize(parent.text)]);
+      return EndpointNamer.#camel([itemVerb, ...prefix, Text.singularizePhrase(parent.text)]);
     }
     const words = qualified ? literals : meaningful.length > 0 ? meaningful : literals;
     return EndpointNamer.#camel([verb, ...(words.length > 0 ? words : [EndpointNamer.ROOT_WORD])]);
@@ -109,7 +145,7 @@ export class EndpointNamer {
       if (segment.param) return;
       if (!qualified && EndpointNamer.STOP_SEGMENTS.test(segment.text)) return;
       const next = segments[i + 1];
-      words.push(next?.param && i === segments.length - 2 ? Text.singularize(segment.text) : segment.text);
+      words.push(next?.param && i === segments.length - 2 ? Text.singularizePhrase(segment.text) : segment.text);
     });
     return words;
   }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { BrowserContext, Page } from 'playwright';
+import type { BrowserContext, Frame, Page } from 'playwright';
 import { Json } from '../shared/index.js';
 import type { PageSnapshot } from '../model/index.js';
 import { Helpers } from './helpers.js';
@@ -15,11 +15,14 @@ export interface PageSnapshotterOptions {
 }
 
 interface TrackedPage {
+  url: string;
   readonly onLoad: () => void;
+  readonly onNavigated: (frame: Frame) => void;
   readonly onClose: () => void;
   readonly world: Promise<PageWorld | undefined>;
   hooked: boolean;
   timer?: NodeJS.Timeout;
+  route?: NodeJS.Timeout;
 }
 
 export class PageSnapshotter {
@@ -32,6 +35,10 @@ export class PageSnapshotter {
     { type: 'pagehide', capture: false },
   ];
   static readonly INSPECT_EVENTS: readonly string[] = ['focusin', 'pointerdown', 'keydown', 'input'];
+  static readonly ROUTE_EVENTS: readonly string[] = ['popstate'];
+  static readonly NAVIGATION_EVENT = 'currententrychange';
+  static readonly LOADED_STATE = 'complete';
+  static readonly FORM_CONTROLS: readonly string[] = ['form', ...LiveDom.LISTED_CONTROLS];
 
   readonly #debounceMs: number;
   readonly #timeoutMs: number;
@@ -60,47 +67,115 @@ export class PageSnapshotter {
 
   hookScript(): string {
     const listeners = PageSnapshotter.HOOK_EVENTS.map((e) => `window.addEventListener(${JSON.stringify(e.type)}, send, ${e.capture});`).join('\n  ');
+    const routes = PageSnapshotter.ROUTE_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, route, false);`).join('\n  ');
     const inspectors = PageSnapshotter.INSPECT_EVENTS.map((type) => `window.addEventListener(${JSON.stringify(type)}, inspect, true);`).join('\n  ');
     return `(function () {
   if (window.top !== window) return;
   var marks = new WeakSet();
   var watched = new WeakSet();
+  var shapes = new Set();
+  var timer = 0;
+  var sentUrl = '';
+  var CONTROLS = ${JSON.stringify(PageSnapshotter.FORM_CONTROLS.join(','))};
+  function getter(proto, name) {
+    return Object.getOwnPropertyDescriptor(proto, name).get;
+  }
+  var getAttribute = Element.prototype.getAttribute;
+  var matches = Element.prototype.matches;
+  var queries = [[Element, Element.prototype.querySelectorAll], [Document, Document.prototype.querySelectorAll], [DocumentFragment, DocumentFragment.prototype.querySelectorAll]];
+  var formElements = getter(HTMLFormElement.prototype, 'elements');
+  var documentForms = getter(Document.prototype, 'forms');
+  var readyState = getter(Document.prototype, 'readyState');
+  var isConnected = getter(Node.prototype, 'isConnected');
   window[${JSON.stringify(this.#marks)}] = marks;
   function isPassword(node) {
     return node instanceof HTMLInputElement && node.type === 'password';
   }
-  function markIn(node) {
-    if (isPassword(node)) marks.add(node);
-    if (!node || typeof node.querySelectorAll !== 'function') return;
-    var inputs = node.querySelectorAll('input');
-    for (var i = 0; i < inputs.length; i++) if (isPassword(inputs[i])) marks.add(inputs[i]);
+  function parsed() {
+    return readyState.call(document) !== 'loading';
   }
-  function process(records) {
+  function withoutFragment(url) {
+    var hash = url.indexOf('#');
+    return hash < 0 ? url : url.slice(0, hash);
+  }
+  function eachControl(node, selector, visit) {
+    if (node instanceof Element && matches.call(node, selector)) visit(node);
+    for (var i = 0; i < queries.length; i++) {
+      if (!(node instanceof queries[i][0])) continue;
+      var found = queries[i][1].call(node, selector);
+      for (var j = 0; j < found.length; j++) visit(found[j]);
+      return;
+    }
+  }
+  function markIn(node, owners) {
+    eachControl(node, owners ? CONTROLS : 'input', function (control) {
+      if (isPassword(control)) marks.add(control);
+      var owner = control instanceof HTMLFormElement ? control : control.form;
+      if (owners && owner) owners.add(owner);
+    });
+  }
+  function remember(form) {
+    var shape = [location.href, getAttribute.call(form, 'action'), getAttribute.call(form, 'method'), getAttribute.call(form, 'enctype')];
+    var controls = formElements.call(form);
+    for (var i = 0; i < controls.length; i++) shape.push(controls[i].localName, controls[i].type, controls[i].name);
+    var key = JSON.stringify(shape);
+    if (shapes.has(key)) return false;
+    shapes.add(key);
+    return true;
+  }
+  function process(records, collect) {
+    var owners = collect ? new Set() : null;
     for (var i = 0; i < records.length; i++) {
       var record = records[i];
       if (record.type === 'attributes') {
         var target = record.target;
         if (target instanceof HTMLInputElement && ((record.oldValue || '').toLowerCase() === 'password' || isPassword(target))) marks.add(target);
       } else {
-        for (var j = 0; j < record.addedNodes.length; j++) markIn(record.addedNodes[j]);
+        for (var j = 0; j < record.addedNodes.length; j++) markIn(record.addedNodes[j], owners);
       }
     }
+    var fresh = false;
+    if (owners) owners.forEach(function (form) {
+      if (isConnected.call(form) && remember(form)) fresh = true;
+    });
+    return fresh;
   }
-  var observer = new MutationObserver(process);
+  var observer = new MutationObserver(function (records) {
+    if (process(records, parsed())) schedule();
+  });
+  function baseline() {
+    process(observer.takeRecords(), false);
+    var forms = documentForms.call(document);
+    for (var i = 0; i < forms.length; i++) remember(forms[i]);
+  }
   function send() {
+    clearTimeout(timer);
+    timer = 0;
     try {
-      process(observer.takeRecords());
+      baseline();
+      sentUrl = location.href;
       var call = window[${JSON.stringify(this.#binding)}];
       if (typeof call !== 'function') return;
       var doc = ${LiveDom.expression(this.#marks)};
       call(JSON.stringify(doc));
     } catch (e) {}
   }
+  function settle() {
+    timer = 0;
+    if (parsed()) send();
+  }
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(settle, ${this.#debounceMs});
+  }
+  function route() {
+    if (withoutFragment(location.href) !== withoutFragment(sentUrl)) schedule();
+  }
   function watch(root) {
     if (watched.has(root)) return;
     watched.add(root);
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['type'], attributeOldValue: true });
-    markIn(root);
+    markIn(root, null);
     if (root !== document) root.addEventListener('submit', send, true);
   }
   function inspect(event) {
@@ -111,9 +186,16 @@ export class PageSnapshotter {
     }
   }
   watch(document);
+  document.addEventListener('readystatechange', function () {
+    if (readyState.call(document) === 'interactive') baseline();
+  });
   ${inspectors}
   ${listeners}
-  if (document.readyState === 'complete') send();
+  ${routes}
+  if (typeof navigation === 'object' && navigation !== null) navigation.addEventListener(${JSON.stringify(PageSnapshotter.NAVIGATION_EVENT)}, route);
+  var state = readyState.call(document);
+  if (state === 'complete') send();
+  else if (state === 'interactive') baseline();
 })();`;
   }
 
@@ -130,9 +212,8 @@ export class PageSnapshotter {
     this.#context?.off('page', this.#onPage);
     this.#context = undefined;
     for (const [page, tracked] of this.#pages) {
-      clearTimeout(tracked.timer);
-      page.off('load', tracked.onLoad);
-      page.off('close', tracked.onClose);
+      PageSnapshotter.#stop(tracked);
+      PageSnapshotter.#unhook(page, tracked);
       void tracked.world.then((world) => world?.close());
     }
     this.#pages.clear();
@@ -144,17 +225,13 @@ export class PageSnapshotter {
   }
 
   capture(page: Page): Promise<void> {
-    const task = this.#take(page);
-    this.#pending.add(task);
-    void task.finally(() => this.#pending.delete(task));
-    return task;
+    return this.#track(this.#take(page));
   }
 
   async finish(): Promise<void> {
     const open: Page[] = [];
     for (const [page, tracked] of this.#pages) {
-      clearTimeout(tracked.timer);
-      tracked.timer = undefined;
+      PageSnapshotter.#stop(tracked);
       if (!page.isClosed()) open.push(page);
     }
     await this.settled();
@@ -179,14 +256,14 @@ export class PageSnapshotter {
         }).catch(() => undefined)
       : Promise.resolve(undefined);
     const tracked: TrackedPage = {
+      url: page.url(),
       world,
       hooked: false,
       onLoad: () => this.#onLoad(page, tracked),
+      onNavigated: (frame) => this.#onNavigated(page, tracked, frame),
       onClose: () => {
-        clearTimeout(tracked.timer);
-        tracked.timer = undefined;
-        page.off('load', tracked.onLoad);
-        page.off('close', tracked.onClose);
+        PageSnapshotter.#stop(tracked);
+        PageSnapshotter.#unhook(page, tracked);
         this.#pages.delete(page);
         void world.then((opened) => opened?.close());
       },
@@ -196,6 +273,7 @@ export class PageSnapshotter {
     });
     this.#pages.set(page, tracked);
     page.on('load', tracked.onLoad);
+    page.on('framenavigated', tracked.onNavigated);
     page.on('close', tracked.onClose);
     return world;
   };
@@ -210,6 +288,8 @@ export class PageSnapshotter {
   }
 
   #onLoad(page: Page, tracked: TrackedPage): void {
+    clearTimeout(tracked.route);
+    tracked.route = undefined;
     if (tracked.timer === undefined && !tracked.hooked) void this.capture(page);
     clearTimeout(tracked.timer);
     tracked.timer = setTimeout(() => {
@@ -218,11 +298,44 @@ export class PageSnapshotter {
     }, this.#debounceMs);
   }
 
-  async #take(page: Page): Promise<void> {
+  #onNavigated(page: Page, tracked: TrackedPage, frame: Frame): void {
+    if (frame !== page.mainFrame()) return;
+    const previous = tracked.url;
+    tracked.url = frame.url();
+    if (tracked.hooked || Helpers.withoutFragment(previous) === Helpers.withoutFragment(tracked.url)) return;
+    clearTimeout(tracked.route);
+    tracked.route = setTimeout(() => {
+      tracked.route = undefined;
+      void this.#track(this.#take(page, true));
+    }, this.#debounceMs);
+  }
+
+  #track(task: Promise<void>): Promise<void> {
+    this.#pending.add(task);
+    void task.finally(() => this.#pending.delete(task));
+    return task;
+  }
+
+  async #take(page: Page, loadedOnly = false): Promise<void> {
     if (page.isClosed()) return;
     const world = await this.#pages.get(page)?.world;
-    const snapshot = await Helpers.settle(this.#dom(page, world).snapshot(), this.#timeoutMs);
+    const dom = this.#dom(page, world);
+    if (loadedOnly && (await Helpers.settle(dom.readyState(), this.#timeoutMs)) !== PageSnapshotter.LOADED_STATE) return;
+    const snapshot = await Helpers.settle(dom.snapshot(), this.#timeoutMs);
     if (snapshot) this.#add(snapshot);
+  }
+
+  static #stop(tracked: TrackedPage): void {
+    clearTimeout(tracked.timer);
+    clearTimeout(tracked.route);
+    tracked.timer = undefined;
+    tracked.route = undefined;
+  }
+
+  static #unhook(page: Page, tracked: TrackedPage): void {
+    page.off('load', tracked.onLoad);
+    page.off('framenavigated', tracked.onNavigated);
+    page.off('close', tracked.onClose);
   }
 
   #add(snapshot: PageSnapshot): void {

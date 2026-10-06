@@ -1,7 +1,7 @@
 import type { Endpoint, EndpointKind, EndpointResponse, EndpointSample, Exchange, Header, ResourceType } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { TokenDetector } from '../forms/index.js';
-import { Http, Json, Text } from '../shared/index.js';
+import { Http, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
@@ -12,6 +12,7 @@ import { HeaderPolicy } from './header-policy.js';
 import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
 import { ParamInferrer } from './param-inferrer.js';
+import { PathEvidenceCollector } from './path-evidence-collector.js';
 import { PathTemplater } from './path-templater.js';
 import type { PathEvidence, PathTemplate } from './path-templater.js';
 import { Redactor } from './redactor.js';
@@ -36,6 +37,7 @@ export interface EndpointGrouperDeps {
   signatures?: ExchangeSignature;
   params?: ParamInferrer;
   shaper?: BodyShaper;
+  evidence?: PathEvidenceCollector;
 }
 
 export interface GroupContext {
@@ -47,6 +49,8 @@ interface Member {
   readonly exchange: Exchange;
   readonly signature: Signature;
   readonly encoding: string | undefined;
+  readonly scripted: ReadonlySet<string> | undefined;
+  readonly response: ParsedBody | undefined;
 }
 
 interface Bucket {
@@ -57,6 +61,7 @@ interface Bucket {
 
 export class EndpointGrouper {
   static readonly STATIC_TYPES: ReadonlySet<ResourceType> = new Set(['image', 'font', 'stylesheet', 'script', 'media', 'manifest']);
+  static readonly SCRIPT_TYPES: ReadonlySet<ResourceType> = new Set(['fetch', 'xhr', 'eventsource']);
   static readonly SKIPPED_TYPES: ReadonlySet<ResourceType> = new Set(['websocket']);
   static readonly STATIC_EXTENSIONS: ReadonlySet<string> = new Set([
     'js', 'mjs', 'cjs', 'css', 'map', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'ico', 'bmp', 'tif', 'tiff',
@@ -77,8 +82,6 @@ export class EndpointGrouper {
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
   static readonly KIND_PRIORITY: readonly EndpointKind[] = ['graphql', 'form', 'json', 'document', 'other'];
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
-  static readonly FIELD_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
-  static readonly OPERATION_METHODS: ReadonlySet<string> = new Set(['POST']);
 
   readonly #body: BodyParser;
   readonly #paths: PathTemplater;
@@ -87,6 +90,7 @@ export class EndpointGrouper {
   readonly #signatures: ExchangeSignature;
   readonly #params: ParamInferrer;
   readonly #shaper: BodyShaper;
+  readonly #evidence: PathEvidenceCollector;
   readonly #options: Readonly<EndpointGrouperOptions>;
 
   constructor(deps: EndpointGrouperDeps, options: EndpointGrouperOptions) {
@@ -97,6 +101,7 @@ export class EndpointGrouper {
     this.#signatures = deps.signatures ?? new ExchangeSignature({ body: deps.body });
     this.#params = deps.params ?? new ParamInferrer({ schemas: deps.schemas, redactor: deps.redactor, headers: this.#headers }, options);
     this.#shaper = deps.shaper ?? new BodyShaper({ schemas: deps.schemas, redactor: deps.redactor }, options);
+    this.#evidence = deps.evidence ?? new PathEvidenceCollector();
     this.#options = { ...options };
   }
 
@@ -109,9 +114,10 @@ export class EndpointGrouper {
       {
         body: BodyParser.create(),
         schemas: SchemaInferrer.create(),
-        paths: new PathTemplater(),
+        paths: PathTemplater.create(),
         redactor: new Redactor(redact ?? true, { tokens }),
         headers: new HeaderPolicy({ tokens }),
+        evidence: PathEvidenceCollector.create(),
       },
       { ...EndpointGrouper.DEFAULT_OPTIONS, ...rest },
     );
@@ -128,6 +134,7 @@ export class EndpointGrouper {
     if (!Http.isSafeMethod(e.request.method)) return false;
     const url = Http.parseUrl(e.request.url);
     if (url && EndpointGrouper.STATIC_EXTENSIONS.has(EndpointGrouper.extension(url.pathname))) return true;
+    if (EndpointGrouper.SCRIPT_TYPES.has(e.resourceType)) return false;
     const mime = Http.mimeEssence(e.response ? Http.getHeader(e.response.headers, 'content-type') : undefined);
     return mime !== '' && EndpointGrouper.STATIC_MIME_PATTERNS.some((pattern) => pattern.test(mime));
   }
@@ -146,11 +153,12 @@ export class EndpointGrouper {
 
   group(exchanges: Exchange[], context: GroupContext = {}): Endpoint[] {
     const members: Member[] = [];
+    const scripted = this.#headers.scriptHeaders(exchanges);
     for (const exchange of exchanges) {
       if (!this.#include(exchange)) continue;
       const encoding = context.encoding?.(exchange);
       const signature = this.#signatures.of(exchange, encoding);
-      if (signature) members.push({ exchange, signature, encoding });
+      if (signature) members.push({ exchange, signature, encoding, scripted: scripted.get(exchange), response: this.#parseResponse(exchange) });
     }
     const templates = this.#templates(members, context.forms ?? new Map());
     const buckets = new Map<string, Bucket>();
@@ -176,36 +184,18 @@ export class EndpointGrouper {
 
   #templates(members: readonly Member[], forms: ReadonlyMap<string, PathEvidence>): Map<string, Map<string, PathTemplate>> {
     const paths = new Map<string, string[]>();
-    const evidence = new Map<string, Map<string, { forms: Set<string>; names: Set<string> }>>();
-    const entry = (origin: string, path: string): { forms: Set<string>; names: Set<string> } => {
-      const byPath = evidence.get(origin) ?? new Map<string, { forms: Set<string>; names: Set<string> }>();
-      evidence.set(origin, byPath);
-      const found = byPath.get(path) ?? { forms: new Set<string>(), names: new Set<string>() };
-      byPath.set(path, found);
-      return found;
-    };
     for (const { signature } of members) {
       const list = paths.get(signature.origin);
       if (list) list.push(signature.path);
       else paths.set(signature.origin, [signature.path]);
-      const body = signature.request;
-      if (!EndpointGrouper.OPERATION_METHODS.has(signature.method) || !EndpointGrouper.FIELD_BODY_KINDS.has(body.kind) || !Json.isPlainObject(body.value)) continue;
-      const names = entry(signature.origin, signature.path).names;
-      for (const name of Object.keys(body.value)) names.add(name);
     }
-    for (const [target, found] of forms) {
-      const url = Helpers.httpUrl(target);
-      if (!url || !paths.has(url.origin)) continue;
-      const known = entry(url.origin, url.pathname);
-      for (const form of found.forms) known.forms.add(form);
-      for (const name of found.names) known.names.add(name);
-    }
+    const evidence = this.#evidence.collect(members, forms);
     return new Map([...paths].map(([origin, list]) => [origin, this.#paths.template(list, evidence.get(origin) ?? new Map())]));
   }
 
   #endpoint(bucket: Bucket): Endpoint {
     const { signature, template, members } = bucket;
-    const responses = members.map(({ exchange }) => this.#parseResponse(exchange));
+    const responses = members.map((member) => member.response);
     const kinds = new Set(members.map((member, i) => this.#kind(member, responses[i])));
     const kind = EndpointGrouper.KIND_PRIORITY.find((candidate) => kinds.has(candidate)) ?? 'other';
     const endpoint = EndpointFactory.blank({
@@ -221,9 +211,10 @@ export class EndpointGrouper {
       members.map((member) => member.signature.url),
       members.map((member) => member.encoding),
     );
-    endpoint.headerParams = this.#params.headers(served.map((member) => member.exchange.request.headers));
-    const requestBody = this.#shaper.shape(members.map((member) => member.signature.request));
+    endpoint.headerParams = this.#params.headers(served.map((member) => ({ headers: member.exchange.request.headers, ...(member.scripted ? { scripted: member.scripted } : {}) })));
+    const [requestBody, ...otherRequestBodies] = this.#shaper.shapes(members.map((member) => member.signature.request));
     if (requestBody) endpoint.requestBody = requestBody;
+    if (otherRequestBodies.length > 0) endpoint.otherRequestBodies = otherRequestBodies;
     endpoint.responses = this.#responses(members, responses);
     endpoint.resourceTypes = Helpers.distinct(members.map((member) => member.exchange.resourceType));
     endpoint.samples = this.#samples(served.length > 0 ? served : members);

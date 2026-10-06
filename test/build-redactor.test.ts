@@ -143,7 +143,7 @@ describe('Redactor value rules', () => {
 
   test('JWTs in path segments are templated as parameters', () => {
     const templates = new PathTemplater().template([`/auth/magic/${JWT}`]);
-    assert.equal(templates.get(`/auth/magic/${JWT}`)?.template, '/auth/magic/{magicId}');
+    assert.equal(templates.get(`/auth/magic/${JWT}`)?.template, '/auth/magic/{magic}');
   });
 });
 
@@ -216,8 +216,8 @@ describe('Redactor policy in a built model', () => {
     f.json('GET', `/api/verify/${JWT}`, 200, {});
     const model = build(f);
     assert.deepEqual(leaks(model, [JWT, JWT.split('.')[1] ?? JWT]), []);
-    endpoint(model, 'GET', '/auth/magic/{magicId}');
-    endpoint(model, 'GET', '/api/verify/{verifyId}');
+    endpoint(model, 'GET', '/auth/magic/{magic}');
+    endpoint(model, 'GET', '/api/verify/{verify}');
   });
 
   test('a card number posted in a field named cardnumber stays out of the model (REG-3)', () => {

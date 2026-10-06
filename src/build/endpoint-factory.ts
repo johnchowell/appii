@@ -51,6 +51,7 @@ export class EndpointFactory {
       queryParams: endpoint.queryParams,
       headerParams: endpoint.headerParams,
       ...(endpoint.requestBody !== undefined ? { requestBody: endpoint.requestBody } : {}),
+      ...(endpoint.otherRequestBodies !== undefined && endpoint.otherRequestBodies.length > 0 ? { otherRequestBodies: endpoint.otherRequestBodies } : {}),
       responses: endpoint.responses,
       auth: endpoint.auth,
       ...(endpoint.form !== undefined ? { form: endpoint.form } : {}),

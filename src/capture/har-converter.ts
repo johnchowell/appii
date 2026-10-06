@@ -11,6 +11,7 @@ import type {
   Exchange,
   Header,
   PageSnapshot,
+  ResourceType,
   WebSocketCapture,
   WebSocketMessage,
 } from '../model/index.js';
@@ -44,6 +45,11 @@ interface ImportedEntry {
   readonly pageref: string | undefined;
 }
 
+interface ImportedExchange {
+  readonly exchange: Exchange;
+  readonly typed: boolean;
+}
+
 export class HarConverter {
   static readonly VERSION = '1.2';
   static readonly HTML_MIMES: ReadonlySet<string> = new Set(['text/html', 'application/xhtml+xml']);
@@ -56,6 +62,7 @@ export class HarConverter {
   static readonly MEMORY_CACHE = 'memory';
   static readonly DISK_CACHE = 'disk';
   static readonly CACHE_KINDS: ReadonlySet<string> = new Set(CACHE_KINDS);
+  static readonly LOCAL_TRANSFER_SIZE = 0;
 
   readonly #cookies: CookieParser;
   readonly #validator: CaptureValidator;
@@ -151,6 +158,7 @@ export class HarConverter {
     }
     const log = har.log;
     const exchanges: Exchange[] = [];
+    const untyped = new Set<Exchange>();
     const exchangeEntries: ImportedEntry[] = [];
     const websockets: WebSocketCapture[] = [];
     const socketEntries: ImportedEntry[] = [];
@@ -169,10 +177,13 @@ export class HarConverter {
         websockets.push(HarConverter.#socket(raw, index));
         socketEntries.push(entry);
       } else {
-        exchanges.push(HarConverter.#exchange(raw, index));
+        const imported = HarConverter.#exchange(raw, index);
+        exchanges.push(imported.exchange);
+        if (!imported.typed) untyped.add(imported.exchange);
         exchangeEntries.push(entry);
       }
     });
+    HarConverter.#inheritTypes(exchanges, untyped);
 
     const commits = HarConverter.#commits(exchanges, exchangeEntries);
     const titled = HarConverter.#titledPages(Array.isArray(log.pages) ? log.pages : [], commits);
@@ -349,7 +360,7 @@ export class HarConverter {
     };
   }
 
-  static #exchange(raw: Record<string, unknown>, index: number): Exchange {
+  static #exchange(raw: Record<string, unknown>, index: number): ImportedExchange {
     const req = raw.request as Record<string, unknown>;
     const url = req.url as string;
     const method = HarConverter.#method(req.method);
@@ -374,19 +385,19 @@ export class HarConverter {
     const resourceType =
       typeof raw._resourceType === 'string' && raw._resourceType
         ? ResourceTypeMapper.fromBrowser(raw._resourceType)
-        : ResourceTypeMapper.infer({
+        : ResourceTypeMapper.evident({
             method,
             url,
             requestHeaders,
             status,
             mimeType: response ? response.body?.mimeType || Http.getHeader(response.headers, 'content-type') || HarConverter.#declaredMime(res.content) : '',
           });
-    const served = HarConverter.#servedBy(raw, res);
+    const served = HarConverter.#servedBy(raw, res, response !== undefined);
     if (served && response) delete response.remoteAddress;
-    return {
+    const exchange: Exchange = {
       id: typeof raw._appiiId === 'string' && raw._appiiId ? raw._appiiId : Http.newId(),
       source: 'har',
-      resourceType,
+      resourceType: resourceType ?? 'other',
       ...(typeof raw._appiiPageUrl === 'string' && raw._appiiPageUrl ? { pageUrl: raw._appiiPageUrl } : {}),
       startedAt: HarConverter.#startedAt(raw.startedDateTime, index),
       durationMs: HarConverter.#duration(raw, Date.parse(HarConverter.#startedAt(raw.startedDateTime, index))),
@@ -396,14 +407,35 @@ export class HarConverter {
       ...(typeof raw._appiiRedirectedFrom === 'string' && raw._appiiRedirectedFrom ? { redirectedFrom: raw._appiiRedirectedFrom } : {}),
       ...(served ?? {}),
     };
+    return { exchange, typed: resourceType !== undefined };
   }
 
-  static #servedBy(raw: Record<string, unknown>, res: Record<string, unknown>): Pick<Exchange, 'servedBy' | 'cacheKind'> | undefined {
+  static #inheritTypes(exchanges: readonly Exchange[], untyped: ReadonlySet<Exchange>): void {
+    if (untyped.size === 0) return;
+    const known = new Map<string, ResourceType>();
+    for (const exchange of exchanges) {
+      if (untyped.has(exchange) || exchange.resourceType === 'other') continue;
+      const key = HarConverter.#requestKey(exchange);
+      if (!known.has(key)) known.set(key, exchange.resourceType);
+    }
+    for (const exchange of untyped) exchange.resourceType = known.get(HarConverter.#requestKey(exchange)) ?? 'other';
+  }
+
+  static #requestKey(exchange: Exchange): string {
+    return JSON.stringify([exchange.request.method, exchange.request.url]);
+  }
+
+  static #servedBy(raw: Record<string, unknown>, res: Record<string, unknown>, responded: boolean): Pick<Exchange, 'servedBy' | 'cacheKind'> | undefined {
     if (res._fetchedViaServiceWorker === true) return { servedBy: 'service-worker' };
     const fromCache = raw._fromCache;
-    if (fromCache !== HarConverter.MEMORY_CACHE && fromCache !== HarConverter.DISK_CACHE) return undefined;
-    const kind = raw._appiiCacheKind;
-    return { servedBy: 'cache', cacheKind: typeof kind === 'string' && HarConverter.CACHE_KINDS.has(kind) ? (kind as CacheKind) : fromCache };
+    if (fromCache === HarConverter.MEMORY_CACHE || fromCache === HarConverter.DISK_CACHE) {
+      const own = typeof raw._appiiId === 'string' && raw._appiiId.length > 0;
+      const kind = own ? raw._appiiCacheKind : fromCache;
+      return typeof kind === 'string' && HarConverter.CACHE_KINDS.has(kind) ? { servedBy: 'cache', cacheKind: kind as CacheKind } : { servedBy: 'cache' };
+    }
+    const remembered = typeof raw.serverIPAddress === 'string' && raw.serverIPAddress !== '';
+    if (responded && remembered && res._transferSize === HarConverter.LOCAL_TRANSFER_SIZE && raw._wasFulfilled !== true) return { servedBy: 'cache' };
+    return undefined;
   }
 
   static #socket(raw: Record<string, unknown>, index: number): WebSocketCapture {

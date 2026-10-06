@@ -30,6 +30,8 @@ export class SchemaInferrer {
   static readonly NUMBER: RegExp = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/;
   static readonly BOOLEANS: ReadonlySet<string> = new Set(['true', 'false']);
   static readonly ANNOTATIONS: ReadonlySet<string> = new Set(['title', 'description', '$comment']);
+  static readonly OBSERVED_KEY = 'x-appii-observed';
+  static readonly NULL_TYPE = 'null';
   static readonly STRING_KEYWORDS: Readonly<Record<string, Combine>> = {
     format: 'equal',
     pattern: 'equal',
@@ -115,7 +117,18 @@ export class SchemaInferrer {
     return this.#string(values);
   }
 
-  merge(a: JsonSchema, b: JsonSchema): JsonSchema {
+  finalize(schema: JsonSchema): JsonSchema {
+    return SchemaInferrer.#finalNode(Json.clone(schema));
+  }
+
+  static isObservedNull(schema: JsonSchema): boolean {
+    const keys = Object.keys(schema);
+    return keys.length === 1 && schema[SchemaInferrer.OBSERVED_KEY] === SchemaInferrer.NULL_TYPE;
+  }
+
+  merge(left: JsonSchema, right: JsonSchema): JsonSchema {
+    const a = SchemaInferrer.#restore(left);
+    const b = SchemaInferrer.#restore(right);
     if (SchemaInferrer.#isEmpty(a)) return Json.clone(b);
     if (SchemaInferrer.#isEmpty(b)) return Json.clone(a);
     const ta = new Set(Schema.schemaTypes(a));
@@ -312,5 +325,28 @@ export class SchemaInferrer {
 
   static #isEmpty(schema: JsonSchema): boolean {
     return Object.keys(schema).length === 0;
+  }
+
+  static #nullOnly(schema: JsonSchema): boolean {
+    const type = schema.type;
+    const only = type === SchemaInferrer.NULL_TYPE || (Array.isArray(type) && type.length === 1 && type[0] === SchemaInferrer.NULL_TYPE);
+    return only && Object.keys(schema).length === 1;
+  }
+
+  static #restore(schema: JsonSchema): JsonSchema {
+    return SchemaInferrer.isObservedNull(schema) ? { type: SchemaInferrer.NULL_TYPE } : schema;
+  }
+
+  static #finalNode(node: JsonSchema): JsonSchema {
+    if (SchemaInferrer.#nullOnly(node)) return { [SchemaInferrer.OBSERVED_KEY]: SchemaInferrer.NULL_TYPE };
+    const properties = node.properties;
+    if (Json.isPlainObject(properties)) {
+      for (const [key, child] of Object.entries(properties)) if (Json.isPlainObject(child)) Json.setOwn(properties, key, SchemaInferrer.#finalNode(child));
+    }
+    for (const key of ['items', 'additionalProperties']) {
+      const child = node[key];
+      if (Json.isPlainObject(child)) Json.setOwn(node, key, SchemaInferrer.#finalNode(child));
+    }
+    return node;
   }
 }

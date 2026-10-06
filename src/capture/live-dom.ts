@@ -304,6 +304,11 @@ export class LiveDom {
     return (await this.#capture()).html;
   }
 
+  async readyState(): Promise<string | undefined> {
+    const state = await this.#evaluate('document.readyState');
+    return typeof state === 'string' ? state : undefined;
+  }
+
   async snapshot(): Promise<PageSnapshot> {
     const doc = await this.#capture();
     return { url: doc.url, title: doc.title, capturedAt: new Date().toISOString(), html: doc.html, ...(doc.characterSet === '' ? {} : { characterSet: doc.characterSet }) };
