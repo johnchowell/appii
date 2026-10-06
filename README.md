@@ -238,6 +238,11 @@ shows only the length of a session, auth or CSRF cookie
 (`<redacted> (24 characters)`), and at most the first 4 characters of a long
 value of another cookie. `--no-redact` keeps every value.
 
+The user name of a login is personal data: the identifier field of a login
+form or login request (`username`, `email` or the field that `autocomplete`
+names) is redacted in examples, schemas and form descriptors, and its value is
+replaced wherever it appears, unless `--no-redact` is given.
+
 #### Path templates
 
 appii turns a path segment into a parameter from evidence, not from the word
@@ -299,6 +304,28 @@ GraphQL operation of an endpoint. `--origin` accepts an origin or a host with an
 optional port (`example.com:443` matches `https://example.com`). The filters do
 not apply to `--show`, so appii rejects them together. `list` also accepts
 `capture.json` and HAR files directly.
+
+Below the table, `list` names the login and the logout and the endpoints that
+appeared only after the login:
+
+```text
+Login:       #4 POST /login with username and password, issues cookie session
+Logout:      #5 GET /logout, revokes cookie session
+After login: 2,5-7 (seen only with a logged-in credential)
+```
+
+A login known only from a form says `known from a form; not submitted yet`.
+The `AUTH` column marks the rows `login` and `logout`. A credential label that
+ends in `?` means that the endpoint also answered a request without that
+credential (`auth.anonymous` is `allowed`), a label that ends in `~` means that
+every request seen carried it, so anonymous access was not tested (`untested`),
+and a label without a mark means that requests without it were refused
+(`refused`). A refusal can be a 401, a 403 or a redirect to the login page
+(`302?` when no credential was captured). `--show` prints the role, the login
+fields and what the login issues, `Anonymous: allowed | refused | not tested`
+and `Seen: anonymous, authenticated`. `--cookies` adds a `Login and logout:`
+block that says which login issues each credential cookie (`issuedBy`) and
+which logout revokes it (`revokedBy`).
 
 When the submit buttons of a form send different fields, or several forms post
 to one endpoint, the request body table marks a field that only some
@@ -392,6 +419,27 @@ below it. A multipart file part reads the file in `APPII_<FIELD>_FILE`
 (default: the captured file name in the current directory). Sourcing the
 script defines the functions without changing the options of your shell.
 
+The script keeps a cookie jar like a browser: every function reads and writes
+the file in `APPII_COOKIE_JAR` (default: `<api name>-cookies.txt` in the
+current directory), and a function whose request needs a CSRF token first
+loads the page that holds the token into the same jar and reads the token from
+it. So the login function and then any function that needs the login work in
+the same shell without copying a cookie or a token:
+
+```sh
+source endpoints.sh
+postLogin username=me password="$MY_PASSWORD"
+getAccount
+```
+
+The login identifier and the password have no default value: give them as
+arguments or in `APPII_USERNAME` and `APPII_PASSWORD` (the variable names come
+from the field names), or the function stops with a message that names the
+variable. A token that only JavaScript puts into the page cannot be read from
+the HTML; the function then prints a warning that names the variable to set.
+A login that answers with a token in its JSON body prints how to put it into
+`APPII_ACCESS_TOKEN`; the TypeScript client stores such a token by itself.
+
 The `typescript` client fills CSRF tokens from the pages and responses that
 the site uses. It keeps a page while the cookies for that page stay the same.
 The client never sends a request two times on its own. If the server rejects
@@ -409,6 +457,19 @@ the redirect leads to (`responses[].redirectTo` in the model), so the 302 of a
 login form is typed as the page it leads to; with `redirect: 'manual'` the
 client returns the redirect itself. Method comments say which credential
 cookies, bearer token or Basic credentials an endpoint needs.
+
+After `client.<login>(...)` the client's cookie jar holds the cookies that the
+login issued, and a JSON token that the login returns (`login.issues.tokens`)
+is sent as the bearer token of later calls, so the calls after the login are
+logged in. The login identifier and password have no default values.
+
+In OpenAPI, the login operation has `security: []` and `x-appii-role: login`
+(the logout has `x-appii-role: logout`), and the description of each
+credential security scheme names the login operation that issues it. An
+operation whose anonymous access was not tested lists `{}` as an alternative
+to its credentials and says so. Postman puts the login first in its folder,
+right after the page that holds its CSRF token, and a test script on that page
+stores the token in the variable that the login request sends.
 
 The Markdown and HTML reports list the distinct forms with how many times and
 on which pages each one appears. Their constraint cells list every enum value

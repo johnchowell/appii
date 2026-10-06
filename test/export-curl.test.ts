@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { CurlExporter } from '../src/export/index.js';
 import type { ApiModel } from '../src/model/index.js';
 import { Text } from '../src/shared/index.js';
@@ -20,7 +20,7 @@ interface RunResult {
 function run(file: string, args: string[], env: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const clean: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C', ...env };
-    execFile('bash', [file, ...args], { env: clean, timeout: 20_000 }, (err, stdout, stderr) => {
+    execFile('bash', [file, ...args], { cwd: dirname(file), env: clean, timeout: 20_000 }, (err, stdout, stderr) => {
       const code = err ? (typeof err.code === 'number' ? err.code : 1) : 0;
       resolve({ code, stdout, stderr });
     });
@@ -62,8 +62,9 @@ describe('CurlExporter against the fixture site', () => {
     assert.ok(content.includes(': "${APPII_CSRF:=}"\n'));
     for (const name of ['APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`\n  local ${name}="\${${name}:-}"\n`), name);
     assert.ok(!content.includes('X_CSRF_TOKEN'));
-    assert.match(content, /\ncreateItem\(\) \{\n {2}local appii_value\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n/);
-    assert.match(content, /\n {2}appii_curl_args 'createItem' 'Arguments: \[name=\] \[price=\]\. [^\n]+' "\$@" \|\| return 2\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
+    assert.match(content, /\ncreateItem\(\) \{\n {2}local appii_value\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_unpct "\$\(appii_cookie 'csrf'\)"\)\}"\n/);
+    assert.match(content, /\n {2}appii_curl_args 'createItem' 'Arguments: \[name=\] \[price=\]\. [^\n]+' "\$@" \|\| return 2\n(?: {2}[^\n]*\n)*? {2}appii_jar \|\| return 2\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n {4}-H [^\n]+\n(?: {4}-H [^\n]+\n)* {4}-b "\$\{APPII_COOKIE\}" \\\n {4}-b "\$APPII_COOKIE_JAR" -c "\$APPII_COOKIE_JAR" \\\n/);
+    assert.match(content, /\nappii_default_cookie_jar="\$\(pwd\)"\/'[a-z0-9-]+-cookies\.txt'\nAPPII_COOKIE_JAR="\$\{APPII_COOKIE_JAR:-\$appii_default_cookie_jar\}"\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
     );
@@ -119,9 +120,12 @@ describe('CurlExporter against the fixture site', () => {
     assert.equal(request?.headers['x-csrf-token'], '0123456789abcdef');
     const explicit = await run(script, ['createItem'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: 'csrf=aaaaaaaaaaaa', APPII_CSRF: 'bbbbbbbbbbbb' });
     assert.equal(JSON.parse(explicit.stdout).error, 'csrf token mismatch');
-    const empty = await run(script, ['getMe'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: '' });
+    const empty = await run(script, ['getMe'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: '', APPII_COOKIE_JAR: join(dir, 'empty-jar.txt') });
     assert.equal(JSON.parse(empty.stdout).error, 'unauthorized');
     assert.equal(fixture.site.requests.at(-1)?.headers.cookie, undefined);
+    const jarred = await run(script, ['getMe'], { APPII_BASE_URL: fixture.site.origin, APPII_COOKIE: '' });
+    assert.equal(jarred.code, 0, jarred.stderr);
+    assert.match(String(fixture.site.requests.at(-1)?.headers.cookie ?? ''), /\bsid=/, 'the default cookie jar keeps the cookies that earlier calls received, as a browser does');
   });
 
   test('non-ASCII and multi-line values survive the ASCII-only script', async () => {
@@ -216,7 +220,7 @@ describe('CurlExporter request variables agree with the other renderers', () => 
     const text = new CurlExporter().export(ExportModel.model([me])).content;
     assert.ok(text.includes(': "${APPII_ACCESS_TOKEN:=}"\n'), text);
     assert.ok(text.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), text);
-    assert.ok(text.includes(`local APPII_CSRFTOKEN="\${APPII_CSRFTOKEN:-$(appii_cookie 'csrftoken')}"`), text);
+    assert.ok(text.includes(`local APPII_CSRFTOKEN="\${APPII_CSRFTOKEN:-$(appii_unpct "$(appii_cookie 'csrftoken')")}"`), text);
     assert.ok(text.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN}"'), text);
     assert.ok(!text.includes('AUTHORIZATION'));
     assert.ok(!text.includes('X_CSRF_TOKEN'));

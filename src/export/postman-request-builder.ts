@@ -3,7 +3,10 @@ import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, 
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import type { PostmanPathVariables } from './postman-path-variables.js';
+import { PostmanTokenScripts } from './postman-token-scripts.js';
+import type { ScriptPlan } from './postman-token-scripts.js';
 
 export type PostmanObject = Record<string, unknown>;
 
@@ -13,6 +16,9 @@ export interface PostmanItemContext {
   options: ExportOptions;
   variable: string;
   pathVariables: PostmanPathVariables;
+  guide?: LoginGuide;
+  scripts?: ScriptPlan;
+  sources?: ReadonlyMap<string, Endpoint>;
 }
 
 export class PostmanRequestBuilder {
@@ -36,8 +42,13 @@ export class PostmanRequestBuilder {
     const responses = endpoint.responses
       .filter((response) => Helpers.isHttpStatus(response.status))
       .map((response) => this.response(response, request));
-    return { name: Helpers.summary(endpoint) + suffix, request, response: responses };
+    const item: PostmanObject = { name: Helpers.summary(endpoint) + suffix, request, response: responses };
+    const targets = suffix === '' ? ctx.scripts?.get(endpoint) : undefined;
+    if (targets !== undefined && targets.length > 0) item.event = this.#scripts.event(targets);
+    return item;
   }
+
+  readonly #scripts = new PostmanTokenScripts();
 
   request(endpoint: Endpoint, sample: Samples.RequestSample, ctx: PostmanItemContext): PostmanObject {
     const request: PostmanObject = {
@@ -183,12 +194,24 @@ export class PostmanRequestBuilder {
     if (endpoint.form && !CharsetEncoder.for(endpoint.form.charset).utf8) {
       lines.push(`The website encodes this form in ${endpoint.form.charset}. Postman uses UTF-8, so the bytes of non-ASCII values are different.`);
     }
+    const guide = ctx.guide ?? new LoginGuide(ctx.model);
+    const code = (value: string): string => `\`${value}\``;
+    const role = guide.describe(endpoint, code);
+    if (role !== undefined) lines.push(role);
+    const inputs = Samples.loginInputs(endpoint).map(([name]) => SampleText.placeholderName(name));
+    if (inputs.length > 0) lines.push(`Set the collection ${inputs.length === 1 ? 'variable' : 'variables'} ${inputs.map((name) => `\`${name}\``).join(' and ')} before sending; ${inputs.length === 1 ? 'it has' : 'they have'} no default.`);
+    if (LoginGuide.isLogin(endpoint) && (endpoint.login?.issues.cookies.length ?? 0) > 0) lines.push("Postman's cookie jar keeps the cookies it sets, so the requests sent after it are logged in.");
     for (const token of endpoint.auth.csrf) {
-      const source = Helpers.tokenSource(token, { text: (value) => value, code: (value) => `\`${value}\``, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
+      const source = Helpers.tokenSource(token, { text: (value) => value, code, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
       lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}.`);
+      const page = ctx.sources?.get(`${endpoint.id} ${token.name}`);
+      if (page !== undefined) lines.push(`Send "${Helpers.summary(page)}" (${page.method} ${page.path}) first: its test script stores the token in \`{{${PostmanTokenScripts.variable(token)}}}\`.`);
     }
-    const credentials = Credentials.describe(endpoint, Credentials.roles(ctx.model));
+    const credentials = Credentials.describe(endpoint, guide.roles);
     if (credentials !== '') lines.push(`Credentials: ${credentials}.`);
+    if (Credentials.sets(endpoint, guide.roles).length > 0 && !LoginGuide.isLogin(endpoint)) lines.push(`Anonymous access: ${LoginGuide.anonymousNote(endpoint)}.`);
+    const hint = guide.hint(endpoint, (login) => `"${Helpers.summary(login)}" (${login.method} ${login.path})`);
+    if (hint !== undefined) lines.push(hint);
     if (endpoint.auth.cookies.length > 0) lines.push(`Cookies sent: ${endpoint.auth.cookies.map((name) => `\`${name}\``).join(', ')}.`);
     return lines.join('\n\n');
   }

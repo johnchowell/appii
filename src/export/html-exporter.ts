@@ -4,6 +4,7 @@ import { EndpointIndex, Meta, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { HtmlChartRenderer } from './html-chart-renderer.js';
 import type { ChartDatum } from './html-chart-renderer.js';
 import { HtmlEndpointRenderer } from './html-endpoint-renderer.js';
@@ -89,6 +90,15 @@ export class HtmlExporter extends BaseExporter {
       facts.push(['Captured', `${esc(source.capturedFrom)} to ${esc(source.capturedTo)}${Number.isFinite(span) && span >= 0 ? ` (${esc(Text.formatDuration(span))})` : ''}`]);
     }
     if (source.file) facts.push(['Source file', `<code>${esc(source.file)}</code>`]);
+    for (const capture of source.captures ?? []) {
+      facts.push(['Capture', `<code>${esc(capture.file ?? capture.startUrl ?? '')}</code>: ${esc(`${Text.plural(capture.exchanges, 'exchange')}, ${capture.capturedFrom} to ${capture.capturedTo}`)}`]);
+    }
+    const guide = new LoginGuide(model);
+    const index = EndpointIndex.of(model);
+    const code = (value: string): string => `<code>${esc(value)}</code>`;
+    const link = (endpoint: Endpoint): string => `<a href="#endpoint-${index.numberOf(endpoint)}">#${index.numberOf(endpoint)} ${esc(`${endpoint.method} ${endpoint.path}`)}</a>`;
+    for (const login of guide.logins(endpoints)) facts.push(['Login', `${link(login)}: ${guide.describe(login, code) ?? ''}`]);
+    for (const logout of guide.logouts(endpoints)) facts.push(['Logout', `${link(logout)}: ${guide.describe(logout, code) ?? ''}`]);
     const stats: [number, string][] = [
       [endpoints.length, endpoints.length === model.endpoints.length ? 'endpoints' : `of ${model.endpoints.length} endpoints`],
       [source.exchanges, 'exchanges'],
@@ -138,7 +148,8 @@ export class HtmlExporter extends BaseExporter {
       `<span id="count" aria-live="polite">${endpoints.length} of ${endpoints.length} endpoints</span>`,
       '</div>',
     ].join('');
-    const items = endpoints.map((endpoint) => this.#endpoints.item(endpoint, { model, index, options })).join('\n');
+    const guide = new LoginGuide(model);
+    const items = endpoints.map((endpoint) => this.#endpoints.item(endpoint, { model, index, options, guide })).join('\n');
     return `<section id="endpoints"><h2>Endpoints</h2>${filters}<ol class="endpoints">\n${items}\n</ol>${endpoints.length === 0 ? '<p class="empty">No endpoints selected.</p>' : ''}</section>`;
   }
 
@@ -150,11 +161,11 @@ export class HtmlExporter extends BaseExporter {
       (cookie) =>
         `<tr><td><code>${esc(cookie.name)}</code></td><td><code>${esc(cookie.domain)}</code></td><td><code>${esc(cookie.path)}</code></td><td>${esc(cookie.role)}</td>` +
         `<td>${yes(cookie.httpOnly)}</td><td>${yes(cookie.secure)}</td><td>${esc(cookie.sameSite ?? '-')}</td><td>${esc(cookie.partitionKey ?? '-')}</td><td>${esc(cookie.session ? 'session' : (cookie.expires ?? '-'))}</td>` +
-        `<td>${esc(cookie.setBy.join(', ') || '-')}</td><td>${esc(cookie.usedBy.join(', ') || '-')}</td><td><code>${esc(cookie.valueExample)}</code></td></tr>`,
+        `<td>${esc(cookie.setBy.join(', ') || '-')}</td><td>${esc(cookie.usedBy.join(', ') || '-')}</td><td>${esc((cookie.issuedBy ?? []).join(', ') || '-')}</td><td>${esc((cookie.revokedBy ?? []).join(', ') || '-')}</td><td><code>${esc(cookie.valueExample)}</code></td></tr>`,
     );
     return [
       '<section id="cookies"><h2>Cookies</h2><div class="scroll"><table>',
-      '<thead><tr><th>Name</th><th>Domain</th><th>Path</th><th>Role</th><th>HttpOnly</th><th>Secure</th><th>SameSite</th><th>Partition</th><th>Expires</th><th>Set by</th><th>Used by</th><th>Value</th></tr></thead>',
+      '<thead><tr><th>Name</th><th>Domain</th><th>Path</th><th>Role</th><th>HttpOnly</th><th>Secure</th><th>SameSite</th><th>Partition</th><th>Expires</th><th>Set by</th><th>Used by</th><th>Issued by</th><th>Revoked by</th><th>Value</th></tr></thead>',
       `<tbody>${rows.join('')}</tbody></table></div></section>`,
     ].join('');
   }

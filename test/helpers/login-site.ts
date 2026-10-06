@@ -123,7 +123,23 @@ export class LoginSite {
       if (user === undefined) return json(401, { error: 'unauthorized' });
       return json(200, url.pathname === '/api/me' ? { name: user } : [{ id: 1, text: `note of ${user}` }]);
     }
-    if (req.method === 'GET' && url.pathname === '/app') return html(200, '<div id="root"></div>');
+    if (req.method === 'POST' && url.pathname === '/api/logout') {
+      const bearer = /^Bearer (\S+)$/.exec(authorization)?.[1];
+      if (bearer !== undefined) this.tokens.delete(bearer);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/app') {
+      const xsrf = `${randomBytes(9).toString('hex')}%3D%3D`;
+      return html(200, '<div id="root"></div>', { 'set-cookie': `XSRF-TOKEN=${xsrf}; Path=/` });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/items') {
+      const xsrf = LoginSite.cookie(cookie, 'XSRF-TOKEN');
+      const header = req.headers['x-xsrf-token'];
+      if (xsrf === undefined || header !== decodeURIComponent(xsrf)) return json(403, { error: 'csrf' });
+      return json(201, { id: 1 });
+    }
     html(404, '<p>Not found</p>');
   }
 }

@@ -1,15 +1,18 @@
 import { createHash } from 'node:crypto';
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { EndpointIndex, Json, Meta, RequestBodies, Samples, Text } from '../shared/index.js';
+import { EndpointIndex, Json, Meta, RequestBodies, SampleText, Samples, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { PostmanPathVariables } from './postman-path-variables.js';
 import { PostmanRequestBuilder } from './postman-request-builder.js';
 import type { PostmanObject } from './postman-request-builder.js';
+import { PostmanTokenScripts } from './postman-token-scripts.js';
 
 export interface PostmanExporterDeps {
   requests?: PostmanRequestBuilder;
+  scripts?: PostmanTokenScripts;
 }
 
 export class PostmanExporter extends BaseExporter {
@@ -22,14 +25,16 @@ export class PostmanExporter extends BaseExporter {
   readonly description = 'Postman Collection v2.1 with folders, variables and saved example responses';
 
   readonly #requests: PostmanRequestBuilder;
+  readonly #scripts: PostmanTokenScripts;
 
   static create(): PostmanExporter {
-    return new PostmanExporter({ requests: new PostmanRequestBuilder() });
+    return new PostmanExporter({ requests: new PostmanRequestBuilder(), scripts: new PostmanTokenScripts() });
   }
 
   constructor(deps: PostmanExporterDeps = {}) {
     super();
     this.#requests = deps.requests ?? new PostmanRequestBuilder();
+    this.#scripts = deps.scripts ?? new PostmanTokenScripts();
   }
 
   static collectionId(model: ApiModel, endpoints: readonly Endpoint[]): string {
@@ -75,19 +80,31 @@ export class PostmanExporter extends BaseExporter {
       }
     }
     const pathVariables = PostmanPathVariables.create([...origins.values(), ...placeholders]);
+    const guide = new LoginGuide(model);
+    const scripts = this.#scripts.plan(model, endpoints);
+    const sources = new Map<string, Endpoint>();
+    for (const [page, targets] of scripts) for (const target of targets) for (const token of target.user.auth.csrf) if (PostmanTokenScripts.variable(token) === target.variable) sources.set(`${target.user.id} ${token.name}`, page);
+    const grouped = new Map<string, Endpoint[]>();
     for (const endpoint of endpoints) {
-      const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
-      const items = this.#requests.items(endpoint, { model, index, options: opts, variable, pathVariables });
       const group = Helpers.group(endpoint);
-      const list = folders.get(group) ?? [];
-      list.push(...items);
-      folders.set(group, list);
+      grouped.set(group, [...(grouped.get(group) ?? []), endpoint]);
+    }
+    for (const [group, members] of grouped) {
+      for (const endpoint of PostmanExporter.order(members, sources)) {
+        const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
+        const items = this.#requests.items(endpoint, { model, index, options: opts, variable, pathVariables, guide, scripts, sources });
+        folders.set(group, [...(folders.get(group) ?? []), ...items]);
+      }
     }
     const variable: PostmanObject[] = [];
     for (const [origin, name] of origins) {
       variable.push({ key: name, value: Helpers.originBase(model, origin, opts), type: 'string', description: `Base URL for ${origin}` });
     }
-    for (const name of [...placeholders].sort()) variable.push({ key: name, value: '', type: 'string' });
+    const inputs = new Map(guide.logins(endpoints).flatMap((login) => Samples.loginInputs(login).map(([name, label]): [string, string] => [SampleText.placeholderName(name), `${label} for ${Helpers.summary(login)}; no default`])));
+    for (const name of [...placeholders].sort()) {
+      const description = inputs.get(name);
+      variable.push(description === undefined ? { key: name, value: '', type: 'string' } : { key: name, value: '', type: 'string', description: description.charAt(0).toUpperCase() + description.slice(1) });
+    }
     variable.push(...pathVariables.entries());
     return {
       info: {
@@ -99,6 +116,14 @@ export class PostmanExporter extends BaseExporter {
       item: [...folders].map(([name, item]) => ({ name, item })),
       variable,
     };
+  }
+
+  static order(members: readonly Endpoint[], sources: ReadonlyMap<string, Endpoint>): Endpoint[] {
+    const logins = members.filter((endpoint) => LoginGuide.isLogin(endpoint));
+    if (logins.length === 0) return [...members];
+    const pages = new Set(logins.flatMap((login) => login.auth.csrf.flatMap((token) => sources.get(`${login.id} ${token.name}`) ?? [])));
+    const rank = (endpoint: Endpoint): number => (LoginGuide.isLogin(endpoint) ? 1 : pages.has(endpoint) ? 0 : 2);
+    return members.map((endpoint, at) => ({ endpoint, at })).sort((a, b) => rank(a.endpoint) - rank(b.endpoint) || a.at - b.at).map((entry) => entry.endpoint);
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {

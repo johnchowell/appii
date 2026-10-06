@@ -2,12 +2,14 @@ import type { ApiModel, BodyShape, Endpoint, EndpointResponse, ParamInfo } from 
 import { Credentials, Curl, EndpointIndex, Http, Json, RequestBodies, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { SchemaFieldList } from './schema-field-list.js';
 
 export interface HtmlEndpointContext {
   model: ApiModel;
   index: EndpointIndex;
   options: ExportOptions;
+  guide?: LoginGuide;
 }
 
 export interface HtmlEndpointRendererDeps {
@@ -56,9 +58,18 @@ export class HtmlEndpointRenderer {
       .map((status) => `<span class="badge status-${HtmlEndpointRenderer.statusClass(status)}" title="${esc(Http.reasonPhrase(status))}">${status}</span>`)
       .join(' ');
     const badges = [`<span class="badge">${esc(endpoint.kind)}</span>`, statuses];
+    if (endpoint.role !== undefined) badges.push(`<span class="badge role" title="${esc(endpoint.role === 'login' ? 'the login: it issues the credential' : 'the logout: it revokes the credential')}">${esc(endpoint.role)}</span>`);
     const roles = Credentials.roles(ctx.model);
     const refusals = Credentials.refusals(endpoint, roles);
-    if (Credentials.sets(endpoint, roles).length > 0) badges.push(Credentials.optional(endpoint) ? '<span class="badge auth" title="credentials are optional">auth?</span>' : '<span class="badge auth">auth</span>');
+    if (Credentials.sets(endpoint, roles).length > 0) {
+      badges.push(
+        Credentials.untested(endpoint)
+          ? `<span class="badge auth" title="anonymous access not tested">auth${Credentials.UNTESTED_MARK}</span>`
+          : Credentials.optional(endpoint)
+            ? '<span class="badge auth" title="credentials are optional">auth?</span>'
+            : '<span class="badge auth">auth</span>',
+      );
+    }
     else if (refusals.length > 0) badges.push(`<span class="badge auth" title="answered ${refusals.join(' and ')} without credentials; the credential was not captured">${refusals.join('/')}${Credentials.UNKNOWN_MARK}</span>`);
     if (endpoint.auth.csrf.length > 0) badges.push('<span class="badge csrf">csrf</span>');
     if (endpoint.form) badges.push('<span class="badge">html form</span>');
@@ -87,8 +98,15 @@ export class HtmlEndpointRenderer {
       ['Kind', `${esc(endpoint.kind)}${endpoint.operationName ? ` (operation <code>${esc(endpoint.operationName)}</code>)` : ''}${endpoint.firstParty ? '' : ', third party'}`],
       ['Observed', endpoint.count > 0 ? esc(`${Text.plural(endpoint.count, 'time')}${endpoint.resourceTypes.length > 0 ? ` via ${endpoint.resourceTypes.join(', ')}` : ''}`) : 'not observed; inferred from an HTML form'],
     ];
-    const credentials = Credentials.describe(endpoint, Credentials.roles(ctx.model));
+    const guide = ctx.guide ?? new LoginGuide(ctx.model);
+    const role = guide.describe(endpoint, (value) => `<code>${esc(value)}</code>`);
+    if (role !== undefined) meta.push(['Role', role]);
+    const credentials = Credentials.describe(endpoint, guide.roles);
     if (credentials !== '') meta.push(['Credentials', esc(credentials)]);
+    if (credentials !== '' || endpoint.role !== undefined) meta.push(['Anonymous', esc(LoginGuide.anonymousNote(endpoint))]);
+    if (endpoint.auth.seen !== undefined && endpoint.auth.seen.length > 0) meta.push(['Seen', esc(endpoint.auth.seen.join(', '))]);
+    const hint = guide.hint(endpoint, (login) => `<a href="#endpoint-${ctx.index.numberOf(login)}">#${ctx.index.numberOf(login)} <code>${esc(login.name)}</code></a> (${esc(`${login.method} ${login.path}`)})`);
+    if (hint !== undefined) meta.push(['Log in', hint]);
     if (endpoint.auth.cookies.length > 0) meta.push(['Cookies sent', endpoint.auth.cookies.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     if (endpoint.auth.bearer) meta.push(['Bearer', 'Authorization: Bearer token']);
     if (endpoint.auth.headers.length > 0) meta.push(['Auth headers', endpoint.auth.headers.map((name) => `<code>${esc(name)}</code>`).join(', ')]);

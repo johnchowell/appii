@@ -183,7 +183,7 @@ describe('HAR redaction keeps the request headers consistent with the body (REG-
     f.exchange({ url: '/login', method: 'POST', resourceType: 'document', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': String(form.length) }, requestBody: form, status: 302 });
     const login = entry(exportHar(f).entries, '/login').request;
     const text = login.postData?.text ?? '';
-    assert.equal(text, 'csrf_token=%3Credacted%3E&email=user%40example.com&password=%3Credacted%3E&action=login');
+    assert.equal(text, 'csrf_token=%3Credacted%3E&email=%3Credacted%3E&password=%3Credacted%3E&action=login');
     assert.equal(login.headers.find((header) => header.name.toLowerCase() === 'content-length')?.value, String(Buffer.byteLength(text)));
   });
 });
@@ -213,7 +213,7 @@ describe('fields that a linked form proves secret, whatever their names (FB-2)',
     };
     for (const [name, text] of Object.entries(outputs)) assert.deepEqual(secrets.filter((secret) => text.includes(secret)), [], name);
     const search = model.endpoints.find((endpoint) => endpoint.path === '/search');
-    assert.ok(search?.samples.some((sample) => sample.url === 'https://site.example.com/search?q=hello&geheim=%3Credacted%3E'), JSON.stringify(search?.samples));
+    assert.ok(search?.samples.some((sample) => sample.url === 'https://site.example.com/search?q=%3Credacted%3E&geheim=%3Credacted%3E'), JSON.stringify(search?.samples));
   });
 });
 

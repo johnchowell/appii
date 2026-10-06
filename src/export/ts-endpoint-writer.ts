@@ -1,9 +1,9 @@
 import type { ApiModel, BodyShape, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
 import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
-import type { CookieRoles } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { TsClientRuntime } from './ts-client-runtime.js';
 import { TsLiteralWriter } from './ts-literal-writer.js';
 import { TsTypeWriter } from './ts-type-writer.js';
@@ -15,6 +15,7 @@ export interface TsEndpointContext {
   endpoints: readonly Endpoint[];
   sources: ReadonlySet<string>;
   responseTypes?: ReadonlyMap<string, string>;
+  guide?: LoginGuide;
 }
 
 export interface TsEndpointCode {
@@ -166,7 +167,7 @@ export class TsEndpointWriter {
     const spec = `const ${specName}: EndpointSpec = ${this.#literals.write(this.spec(endpoint, ctx))};`;
     const optional = requestMembers.every((member) => !member.required);
     const result = responses.manual === undefined ? responses.follow : `ResponseFor<${TsEndpointWriter.CLIENT_REDIRECT_PARAMETER}, ${responses.follow}, ${responses.manual}>`;
-    const docs = TsEndpointWriter.#docs(endpoint, Credentials.roles(ctx.model));
+    const docs = TsEndpointWriter.#docs(endpoint, ctx.guide ?? new LoginGuide(ctx.model), ctx.methods);
     const member = [
       ...docs.map((line) => `  ${line}`),
       `  async ${method}(request: ${requestTypes.join(' | ')}${optional ? ' = {}' : ''}): Promise<${result}> {`,
@@ -195,33 +196,62 @@ export class TsEndpointWriter {
     return method === 'GET' || method === 'HEAD';
   }
 
-  static #docs(endpoint: Endpoint, roles: CookieRoles): string[] {
+  static #docs(endpoint: Endpoint, guide: LoginGuide, methods: ReadonlyMap<string, string>): string[] {
+    const roles = guide.roles;
     const lines: string[] = [];
-    const cookies = Credentials.cookies(endpoint, roles);
+    const call = (login: Endpoint): string => `client.${methods.get(login.id) ?? login.name}()`;
+    lines.push(...TsEndpointWriter.#roleDocs(endpoint, guide));
+    const cookies = LoginGuide.isLogin(endpoint) ? [] : Credentials.cookies(endpoint, roles);
     if (cookies.length > 0) {
       const names = cookies.join(', ');
+      const anonymous = endpoint.auth.anonymous;
       lines.push(
-        Credentials.optional(endpoint)
+        anonymous === 'allowed'
           ? `Sends the credential cookie ${names} when the client has it; the server also answered without it.`
-          : `Needs the credential cookie ${names}: log in through this client first (its cookie jar keeps the cookie) or pass it in the cookies option.`,
+          : anonymous === 'untested'
+            ? `Sends the credential cookie ${names} when the client has it. Anonymous access was not tested: every captured request sent it.`
+            : `Needs the credential cookie ${names}: log in through this client first (its cookie jar keeps the cookie) or pass it in the cookies option.`,
       );
     }
     const refusals = Credentials.refusals(endpoint, roles);
     if (refusals.length > 0) lines.push(`The server answered ${refusals.join(' and ')} to a request without credentials; the credential it expects was not captured. Pass it in the headers or cookies option.`);
     if (Samples.basicAuth(endpoint)) lines.push("Needs HTTP Basic credentials: set the authorization header to 'Basic ' followed by the base64 of user:password.");
     if (endpoint.auth.bearer) {
+      const anonymous = endpoint.auth.anonymous;
       lines.push(
-        endpoint.auth.anonymous === 'allowed'
-          ? 'Sends a bearer token when the client has one: accessToken in the client options or in the request.'
-          : 'Needs a bearer token: accessToken in the client options or in the request, or the authorization header. Without one it throws MissingCredentialError.',
+        anonymous === 'refused'
+          ? 'Needs a bearer token: the one a login through this client returned, accessToken in the client options or in the request, or the authorization header. Without one it throws MissingCredentialError.'
+          : `Sends a bearer token when the client has one: the one a login through this client returned, or accessToken in the client options or in the request.${anonymous === 'untested' ? ' Anonymous access was not tested: every captured request sent one.' : ''}`,
       );
     }
+    const hint = guide.hint(endpoint, call);
+    if (hint !== undefined) lines.push(hint);
     const redirects = TsEndpointWriter.#typedStatuses(endpoint).filter((status) => TsEndpointWriter.REDIRECT_STATUSES.has(status));
     if (redirects.length > 0) {
       lines.push(`The server answered ${redirects.join(', ')} with a redirect. The client follows it and returns the final response; with redirect: 'manual' it returns the ${redirects.length === 1 ? 'redirect' : 'redirects'}.`);
     }
     if (lines.length === 0) return [];
     return ['/**', ...lines.map((line) => ` * ${line}`), ' */'];
+  }
+
+  static #roleDocs(endpoint: Endpoint, guide: LoginGuide): string[] {
+    const code = (value: string): string => value;
+    const role = guide.describe(endpoint, code);
+    if (role === undefined) return [];
+    if (LoginGuide.isLogout(endpoint)) return [`${role} The cookie jar of the client takes the new cookies, and the client forgets the bearer token that a login returned.`];
+    const login = endpoint.login;
+    if (!login) return [role];
+    const inputs = TsEndpointWriter.#loginInputs(endpoint).map(([name]) => name);
+    const lines = [role];
+    if (inputs.length > 0) lines.push(`Pass ${inputs.join(' and ')} in the request; there is no default, and without ${inputs.length === 1 ? 'it' : 'them'} the method throws MissingLoginError and sends nothing.`);
+    if (login.issues.cookies.length > 0) lines.push('The cookie jar of the client keeps the cookies it sets, so the calls made after it are logged in.');
+    if (login.issues.tokens.length > 0) lines.push('The client keeps the bearer token it returns and sends it to the endpoints that take a bearer token.');
+    return lines;
+  }
+
+  static #loginInputs(endpoint: Endpoint): [string, string][] {
+    const body = Schema.properties(endpoint.requestBody?.schema);
+    return Samples.loginInputs(endpoint).filter(([name]) => Object.hasOwn(body, name) || endpoint.queryParams.some((param) => param.name === name));
   }
 
   spec(endpoint: Endpoint, ctx: TsEndpointContext): Record<string, unknown> {
@@ -250,7 +280,17 @@ export class TsEndpointWriter {
     }
     const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : RequestBodies.variants(endpoint);
     if (variants.length > 0 && shape) spec.bodies = [shape, ...variants.map((variant) => variant.shape)].map((each) => TsEndpointWriter.#bodySpec(each));
-    if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === 'allowed' ? 'optional' : 'required';
+    if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === 'refused' ? 'required' : 'optional';
+    const login = LoginGuide.isLogin(endpoint) ? endpoint.login : undefined;
+    if (login) {
+      const fields = new Map(TsEndpointWriter.#loginInputs(endpoint));
+      const out: Record<string, unknown> = {};
+      if (login.identifier !== undefined && fields.has(login.identifier)) out.identifier = login.identifier;
+      if (fields.has(login.password)) out.password = login.password;
+      out.tokens = [...login.issues.tokens];
+      spec.login = out;
+    }
+    if (LoginGuide.isLogout(endpoint)) spec.logout = true;
     const lines = endpoint.responses.filter((response) => response.body?.jsonLines === true).map((response) => response.status);
     if (lines.length > 0) spec.jsonLines = lines;
     spec.csrf = endpoint.auth.csrf.map((token) => this.#csrf(token, endpoint, ctx));
@@ -436,10 +476,11 @@ export class TsEndpointWriter {
     const graphql = new Set(Object.keys(this.#graphqlDefaults(endpoint) ?? {}));
     const form = shape.kind === 'form' || shape.kind === 'multipart' || textPlain;
     const properties = Schema.properties(shape.schema);
-    const required = [...Schema.requiredSet(shape.schema)].filter((key) => {
+    const credentials = TsEndpointWriter.#loginInputs(endpoint).map(([name]) => name).filter((name) => Object.hasOwn(properties, name));
+    const required = [...new Set([...Schema.requiredSet(shape.schema), ...credentials])].filter((key) => {
       const property = properties[key];
       if (tokens.has(key) || graphql.has(key)) return false;
-      return !(form && property && this.#rules.isAutoFilled(property));
+      return credentials.includes(key) || !(form && property && this.#rules.isAutoFilled(property));
     });
     const schema: JsonSchema = { ...shape.schema, required };
     const objectLike = Schema.primaryType(shape.schema) === 'object';

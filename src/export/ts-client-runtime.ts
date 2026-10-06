@@ -7,6 +7,8 @@ export class TsClientRuntime {
     'AccessToken',
     'ResponseFor',
     'MissingCredentialError',
+    'MissingLoginError',
+    'LoginSpec',
     'ValidateOptions',
     'RequestInput',
     'ValidityCode',
@@ -166,10 +168,22 @@ export class MissingCredentialError extends Error {
   constructor(endpoint: string) {
     super(
       'The endpoint ' + endpoint + ' needs a bearer token, and the client has none, so it sent no request. ' +
-        'Pass accessToken in the client options or in the request, or set the authorization header.',
+        'Log in through this client first, or pass accessToken in the client options or in the request, or set the authorization header.',
     );
     this.name = 'MissingCredentialError';
     this.endpoint = endpoint;
+  }
+}
+
+export class MissingLoginError extends Error {
+  readonly endpoint: string;
+  readonly field: string;
+
+  constructor(endpoint: string, field: string, label: string) {
+    super('The login ' + endpoint + ' needs ' + label + ' in the field ' + field + ', so it sent no request. The client has no default for it: pass it in the request.');
+    this.name = 'MissingLoginError';
+    this.endpoint = endpoint;
+    this.field = field;
   }
 }`;
 
@@ -264,6 +278,12 @@ interface CsrfSpec {
   seed?: string;
 }
 
+interface LoginSpec {
+  identifier?: string;
+  password?: string;
+  tokens: string[];
+}
+
 interface BodySpec {
   kind: string;
   mimeType: string;
@@ -285,6 +305,8 @@ interface EndpointSpec {
   body?: BodySpec;
   bodies?: BodySpec[];
   bearer?: 'required' | 'optional';
+  login?: LoginSpec;
+  logout?: boolean;
   jsonLines?: number[];
   csrf: CsrfSpec[];
   form?: FormSpec;
@@ -828,6 +850,15 @@ export class CookieJar {
     } catch {
       return value;
     }
+  }
+
+  static at(value: unknown, path: string): string | undefined {
+    let current: unknown = value;
+    for (const key of path.split('.')) {
+      if (!AppiiRuntime.isRecord(current) || !Object.hasOwn(current, key)) return undefined;
+      current = current[key];
+    }
+    return typeof current === 'string' && current !== '' ? current : undefined;
   }
 
   static find(value: unknown, key: string, depth = 0): string | undefined {
@@ -1885,6 +1916,7 @@ class AppiiHtml {
   readonly #fetch: (input: string, init: RequestInit) => Promise<Response>;
   readonly #documents = new Map<string, Promise<StoredDocument>>();
   readonly #responses = new Map<string, FetchedDocument>();
+  #bearer: string | undefined;
 
   constructor(options: ClientOptions, primaryOrigin: string, defaultBaseUrl: string) {
     this.#options = { ...options };
@@ -1929,6 +1961,7 @@ class AppiiHtml {
       const errors = AppiiForms.validate(spec, form.target === 'query' ? input.query : input.body, this.#options.unsafePatterns === true);
       if (errors.length > 0) throw new ValidationError(errors);
     }
+    if (spec.login !== undefined) BaseApiClient.#credentials(spec.name, spec.login, form !== undefined && form.target === 'query' ? query : body);
     const path = spec.path.replace(/\{([^}]+)\}/g, (_whole: string, name: string) => {
       const value = params[name];
       if (value === undefined || value === null || value === '') throw new TypeError('Missing path parameter "' + name + '" for ' + spec.name);
@@ -1968,6 +2001,15 @@ class AppiiHtml {
       headers: exchanged.response.headers,
       data: spec.jsonLines?.includes(status) === true ? AppiiRuntime.jsonLines(bytes, type) : AppiiRuntime.data(bytes, type),
     };
+    if (spec.login !== undefined && response.ok) {
+      for (const path of spec.login.tokens) {
+        const token = AppiiRuntime.at(response.data, path);
+        if (token === undefined) continue;
+        this.#bearer = token;
+        break;
+      }
+    }
+    if (spec.logout === true && status < BaseApiClient.CLIENT_ERROR) this.#bearer = undefined;
     if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
     if (state.cached.length > 0 && BaseApiClient.STALE_STATUSES.includes(status)) {
       response.staleTokens = BaseApiClient.#stale(status, state.cached);
@@ -1990,10 +2032,19 @@ class AppiiHtml {
     return out;
   }
 
+  static #credentials(endpoint: string, login: LoginSpec, values: unknown): void {
+    const record = AppiiRuntime.isRecord(values) ? values : {};
+    const fields: [string | undefined, string][] = [
+      [login.identifier, 'the user name'],
+      [login.password, 'the password'],
+    ];
+    for (const [field, label] of fields) if (field !== undefined && AppiiRuntime.blank(record[field])) throw new MissingLoginError(endpoint, field, label);
+  }
+
   async #authorize(spec: EndpointSpec, input: RequestInput, headers: Record<string, string>): Promise<void> {
     if (spec.bearer === undefined) return;
     if (Object.keys(input.headers ?? {}).some((name) => name.toLowerCase() === 'authorization')) return;
-    const token = input.accessToken ?? (AppiiRuntime.blank(headers['authorization']) ? await this.#accessToken() : undefined);
+    const token = input.accessToken ?? (AppiiRuntime.blank(headers['authorization']) ? (this.#bearer ?? (await this.#accessToken())) : undefined);
     if (!AppiiRuntime.blank(token)) headers['authorization'] = 'Bearer ' + token;
     else if (AppiiRuntime.blank(headers['authorization']) && spec.bearer === 'required') throw new MissingCredentialError(spec.name);
   }

@@ -112,7 +112,7 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
     assert.equal(login.mode, 'urlencoded');
     assert.deepEqual(login.urlencoded, [
       { key: 'csrf_token', value: '{{csrf_token}}', type: 'text' },
-      { key: 'email', value: 'user@example.com', type: 'text' },
+      { key: 'email', value: '{{email}}', type: 'text' },
       { key: 'password', value: '{{password}}', type: 'text' },
       { key: 'action', value: 'login', type: 'text' },
     ]);

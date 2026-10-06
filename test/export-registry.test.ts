@@ -137,12 +137,14 @@ describe('HarExporter and JsonExporter on a real capture', () => {
     const form = new URLSearchParams(login.request.postData?.text);
     assert.equal(form.get('password'), '<redacted>');
     assert.equal(form.get('csrf_token'), '<redacted>');
-    assert.equal(form.get('email'), FIXTURE_USER.email);
+    assert.equal(form.get('email'), '<redacted>', 'the user name of a login is personal data (QL-9)');
+    assert.ok(!result.content.includes(FIXTURE_USER.email));
     const cookie = login.request.headers.find((h) => h.name.toLowerCase() === 'cookie')?.value ?? '';
     assert.match(cookie, /^sid=<redacted>[0-9]+; theme=<redacted>[0-9]+$/);
     assert.ok(!result.content.includes(FIXTURE_USER.password));
     const raw = exporter.export(model, { capture: fixture.capture, endpoints: ['postLogin'], redact: false }).content;
     assert.ok(raw.includes(encodeURIComponent(FIXTURE_USER.password)));
+    assert.ok(raw.includes(encodeURIComponent(FIXTURE_USER.email)), 'with --no-redact the observed user name stays');
     const roundTrip = new HarConverter().fromHar(raw);
     assert.equal(roundTrip.exchanges.length, 1);
     assert.equal(roundTrip.exchanges[0]?.request.url, `${fixture.site.origin}/login`);

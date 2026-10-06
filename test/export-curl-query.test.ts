@@ -6,7 +6,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { ModelBuilder } from '../src/build/index.js';
 import { CurlExporter, HtmlExporter, MarkdownExporter } from '../src/export/index.js';
@@ -84,7 +84,7 @@ class SiteServer {
 function run(file: string, args: string[], env: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const clean: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C', ...env };
-    execFile('bash', [file, ...args], { env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
+    execFile('bash', [file, ...args], { cwd: dirname(file), env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
     });
   });

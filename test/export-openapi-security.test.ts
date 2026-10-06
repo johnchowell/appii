@@ -20,7 +20,7 @@ describe('OpenAPI security requirements', () => {
   });
 
   test('cookies of a model without credential sets are sent together, and endpoints that were never observed can also be called without credentials', () => {
-    const cookies = ExportModel.endpoint({ method: 'GET', path: '/api/items', auth: { cookies: ['auth', 'sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [] } });
+    const cookies = ExportModel.endpoint({ method: 'GET', path: '/api/items', auth: { cookies: ['auth', 'sid'], headers: [], anonymous: 'refused', bearer: false, csrf: [] } });
     const predicted = ExportModel.endpoint({ method: 'GET', path: '/search', count: 0, auth: { cookies: ['sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [] } });
     const open = ExportModel.endpoint({ method: 'GET', path: '/', count: 0 });
     const model = ExportModel.model([cookies, predicted, open], {
@@ -45,7 +45,7 @@ describe('OpenAPI security requirements', () => {
     assert.deepEqual(doc.paths['/']?.get?.security, []);
   });
 
-  test('an endpoint that also answered a request without credentials accepts no credentials as an alternative', () => {
+  test('an endpoint that also answered a request without credentials, or was never requested without them, accepts no credentials as an alternative; a refused one does not', () => {
     const f = new CaptureFactory();
     f.document('/', CaptureFactory.page('Home', ''));
     f.exchange({
@@ -59,12 +59,15 @@ describe('OpenAPI security requirements', () => {
     });
     f.json('GET', '/api/feed', 200, { items: [] });
     f.json('GET', '/api/feed', 200, { items: [] }, { requestHeaders: { cookie: 'sid=a1b2c3d4e5f6a7b8; auth=feedfacecafebeef' } });
+    f.json('GET', '/api/private', 401, { error: 'unauthorized' });
     f.json('GET', '/api/private', 200, {}, { requestHeaders: { cookie: 'sid=a1b2c3d4e5f6a7b8; auth=feedfacecafebeef' } });
+    f.json('GET', '/api/untested', 200, {}, { requestHeaders: { cookie: 'sid=a1b2c3d4e5f6a7b8; auth=feedfacecafebeef' } });
     f.cookie('sid', 'a1b2c3d4e5f6a7b8', { httpOnly: true });
     f.cookie('auth', 'feedfacecafebeef', { httpOnly: true });
     const doc = JSON.parse(new OpenApiExporter().export(ModelBuilder.create().build(f.capture())).content) as Doc;
     assert.deepEqual(doc.paths['/api/feed']?.get?.security, [{ authCookie: [], sidCookie: [] }, {}]);
     assert.deepEqual(doc.paths['/api/private']?.get?.security, [{ authCookie: [], sidCookie: [] }]);
+    assert.deepEqual(doc.paths['/api/untested']?.get?.security, [{ authCookie: [], sidCookie: [] }, {}], 'anonymous access was not tested, so no credential is also offered');
     assert.deepEqual(doc.paths['/']?.get?.security, []);
   });
 });

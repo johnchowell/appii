@@ -5,6 +5,7 @@ import { Fs, Http, Meta, NamedReferences, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { TsClientRuntime } from './ts-client-runtime.js';
 import { TsEndpointWriter } from './ts-endpoint-writer.js';
 import type { TsEndpointContext } from './ts-endpoint-writer.js';
@@ -101,7 +102,7 @@ export class TypeScriptExporter extends BaseExporter {
     const members = new Set<string>(TsClientRuntime.CLIENT_MEMBERS);
     const methods = new Map(endpoints.map((endpoint) => [endpoint.id, this.#endpoints.methodName(endpoint, members)]));
     const responseTypes = this.#endpoints.responseTypeNames(endpoints, taken);
-    const ctx: TsEndpointContext = { model, taken, methods, endpoints, sources: this.#endpoints.tokenSources(endpoints), responseTypes };
+    const ctx: TsEndpointContext = { model, taken, methods, endpoints, sources: this.#endpoints.tokenSources(endpoints), responseTypes, guide: new LoginGuide(model) };
     const codes = endpoints.map((endpoint) => this.#endpoints.write(endpoint, ctx));
     const primary = model.primaryOrigin || endpoints[0]?.origin || '';
     const base = primary === '' ? (opts.baseUrl ?? '') : Helpers.originBase(model, primary, opts);

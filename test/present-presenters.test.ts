@@ -510,7 +510,7 @@ describe('EndpointDetailPresenter', () => {
     ]);
     assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF');
     const argv = (script: string) =>
-      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_SID: 's', APPII_THEME: 't' } }).toString();
+      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_SID: 's', APPII_THEME: 't', APPII_EMAIL: 'e', APPII_PASSWORD: 'p' } }).toString();
     for (const ref of [4, 9, 12]) {
       const reference = section(detail(ref, { width: 400 }), 'Example request (curl)');
       const expected = argv(reference.slice(0, reference.indexOf('')).join('\n'));

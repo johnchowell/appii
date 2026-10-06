@@ -74,10 +74,11 @@ fetch('/api/articles?limit=10&offset=0').then(() => fetch('/api/articles/feed?li
     return endpoint;
   };
 
-  test('the model keeps the evidence: no credential sets, no anonymous success, a 401', () => {
+  test('the model keeps the evidence: no credential sets, anonymous access refused, a 401', () => {
     const feed = find('/api/articles/feed');
     assert.deepEqual(feed.auth.sets, []);
-    assert.equal(feed.auth.anonymous, undefined);
+    assert.equal(feed.auth.anonymous, 'refused');
+    assert.equal(find('/api/articles').auth.anonymous, 'allowed');
     assert.deepEqual(feed.responses.map((response) => response.status), [401]);
     assert.deepEqual(Credentials.refusals(feed), [401]);
     assert.deepEqual(Credentials.refusals(find('/api/articles')), []);
@@ -104,18 +105,17 @@ fetch('/api/articles?limit=10&offset=0').then(() => fetch('/api/articles/feed?li
     assert.doesNotMatch(list.find((line) => /\/api\/articles\s/.test(line)) ?? '', /401\?/);
     const feed = section(presenters.detail().render({ model, ref: find('/api/articles/feed').id }), 'Auth');
     assert.ok(feed.includes('Credentials:        required, not captured (answered 401 without credentials)'), feed.join('\n'));
-    assert.ok(feed.includes('Anonymous:          no, a request without credentials was refused (401)'), feed.join('\n'));
+    assert.ok(feed.includes('Anonymous:          refused, every request without credentials was refused (401)'), feed.join('\n'));
   });
 
-  test('list --show never says Anonymous: no for an endpoint that only answered 3xx or 429 without credentials (WIKI-N2)', () => {
+  test('list --show never says that anonymous access was refused for an endpoint that answered a redirect to another page or 429 without credentials (WIKI-N2, L6)', () => {
     const presenters = new PresenterFactory({ width: 160 });
-    for (const path of ['/w/index.php', '/w/api.php']) {
+    for (const path of ['/w/index.php', '/w/api.php', '/api/articles']) {
+      assert.equal(find(path).auth.anonymous, 'allowed', path);
       const auth = section(presenters.detail().render({ model, ref: find(path).id }), 'Auth');
       assert.ok(auth.includes('Credentials:        none'), `${path}: ${auth.join('\n')}`);
-      assert.ok(auth.includes('Anonymous:          unknown, no request without credentials got a 2xx response'), `${path}: ${auth.join('\n')}`);
+      assert.ok(auth.includes('Anonymous:          allowed, a request without credentials was not refused'), `${path}: ${auth.join('\n')}`);
     }
-    const articles = section(presenters.detail().render({ model, ref: find('/api/articles').id }), 'Auth');
-    assert.ok(articles.includes('Anonymous:          yes, a request without credentials succeeded'), articles.join('\n'));
   });
 
   test('Markdown, HTML, Postman and the TypeScript client say that the endpoint needs a credential that was not captured', () => {

@@ -4,9 +4,9 @@ import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ModelBuilder } from '../src/build/index.js';
 import { CurlExporter, PostmanExporter } from '../src/export/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
@@ -63,7 +63,7 @@ class EchoSite {
 function run(file: string, args: string[], env: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const clean: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C', ...env };
-    execFile('bash', [file, ...args], { env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
+    execFile('bash', [file, ...args], { cwd: dirname(file), env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
     });
   });
@@ -171,13 +171,19 @@ describe('curl functions take body fields as arguments and default to an observe
     assert.match(list.stdout, new RegExp(`POST +/filter\\.aspx +${filter} +\\[author=\\] \\[tag=\\] \\[submit_button=\\] \\[__VIEWSTATE=\\]\\n`));
   });
 
-  test('a login form takes the user name and password as arguments', async () => {
+  test('a login form takes the user name and password as arguments or variables, and never defaults to the captured user name (QL-8, QL-9)', async () => {
     const login = await run(file, [fn('POST', '/login'), 'username=x', 'password=p&q'], { APPII_CSRF_TOKEN: 'T' });
     assert.equal(login.code, 0, login.stderr);
     assert.deepEqual(pairs(site.last().body), [['csrf_token', 'T'], ['username', 'x'], ['password', 'p&q']]);
-    const plain = await run(file, [fn('POST', '/login')], { APPII_CSRF_TOKEN: 'T', APPII_PASSWORD: 'pw' });
+    const sent = site.last();
+    const missing = await run(file, [fn('POST', '/login')], { APPII_CSRF_TOKEN: 'T', APPII_PASSWORD: 'pw' });
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /no value for the user name \(username\)\. Give username=VALUE or set APPII_USERNAME\./);
+    assert.equal(site.last(), sent);
+    const plain = await run(file, [fn('POST', '/login')], { APPII_CSRF_TOKEN: 'T', APPII_USERNAME: 'env-user', APPII_PASSWORD: 'pw' });
     assert.equal(plain.code, 0, plain.stderr);
-    assert.equal(site.last().body, 'csrf_token=T&username=verifier&password=pw');
+    assert.equal(site.last().body, 'csrf_token=T&username=env-user&password=pw');
+    assert.ok(!(await readFile(file, 'utf8')).includes('verifier'));
   });
 
   test('a body field with the same name as a query parameter is body.name=, the query parameter query.name=', async () => {

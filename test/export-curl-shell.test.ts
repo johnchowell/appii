@@ -6,7 +6,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ModelBuilder } from '../src/build/index.js';
 import { CurlExporter } from '../src/export/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
@@ -43,16 +43,16 @@ class CountingSite {
 function run(file: string, args: string[], env: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const clean: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C', ...env };
-    execFile('bash', [file, ...args], { env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
+    execFile('bash', [file, ...args], { cwd: dirname(file), env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
       resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
     });
   });
 }
 
-function shell(args: string[], input: string): Promise<RunResult> {
+function shell(args: string[], input: string, cwd?: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C' };
-    const child = spawn('bash', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('bash', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
@@ -105,7 +105,7 @@ describe('the curl script and the shell that runs or sources it (BOOKS-R1, BOOKS
   });
 
   test('sourcing the script leaves the options of the shell alone and errors do not end an interactive shell (BOOKS-R1)', async () => {
-    const same = await shell(['--norc', '--noprofile', '-c', `o=$-; source ${JSON.stringify(file)}; [[ $- == "$o" ]] && ! shopt -qo pipefail`], '');
+    const same = await shell(['--norc', '--noprofile', '-c', `o=$-; source ${JSON.stringify(file)}; [[ $- == "$o" ]] && ! shopt -qo pipefail`], '', dir);
     assert.equal(same.code, 0, same.stderr);
     const lines = [
       `source ${JSON.stringify(file)}`,
@@ -116,7 +116,7 @@ describe('the curl script and the shell that runs or sources it (BOOKS-R1, BOOKS
       'shopt -qo pipefail && echo PIPEFAIL',
       'exit 0',
     ];
-    const interactive = await shell(['--norc', '--noprofile', '-i'], lines.join('\n') + '\n');
+    const interactive = await shell(['--norc', '--noprofile', '-i'], lines.join('\n') + '\n', dir);
     const survived = /SURVIVED (\S+)/.exec(interactive.stdout);
     assert.ok(survived, interactive.stdout + interactive.stderr);
     assert.ok(!/[eu]/.test(survived[1] ?? ''), survived[1]);

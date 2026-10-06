@@ -95,7 +95,7 @@ describe('Samples.requestSample for HTML form submissions', () => {
     assert.deepEqual(sample.headers.map((header) => [header.name, header.value.toString()]), [['Content-Type', 'text/plain']]);
   });
 
-  test('a captured text/plain submission keeps its entries and turns redacted values into placeholders', () => {
+  test('a captured text/plain submission keeps its entries and turns redacted values, and the user name and password of a login, into placeholders', () => {
     const factory = new CaptureFactory('https://tp.example.com');
     factory.document('/f', '<!doctype html><form action="/t" method="post" enctype="text/plain"><input name="user"><input type="password" name="password"><button>Go</button></form>');
     factory.exchange({ url: '/t', method: 'POST', resourceType: 'document', pageUrl: factory.url('/f'), requestType: 'text/plain', requestBody: 'user=bob\r\npassword=S3cr3t-XYZZY-1\r\n', status: 200, responseType: 'text/plain', responseBody: 'ok' });
@@ -103,7 +103,14 @@ describe('Samples.requestSample for HTML form submissions', () => {
     assert.ok(endpoint);
     const value = Samples.requestSample(endpoint).body?.value;
     assert.ok(value instanceof SampleText);
-    assert.equal(value.toString(), 'user=bob\r\npassword={{password}}\r\n');
+    assert.equal(value.toString(), 'user={{user}}\r\npassword={{password}}\r\n');
+    assert.deepEqual(
+      value.parts.flatMap((part) => (part.kind === 'placeholder' ? [[part.name, part.required]] : [])),
+      [
+        ['user', 'the user name'],
+        ['password', 'the password'],
+      ],
+    );
   });
 
   test('a GET form encodes its query with the form charset', () => {

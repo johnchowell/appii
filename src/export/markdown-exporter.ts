@@ -3,6 +3,7 @@ import { Credentials, Curl, EndpointIndex, Http, Json, Meta, RequestBodies, Sche
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { MarkdownWriter } from './markdown-writer.js';
 import { SchemaFieldList } from './schema-field-list.js';
 
@@ -37,13 +38,14 @@ export class MarkdownExporter extends BaseExporter {
   document(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
     const opts = Helpers.normalizeOptions(options);
     const index = EndpointIndex.of(model);
+    const guide = new LoginGuide(model);
     const sections = [
       this.#md.heading(1, Helpers.title(model, opts)),
-      this.#summary(model, endpoints),
+      this.#summary(model, endpoints, index, guide),
       this.#md.heading(2, 'Endpoints'),
       ...this.#tables(model, endpoints, index),
       this.#md.heading(2, 'Endpoint details'),
-      ...endpoints.map((endpoint) => this.#detail(model, endpoint, index, opts)),
+      ...endpoints.map((endpoint) => this.#detail(model, endpoint, index, opts, guide)),
       this.#md.heading(2, 'Cookies'),
       this.#cookies(model),
       this.#md.heading(2, 'Forms'),
@@ -61,7 +63,7 @@ export class MarkdownExporter extends BaseExporter {
     return 'API.md';
   }
 
-  #summary(model: ApiModel, endpoints: readonly Endpoint[]): string {
+  #summary(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex, guide: LoginGuide): string {
     const md = this.#md;
     const source = model.source;
     const span = source.capturedFrom && source.capturedTo ? ` between ${source.capturedFrom} and ${source.capturedTo}` : '';
@@ -77,6 +79,13 @@ export class MarkdownExporter extends BaseExporter {
       ['Forms', md.text(Helpers.formTotals(model.forms))],
       ['WebSockets', String(model.websockets.length)],
     ];
+    const link = (endpoint: Endpoint): string => `[${md.text(`#${index.numberOf(endpoint)} ${endpoint.method} ${endpoint.path}`)}](#${MarkdownExporter.anchor(index.numberOf(endpoint), endpoint)})`;
+    const code = (value: string): string => md.code(value);
+    for (const login of guide.logins(endpoints)) rows.push(['Login', `${link(login)}: ${guide.describe(login, code) ?? ''}`]);
+    for (const logout of guide.logouts(endpoints)) rows.push(['Logout', `${link(logout)}: ${guide.describe(logout, code) ?? ''}`]);
+    for (const capture of source.captures ?? []) {
+      rows.push(['Capture', md.text(`${capture.file ?? capture.startUrl ?? ''}: ${Text.plural(capture.exchanges, 'exchange')} between ${capture.capturedFrom} and ${capture.capturedTo}${capture.file !== undefined && capture.startUrl !== undefined ? ` from ${capture.startUrl}` : ''}`)]);
+    }
     return `${intro}\n\n${md.table(['Item', 'Value'], rows)}`;
   }
 
@@ -106,14 +115,14 @@ export class MarkdownExporter extends BaseExporter {
   }
 
   #auth(model: ApiModel, endpoint: Endpoint): string {
-    const parts: string[] = [];
+    const parts: string[] = endpoint.role === undefined ? [] : [endpoint.role];
     const credentials = Credentials.describe(endpoint, Credentials.roles(model));
     if (credentials !== '') parts.push(credentials);
     if (endpoint.auth.csrf.length > 0) parts.push('csrf');
     return this.#md.text(parts.join('; '));
   }
 
-  #detail(model: ApiModel, endpoint: Endpoint, index: EndpointIndex, options: ExportOptions): string {
+  #detail(model: ApiModel, endpoint: Endpoint, index: EndpointIndex, options: ExportOptions, guide: LoginGuide): string {
     const md = this.#md;
     const number = index.numberOf(endpoint);
     const out: string[] = [
@@ -125,8 +134,14 @@ export class MarkdownExporter extends BaseExporter {
       `- **Kind:** ${md.text(endpoint.kind)}${endpoint.operationName ? ` (operation ${md.code(endpoint.operationName)})` : ''}`,
       `- **Observed:** ${endpoint.count > 0 ? md.text(Text.plural(endpoint.count, 'time')) : 'no; inferred from an HTML form'}`,
     ];
-    const credentials = Credentials.describe(endpoint, Credentials.roles(model));
+    const role = guide.describe(endpoint, (value) => md.code(value));
+    if (role !== undefined) facts.push(`- **Role:** ${role}`);
+    const credentials = Credentials.describe(endpoint, guide.roles);
     if (credentials !== '') facts.push(`- **Credentials:** ${md.text(credentials)}`);
+    if (credentials !== '' || endpoint.role !== undefined) facts.push(`- **Anonymous:** ${md.text(LoginGuide.anonymousNote(endpoint))}`);
+    if (endpoint.auth.seen !== undefined && endpoint.auth.seen.length > 0) facts.push(`- **Seen:** ${md.text(endpoint.auth.seen.join(', '))}`);
+    const hint = guide.hint(endpoint, (login) => `[${md.text(`#${index.numberOf(login)} ${login.name}`)}](#${MarkdownExporter.anchor(index.numberOf(login), login)}) (${md.text(`${login.method} ${login.path}`)})`);
+    if (hint !== undefined) facts.push(`- **Log in:** ${hint}`);
     if (endpoint.auth.cookies.length > 0) facts.push(`- **Cookies sent:** ${endpoint.auth.cookies.map((name) => md.code(name)).join(', ')}`);
     if (endpoint.auth.bearer) facts.push('- **Bearer:** Authorization: Bearer token');
     for (const token of endpoint.auth.csrf) {
@@ -219,7 +234,7 @@ export class MarkdownExporter extends BaseExporter {
     if (model.cookies.length === 0) return 'No cookies were captured.';
     const yes = (flag: boolean): string => (flag ? 'yes' : 'no');
     return md.table(
-      ['Name', 'Domain', 'Path', 'Role', 'HttpOnly', 'Secure', 'SameSite', 'Partition', 'Expires', 'Set by', 'Used by'],
+      ['Name', 'Domain', 'Path', 'Role', 'HttpOnly', 'Secure', 'SameSite', 'Partition', 'Expires', 'Set by', 'Used by', 'Issued by', 'Revoked by'],
       model.cookies.map((cookie) => [
         md.code(cookie.name, true),
         md.code(cookie.domain, true),
@@ -232,6 +247,8 @@ export class MarkdownExporter extends BaseExporter {
         md.text(cookie.session ? 'session' : (cookie.expires ?? '')),
         md.text(cookie.setBy.join(', ')),
         md.text(cookie.usedBy.join(', ')),
+        md.text((cookie.issuedBy ?? []).join(', ')),
+        md.text((cookie.revokedBy ?? []).join(', ')),
       ]),
     );
   }

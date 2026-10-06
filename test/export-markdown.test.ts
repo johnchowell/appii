@@ -47,9 +47,10 @@ describe('MarkdownExporter', () => {
   test('one endpoint table per origin with numbers, links and auth', () => {
     const table = section(markdown, `### ${model.primaryOrigin}`);
     assert.match(table, /\n\| \\# \| Method \| Path \| Name \| Kind \| Statuses \| Auth \| Hits \|\n\| ---: \| --- \| --- \| --- \| --- \| --- \| --- \| ---: \|\n/);
-    assert.match(table, /\n\| 5 \| GET \| `\/api\/items\/\{itemId\}` \| \[getItem\]\(#5-get-item\) \| json \| 200, 404 \| cookie auth \| 4 \|\n/);
-    assert.match(table, /\n\| 10 \| POST \| `\/login` \| \[postLogin\]\(#10-post-login\) \| form \| 303 \| csrf \| 1 \|\n/);
-    assert.match(table, /\n\| 12 \| GET \| `\/search` \| \[getSearch\]\(#12-get-search\) \| form \| - \| cookie auth \(optional\) \| 0 \|/);
+    assert.match(table, /\n\| 5 \| GET \| `\/api\/items\/\{itemId\}` \| \[getItem\]\(#5-get-item\) \| json \| 200, 404 \| cookie auth \(anonymous access not tested\) \| 4 \|\n/);
+    assert.match(table, /\n\| 6 \| GET \| `\/api\/me` \| \[getMe\]\(#6-get-me\) \| json \| 200, 401 \| cookie auth \| 2 \|\n/);
+    assert.match(table, /\n\| 10 \| POST \| `\/login` \| \[postLogin\]\(#10-post-login\) \| form \| 303 \| login; csrf \| 1 \|\n/);
+    assert.match(table, /\n\| 12 \| GET \| `\/search` \| \[getSearch\]\(#12-get-search\) \| form \| - \| cookie auth \(anonymous access not tested\) \| 0 \|/);
   });
 
   test('endpoint details: facts, parameters, bodies, responses and a curl example', () => {

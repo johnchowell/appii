@@ -176,7 +176,12 @@ describe('OpenApiExporter on a real browser capture of the fixture site', () => 
     assert.deepEqual(create['x-appii-csrf'], [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }]);
     assert.ok(!params(create).some((p) => String(p.name).toLowerCase() === 'x-csrf-token'));
     const security = create.security as Record<string, unknown>[];
-    assert.deepEqual(security, [{ authCookie: [], xCsrfTokenHeader: [] }]);
+    assert.deepEqual(security, [{ authCookie: [], xCsrfTokenHeader: [] }, {}]);
+    assert.equal(create['x-appii-anonymous'], 'untested');
+    assert.match(String(create.description), /Anonymous access: not tested\./);
+    const me = operation(doc, '/api/me', 'get');
+    assert.deepEqual(me.security, [{ authCookie: [] }]);
+    assert.equal(me['x-appii-anonymous'], 'refused');
     const schemes = obj(obj(doc.components).securitySchemes);
     assert.deepEqual(obj(schemes.xCsrfTokenHeader).in, 'header');
     assert.equal(obj(schemes.xCsrfTokenHeader).name, 'x-csrf-token');
@@ -355,7 +360,7 @@ describe('OpenApiExporter edge cases', () => {
     const endpoint = ExportModel.endpoint({
       method: 'GET',
       path: '/api/me',
-      auth: { cookies: [], headers: ['authorization', 'x-api-key'], anonymous: 'untested', bearer: true, csrf: [] },
+      auth: { cookies: [], headers: ['authorization', 'x-api-key'], anonymous: 'refused', bearer: true, csrf: [] },
       headerParams: [
         { name: 'accept', in: 'header', required: true, schema: { type: 'string' }, examples: ['application/json'] },
         { name: 'x-api-key', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },

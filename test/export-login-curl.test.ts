@@ -4,8 +4,10 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ModelBuilder } from '../src/build/index.js';
 import { CurlExporter, MarkdownExporter } from '../src/export/index.js';
 import type { ApiModel } from '../src/model/index.js';
+import { CaptureFactory } from './helpers/capture-factory.js';
 import { LoginModels } from './helpers/login-models.js';
 import { LoginSite } from './helpers/login-site.js';
 
@@ -108,8 +110,8 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     }
     assert.match(script, /local APPII_USERNAME="\$\{APPII_USERNAME:-\}"/);
     assert.match(script, /local APPII_PASSWORD="\$\{APPII_PASSWORD:-\}"/);
-    assert.match(markdown, /--data-urlencode "password=\$\{APPII_PASSWORD:\?set it to the password\}"/);
-    assert.match(markdown, /--data-urlencode "username=\$\{APPII_USERNAME:\?set it to the user name\}"/);
+    assert.match(markdown, /--data-urlencode "password=\$\{APPII_PASSWORD:\?\}"/);
+    assert.match(markdown, /--data-urlencode "username=\$\{APPII_USERNAME:\?\}"/);
   });
 
   test('the documented example of the login stops with a message naming the variable', async () => {
@@ -118,7 +120,23 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     assert.ok(block, markdown);
     const run = await bash(['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`], dir, { APPII_CSRF_TOKEN: 't', APPII_USERNAME: 'u' });
     assert.notEqual(run.code, 0);
-    assert.match(run.stderr, /APPII_PASSWORD: set it to the password/);
+    assert.match(run.stderr, /APPII_PASSWORD: parameter null or not set/);
+  });
+
+  test('a CSRF header taken from a cookie: the function loads the page that sets it into the jar and sends the decoded value', async () => {
+    const f = new CaptureFactory(site.origin);
+    f.document('/app', CaptureFactory.page('App', '<div id="root"></div>'), { responseHeaders: { 'set-cookie': 'XSRF-TOKEN=c2VlZA%3D%3D; Path=/' } });
+    f.json('POST', '/api/items', 201, { id: 1 }, { pageUrl: f.url('/app'), requestHeaders: { 'content-type': 'application/json', cookie: 'XSRF-TOKEN=c2VlZA%3D%3D', 'x-xsrf-token': 'c2VlZA==' }, requestBody: { json: { name: 'x' } } });
+    const built = ModelBuilder.create({ now: new Date(0) }).build(f.capture());
+    const items = LoginModels.endpoint(built, 'POST', '/api/items');
+    items.auth.csrf = [{ location: 'header', name: 'X-XSRF-TOKEN', source: 'cookie', sourceName: 'XSRF-TOKEN' }];
+    const own = join(dir, 'xsrf.sh');
+    await writeFile(own, new CurlExporter().export(built).content);
+    site.reset();
+    const run = await bash([own, items.name], dir, { APPII_COOKIE_JAR: join(dir, 'xsrf-jar.txt') });
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), { id: 1 });
+    assert.deepEqual(site.requests.map((request) => `${request.method} ${request.path}`), ['GET /app', 'POST /api/items']);
   });
 
   test('the usage text documents the cookie jar and its default', async () => {

@@ -449,7 +449,7 @@ export class CurlExporter extends BaseExporter {
     const inputs = [...args.query, ...args.body].filter((arg) => arg.fallback?.requirement !== undefined);
     const lines = [`# ${name}: ${ctx.guide.describe(endpoint, plain) ?? 'Login.'}`];
     if (inputs.length > 0) lines.push(`# Give ${inputs.map((arg) => `${Text.printable(arg.word)}=VALUE`).join(' and ')}, or set ${inputs.map((arg) => arg.variable).join(' and ')}.`);
-    lines.push(`# The cookies it sets stay in the cookie jar ${CurlSessionScript.JAR_VARIABLE}, so the functions called after it are logged in.`);
+    if (login.issues.cookies.length > 0 || !LoginGuide.issued(login)) lines.push(`# The cookies it sets stay in the cookie jar ${CurlSessionScript.JAR_VARIABLE}, so the functions called after it are logged in.`);
     if (login.issues.tokens.length > 0) lines.push(`# It returns the bearer token in ${login.issues.tokens.join(', ')}: copy it into ${Curl.variableName(Samples.BEARER_TOKEN)} for the functions that need it.`);
     return lines;
   }

@@ -92,6 +92,7 @@ function model(origin: string): ApiModel {
     responseBody: '<p>Redirecting</p>',
   });
   f.document('/', '<!doctype html><title>Home</title>');
+  f.json('GET', '/bearer', 401, { authenticated: false });
   f.json('GET', '/bearer', 200, { authenticated: true, token: 'abc' }, { requestHeaders: { authorization: 'Bearer abcdefghijklmnopqrstuvwxyz0123456789' } });
   f.document('/forms/post', ORDER_PAGE);
   f.snapshot('/forms/post', 'Order', ORDER_PAGE);

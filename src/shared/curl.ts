@@ -66,8 +66,7 @@ export const SINGLE_QUOTE = 0x27;
 export const FIRST_PRINTABLE = 0x20;
 export const LAST_PRINTABLE = 0x7e;
 export const ARGUMENT_HELPER = 'appii_curl_args';
-export const REQUIRED_PREFIX = 'set it to ';
-export const UNSAFE_MESSAGE: RegExp = /[^A-Za-z0-9 ,.()_-]/g;
+export const REQUIRED_OPERATOR = ':?';
 export const VALUE_OPTIONS: readonly string[] = Object.freeze([
   '--abstract-unix-socket', '--alt-svc', '--aws-sigv4', '--cacert', '--capath', '--cert', '--cert-type', '--ciphers', '--config', '--connect-timeout',
   '--connect-to', '--continue-at', '--cookie', '--cookie-jar', '--create-file-mode', '--crlfile', '--curves', '--data', '--data-ascii', '--data-binary',
@@ -153,14 +152,10 @@ export function variableName(name: string): string {
   return VARIABLE_PREFIX + name.toUpperCase();
 }
 
-export function requiredMessage(label: string): string {
-  return `${REQUIRED_PREFIX}${label.replace(UNSAFE_MESSAGE, '')}`;
-}
-
 export function variableReference(name: string, part: PlaceholderPart, variables: VariableMode, variable: (name: string) => string = variableName): string {
   const helper = variables === 'script' && part.encoding !== undefined ? ENCODING_HELPERS[part.encoding] : undefined;
   if (helper !== undefined) return `$(${helper} ${variable(name)})`;
-  return variables === 'shell' && part.required !== undefined ? `\${${variable(name)}:?${requiredMessage(part.required)}}` : `\${${variable(name)}}`;
+  return variables === 'shell' && part.required !== undefined ? `\${${variable(name)}${REQUIRED_OPERATOR}}` : `\${${variable(name)}}`;
 }
 
 export function shellArg(input: SampleTextInput, variables: VariableMode = 'literal', variable: (name: string) => string = variableName): string {
