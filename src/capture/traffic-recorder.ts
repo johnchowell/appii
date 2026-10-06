@@ -522,7 +522,7 @@ export class TrafficRecorder {
 
   static #arrived(outcome: Outcome, response: Response | undefined, tapped: Tapped | undefined): boolean {
     if (outcome.kind !== 'failed' && outcome.kind !== 'incomplete') return false;
-    return response !== undefined && tapped?.record.settled === true;
+    return response !== undefined && tapped !== undefined && PageNetworkTap.complete(tapped.record);
   }
 
   async #responseBytes(request: Request, response: Response | undefined, tapped: Tapped | undefined, outcome: Outcome): Promise<TapBody | undefined> {

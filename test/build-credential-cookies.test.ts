@@ -284,3 +284,19 @@ describe('the evidence that makes a cookie a session credential, and what does n
     assert.equal(found.get('site_lang'), 'unknown');
   });
 });
+
+describe('the cookies an endpoint needs leave out a cookie the server replaces in every answer (LV2-1)', () => {
+  test('a load balancer cookie that differs between the refused and the accepted request is not part of the credential set', () => {
+    const f = new CaptureFactory();
+    f.document('/login', '<form method="post" action="/session"><input name="name"><input type="password" name="pass"></form>', { responseHeaders: { 'set-cookie': 'AWSALB=lb-0001; path=/' } });
+    f.document('/admin', '', { status: 302, requestHeaders: { cookie: 'AWSALB=lb-0001' }, responseHeaders: { location: '/login?next=/admin', 'set-cookie': 'AWSALB=lb-0002; path=/' } });
+    login(f, 'AWSALB=lb-0002', ['AWSALB=lb-0003; path=/', 'sid=s-user-00000001; path=/; httponly']);
+    f.document('/admin', '<h1>Admin</h1>', { requestHeaders: { cookie: 'AWSALB=lb-0003; sid=s-user-00000001' }, responseHeaders: { 'set-cookie': 'AWSALB=lb-0004; path=/' } });
+    f.document('/admin', '<h1>Admin</h1>', { requestHeaders: { cookie: 'AWSALB=lb-0004; sid=s-user-00000001' }, responseHeaders: { 'set-cookie': 'AWSALB=lb-0005; path=/' } });
+    const model = build(f.capture());
+    const admin = endpoint(model, 'GET', '/admin');
+    assert.deepEqual(admin.auth.sets, [['cookie:sid']]);
+    assert.equal(admin.auth.anonymous, 'refused');
+    assert.equal(model.cookies.find((cookie) => cookie.name === 'AWSALB')?.role, 'unknown');
+  });
+});

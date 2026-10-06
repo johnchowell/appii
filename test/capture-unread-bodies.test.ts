@@ -92,6 +92,27 @@ describe('capture: a no-store fetch response whose body the page never reads (LV
   });
 });
 
+describe('capture: unread no-store bodies without body capture (LV2-2)', () => {
+  test('the stall does not depend on keeping bodies: a capture without bodies ends at idle too', async () => {
+    const { server, origin } = await startUnreadSite();
+    try {
+      const started = Date.now();
+      const capture = await CaptureSession.create({ url: `${origin}/`, headless: true, idleMs: 400, recorder: { captureBodies: false, readTimeoutMs: 5000 } }).run();
+      const took = Date.now() - started;
+      assert.ok(took < 12000, `the capture took ${took} ms`);
+      const length = only(capture, '/api/length');
+      assert.equal(length.error, undefined);
+      assert.equal(length.response?.status, 401);
+      assert.equal(length.response?.body?.data ?? '', '');
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+
+type Headers = { name: string; value: string }[];
+
 class StreamingSession extends EventEmitter {
   async send(method: string): Promise<unknown> {
     if (method === 'Network.streamResourceContent') return { bufferedData: '' };
@@ -99,13 +120,13 @@ class StreamingSession extends EventEmitter {
     return {};
   }
 
-  response(requestId: string, url: string, headers: { name: string; value: string }[], status = 200): void {
-    this.emit('Network.requestWillBeSent', { requestId, request: { url, method: 'GET', headers: {} }, wallTime: 1000, timestamp: 10, type: 'Fetch' });
-    this.emit('Fetch.requestPaused', { requestId: `i-${requestId}`, networkId: requestId, request: { url, method: 'GET', headers: {} }, resourceType: 'XHR', responseStatusCode: status, responseHeaders: headers });
+  response(requestId: string, url: string, headers: Headers, status = 200, type = 'Fetch'): void {
+    this.emit('Network.requestWillBeSent', { requestId, request: { url, method: 'GET', headers: {} }, wallTime: 1000, timestamp: 10, type });
+    this.emit('Fetch.requestPaused', { requestId: `i-${requestId}`, networkId: requestId, request: { url, method: 'GET', headers: {} }, resourceType: type, responseStatusCode: status, responseHeaders: headers });
   }
 
-  received(requestId: string, url: string, status = 200): void {
-    this.emit('Network.responseReceived', { requestId, timestamp: 11, response: { url, status, headers: {} } });
+  received(requestId: string, url: string, headers: Headers, status = 200): void {
+    this.emit('Network.responseReceived', { requestId, timestamp: 11, response: { url, status, headers: Object.fromEntries(headers.map((header) => [header.name, header.value])) } });
   }
 
   data(requestId: string, bytes: Buffer, encodedDataLength = bytes.length): void {
@@ -128,22 +149,30 @@ async function until(condition: () => boolean): Promise<void> {
   for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
 }
 
-describe('PageNetworkTap: a response body has arrived when its bytes say so, not only when the page finished it', () => {
+async function opened(session: StreamingSession, tap: PageNetworkTap, id: string, url: string, headers: Headers, status = 200, type = 'Fetch'): Promise<TapRecord> {
+  session.response(id, url, headers, status, type);
+  if (type === 'Fetch' || type === 'XHR') await until(() => tap.peek({ method: 'GET', url, startTime: 0 })?.stream !== undefined);
+  session.received(id, url, headers, status);
+  const record = tap.peek({ method: 'GET', url, startTime: 0 });
+  assert.ok(record);
+  return record;
+}
+
+describe('PageNetworkTap: a fetch response body has arrived when its bytes say so, not only when the page finished it', () => {
   test('a body with a Content-Length has arrived once that many bytes came, and a later cancel by the page keeps it', async () => {
     const { session, tap, settles } = await streamingTap();
     const json = Buffer.from('{"error":"login required"}');
-    session.response('r1', 'http://x/api/length', [{ name: 'Content-Length', value: String(json.length) }], 401);
-    await until(() => tap.peek({ method: 'GET', url: 'http://x/api/length', startTime: 0 })?.stream !== undefined);
-    session.received('r1', 'http://x/api/length', 401);
+    const record = await opened(session, tap, 'r1', 'http://x/api/length', [{ name: 'Content-Length', value: String(json.length) }], 401);
     session.data('r1', json.subarray(0, 5));
-    const record = tap.peek({ method: 'GET', url: 'http://x/api/length', startTime: 0 });
-    assert.equal(record?.settled, false);
+    assert.equal(record.settled, false);
+    assert.equal(PageNetworkTap.complete(record), false);
     session.data('r1', json.subarray(5));
-    assert.equal(record?.settled, true);
+    assert.equal(record.settled, true);
+    assert.equal(PageNetworkTap.complete(record), true);
     assert.deepEqual(settles, [['http://x/api/length', true]]);
-    assert.equal((await tap.responseBody(record!))?.bytes.toString(), json.toString(), 'the body is there before the page finished the request');
+    assert.equal((await tap.responseBody(record))?.bytes.toString(), json.toString(), 'the body is there before the page finished the request');
     session.emit('Network.loadingFailed', { requestId: 'r1', timestamp: 12, errorText: 'net::ERR_ABORTED', canceled: true });
-    assert.equal(record?.state, 'finished');
+    assert.equal(record.state, 'finished');
     const claimed = tap.claim({ method: 'GET', url: 'http://x/api/length', startTime: 0 });
     assert.equal((await tap.responseBody(claimed!))?.bytes.toString(), json.toString());
     await tap.close();
@@ -152,53 +181,78 @@ describe('PageNetworkTap: a response body has arrived when its bytes say so, not
   test('a content-encoded body is counted in the bytes that came over the wire', async () => {
     const { session, tap } = await streamingTap();
     const wire = gzipSync('{"zipped":true}');
-    session.response('r2', 'http://x/api/gzip', [
+    const record = await opened(session, tap, 'r2', 'http://x/api/gzip', [
       { name: 'content-encoding', value: 'gzip' },
       { name: 'content-length', value: String(wire.length) },
     ]);
-    await until(() => tap.peek({ method: 'GET', url: 'http://x/api/gzip', startTime: 0 })?.stream !== undefined);
-    session.received('r2', 'http://x/api/gzip');
-    session.data('r2', Buffer.from('{"zipped":true}'), wire.length);
-    assert.equal(tap.peek({ method: 'GET', url: 'http://x/api/gzip', startTime: 0 })?.settled, true);
+    session.data('r2', Buffer.from('{"zipped":true}'), wire.length - 1);
+    assert.equal(record.settled, false, 'the decoded length says nothing about a gzip Content-Length');
+    session.data('r2', Buffer.alloc(0), 1);
+    assert.equal(record.settled, true);
     await tap.close();
   });
 
-  test('a body without a length has arrived once no more bytes came for the quiet time; more bytes take that back', async () => {
+  test('a body without a length that Chromium reported once has arrived after the quiet time; more bytes take that back', async () => {
     const { session, tap, settles } = await streamingTap(80);
-    session.response('r3', 'http://x/api/chunked', [{ name: 'transfer-encoding', value: 'chunked' }]);
-    await until(() => tap.peek({ method: 'GET', url: 'http://x/api/chunked', startTime: 0 })?.stream !== undefined);
-    session.received('r3', 'http://x/api/chunked');
-    const record = tap.peek({ method: 'GET', url: 'http://x/api/chunked', startTime: 0 })!;
+    const record = await opened(session, tap, 'r3', 'http://x/api/chunked', [{ name: 'transfer-encoding', value: 'chunked' }]);
     assert.equal(record.settled, false, 'headers alone are not a body');
-    session.data('r3', Buffer.from('{"items":[1,'));
+    session.data('r3', Buffer.from('{"items":[1,2,3]}'), 33);
     assert.equal(record.settled, false);
     await until(() => record.settled);
     assert.equal(record.settled, true);
-    session.data('r3', Buffer.from('2]}'));
+    assert.equal(PageNetworkTap.complete(record), true, 'an unread body is reported once, when the network has delivered all of it');
+    assert.equal((await tap.responseBody(record))?.bytes.toString(), '{"items":[1,2,3]}');
+    session.data('r3', Buffer.from('more'));
     assert.equal(record.settled, false);
+    assert.equal(PageNetworkTap.complete(record), false);
     await until(() => record.settled);
     assert.deepEqual(settles, [
       ['http://x/api/chunked', true],
       ['http://x/api/chunked', false],
       ['http://x/api/chunked', true],
     ]);
-    assert.equal((await tap.responseBody(record))?.bytes.toString(), '{"items":[1,2]}');
+    await tap.close();
+  });
+
+  test('a body without a length that came in several reports is only quiet: the page reads it, so a cut keeps a part', async () => {
+    const { session, tap } = await streamingTap(60);
+    const record = await opened(session, tap, 'r5', 'http://x/api/stream', [{ name: 'transfer-encoding', value: 'chunked' }]);
+    session.data('r5', Buffer.from('{"n":1}\n'));
+    session.data('r5', Buffer.from('{"n":2}\n'));
+    await until(() => record.settled);
+    assert.equal(record.settled, true, 'no bytes for the quiet time: the network is idle');
+    assert.equal(PageNetworkTap.complete(record), false, 'but nothing says the stream ended');
+    session.emit('Network.loadingFailed', { requestId: 'r5', timestamp: 12, errorText: 'net::ERR_ABORTED', canceled: true });
+    assert.equal(record.state, 'failed');
+    assert.equal(tap.partialBody(record)?.bytes.toString(), '{"n":1}\n{"n":2}\n');
     await tap.close();
   });
 
   test('a body cut off before all its bytes came is kept as a part, never as the whole body', async () => {
     const { session, tap } = await streamingTap();
-    session.response('r4', 'http://x/api/cut', [{ name: 'content-length', value: '100' }]);
-    await until(() => tap.peek({ method: 'GET', url: 'http://x/api/cut', startTime: 0 })?.stream !== undefined);
-    session.received('r4', 'http://x/api/cut');
+    const record = await opened(session, tap, 'r4', 'http://x/api/cut', [{ name: 'content-length', value: '100' }]);
     session.data('r4', Buffer.from('{"partial":'));
-    const record = tap.peek({ method: 'GET', url: 'http://x/api/cut', startTime: 0 })!;
     assert.equal(tap.partialBody(record)?.bytes.toString(), '{"partial":');
     session.emit('Network.loadingFailed', { requestId: 'r4', timestamp: 12, errorText: 'net::ERR_CONNECTION_RESET' });
     assert.equal(record.state, 'failed');
     assert.equal(record.settled, false);
     assert.equal(await tap.responseBody(record), undefined);
     assert.equal(tap.partialBody(record)?.bytes.toString(), '{"partial":');
+    await tap.close();
+  });
+
+  test('only fetch() bodies settle early: XHR and documents always get loadingFinished, so they wait for it', async () => {
+    const { session, tap, settles } = await streamingTap(40);
+    const body = Buffer.from('{"a":1}');
+    const xhr = await opened(session, tap, 'x1', 'http://x/api/xhr', [{ name: 'content-length', value: String(body.length) }], 200, 'XHR');
+    session.data('x1', body);
+    const doc = await opened(session, tap, 'd1', 'http://x/page', [{ name: 'transfer-encoding', value: 'chunked' }], 200, 'Document');
+    session.data('d1', Buffer.from('<p>slow'));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(xhr.settled, false);
+    assert.equal(doc.settled, false);
+    assert.equal(PageNetworkTap.complete(xhr), false);
+    assert.deepEqual(settles, []);
     await tap.close();
   });
 });

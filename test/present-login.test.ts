@@ -174,6 +174,17 @@ describe('the capture summary keeps requests that appii stopped while probing a 
     stopped.source = 'probe';
     const text = Ansi.strip(new CaptureSummaryPresenter({ width: 160 }).render({ capture: f.capture({ startUrl: `${ORIGIN}/login` }) }));
     assert.match(text, /\nRequests: +1 \(1 page, 0 fetch\/XHR, 0 other\) to 1 origin\n/);
-    assert.match(text, /\nProbed: +POST \/v1\/session \(stopped in the browser while probing the login form; not sent\)/);
+    assert.match(text, /\nProbed: +POST https:\/\/api\.quotes\.example\/v1\/session \(stopped in the browser while probing the login form; not sent\)/);
+  });
+
+  test('a probe to the origin of the start URL is named by its path, once', () => {
+    const f = new CaptureFactory(ORIGIN);
+    f.document('/login', CaptureFactory.page('Login', '<form id="login"><input name="username"><input type="password" name="password"><button>Log in</button></form>'));
+    for (let i = 0; i < 2; i++) {
+      const stopped = f.exchange({ method: 'POST', url: '/api/auth/login', pageUrl: f.url('/login'), requestHeaders: { 'content-type': 'application/json' }, requestBody: { json: { username: 'u', password: 'p' } }, error: 'net::ERR_BLOCKED_BY_CLIENT' });
+      stopped.source = 'probe';
+    }
+    const text = Ansi.strip(new CaptureSummaryPresenter({ width: 160 }).render({ capture: f.capture({ startUrl: `${ORIGIN}/login` }) }));
+    assert.match(text, /\nProbed: +POST \/api\/auth\/login \(stopped in the browser while probing the login form; not sent\)/);
   });
 });

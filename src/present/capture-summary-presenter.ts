@@ -69,12 +69,17 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
       ],
       ['WebSockets', capture.websockets.length === 0 ? '0' : `${capture.websockets.length} (${Text.plural(messages, 'message')})`],
     );
-    if (probes.length > 0) facts.push(['Probed', `${probes.map((exchange) => this.ansi.clean(CaptureSummaryPresenter.#request(exchange))).join(', ')} (${CaptureSummaryPresenter.PROBED})`]);
+    if (probes.length > 0) {
+      const requests = probes.map((exchange) => this.ansi.clean(CaptureSummaryPresenter.#request(exchange, capture.startUrl)));
+      facts.push(['Probed', `${[...new Set(requests)].join(', ')} (${CaptureSummaryPresenter.PROBED})`]);
+    }
     return facts;
   }
 
-  static #request(exchange: Exchange): string {
+  static #request(exchange: Exchange, startUrl: string | undefined): string {
     const url = Http.parseUrl(exchange.request.url);
-    return `${exchange.request.method} ${url ? url.pathname : exchange.request.url}`;
+    if (!url) return `${exchange.request.method} ${exchange.request.url}`;
+    const home = startUrl === undefined ? undefined : Http.parseUrl(startUrl);
+    return `${exchange.request.method} ${home?.origin === url.origin ? url.pathname : url.origin + url.pathname}`;
   }
 }

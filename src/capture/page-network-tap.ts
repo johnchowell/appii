@@ -52,9 +52,11 @@ export interface TapRecord {
   body: Promise<TapBody | undefined> | undefined;
   postData: Promise<string | undefined> | undefined;
   stream: TapStream | undefined;
+  readonly fetch: boolean;
   declared: number | undefined;
   contentEncoded: boolean;
   wireLength: number;
+  reports: number;
   arrivedAt: number | undefined;
   settled: boolean;
   partial: TapBody | undefined;
@@ -154,6 +156,7 @@ export class PageNetworkTap {
   static readonly WORKER = 'worker';
   static readonly SCRIPT_PARSED = 'Debugger.scriptParsed';
   static readonly SCRIPT_METHOD = 'GET';
+  static readonly FETCH_TYPE = 'Fetch';
   static readonly NETWORK_CHILDREN: ReadonlySet<string> = new Set(['iframe', PageNetworkTap.WORKER]);
   static readonly BODYLESS_METHODS: ReadonlySet<string> = new Set(['HEAD']);
   static readonly TIMING_FIELDS: readonly (keyof TapTiming)[] = ['dnsStart', 'dnsEnd', 'connectStart', 'sslStart', 'connectEnd', 'sendStart', 'receiveHeadersEnd'];
@@ -261,6 +264,13 @@ export class PageNetworkTap {
     return candidates.length === 1 ? candidates[0] : undefined;
   }
 
+  static complete(record: TapRecord): boolean {
+    if (record.state === 'finished') return true;
+    if (!record.fetch || record.state !== 'loading' || !record.responded) return false;
+    const expected = PageNetworkTap.#expected(record);
+    return expected === undefined ? record.settled && record.reports === 1 : PageNetworkTap.#received(record) >= expected;
+  }
+
   peek(query: TapQuery): TapRecord | undefined {
     return this.#choose(query);
   }
@@ -321,7 +331,7 @@ export class PageNetworkTap {
   async responseBody(record: TapRecord): Promise<TapBody | undefined> {
     const prefetched = record.body === undefined ? undefined : await record.body;
     if (prefetched) return prefetched;
-    if (record.state === 'loading' && record.settled) return PageNetworkTap.#streamed(record);
+    if (record.state === 'loading' && PageNetworkTap.complete(record)) return PageNetworkTap.#streamed(record);
     if (record.state === 'loading' && !record.responded) {
       const caughtUp = await Helpers.settle(record.ended.then(() => true), PageNetworkTap.SESSION_LAG_MS);
       if (caughtUp !== true) return this.#closed ? undefined : this.#workerScript(record);
@@ -404,6 +414,7 @@ export class PageNetworkTap {
           if (!record) break;
           record.dataLength += event.dataLength;
           record.wireLength += event.encodedDataLength ?? 0;
+          record.reports++;
           record.arrivedAt = Date.now();
           if (record.stream && event.data !== undefined) this.#append(record.stream, Buffer.from(event.data, 'base64'));
           this.#progress(record);
@@ -483,7 +494,7 @@ export class PageNetworkTap {
       PageNetworkTap.#respond(previous.record, redirect);
       this.#end(connection, event.requestId, 'redirected');
     }
-    const live = PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp);
+    const live = PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp, event.type === PageNetworkTap.FETCH_TYPE);
     if (live.record.bodyPending) live.record.postData = this.#readPostData(live.record);
     this.#live.set(key, live);
     this.#waiters.find((waiter) => PageNetworkTap.#matches(waiter.query, live.record))?.arrive(live.record);
@@ -492,10 +503,7 @@ export class PageNetworkTap {
   async #onPaused(connection: NetworkConnection, event: CdpRequestPaused): Promise<void> {
     try {
       const record = event.networkId === undefined ? undefined : this.#liveById(event.networkId);
-      if (record && this.#streamable(record, event)) {
-        PageNetworkTap.#expect(record, event.responseHeaders ?? []);
-        await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
-      }
+      if (record && this.#streamable(record, event)) await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
     } finally {
       const response = event.responseStatusCode !== undefined && event.responseErrorReason === undefined;
       await connection.send(response ? 'Fetch.continueResponse' : 'Fetch.continueRequest', { requestId: event.requestId }).catch(() => undefined);
@@ -524,20 +532,19 @@ export class PageNetworkTap {
     try {
       const result = await record.connection.send<CdpStreamedContent>('Network.streamResourceContent', { requestId: record.requestId });
       this.#append(stream, Buffer.from(result.bufferedData, 'base64'));
-      this.#progress(record);
     } catch {
       if (record.stream === stream) record.stream = undefined;
     }
   }
 
   #progress(record: TapRecord): void {
-    if (this.#closed || record.stream === undefined || record.state !== 'loading' || !record.responded) return;
-    const declared = record.declared;
-    if (declared !== undefined) {
-      if ((record.contentEncoded ? record.wireLength : record.dataLength) >= declared) this.#settle(record, true);
+    if (this.#closed || !record.fetch || record.state !== 'loading' || !record.responded) return;
+    const expected = PageNetworkTap.#expected(record);
+    if (expected !== undefined) {
+      if (PageNetworkTap.#received(record) >= expected) this.#settle(record, true);
       return;
     }
-    if (record.dataLength === 0) return;
+    if (record.reports === 0) return;
     this.#settle(record, false);
     const timer = setTimeout(() => {
       this.#quiet.delete(record);
@@ -584,6 +591,9 @@ export class PageNetworkTap {
     const record = this.#record(connection, event.requestId);
     if (!record) return;
     PageNetworkTap.#respond(record, event.response);
+    const headers = Http.recordToHeaders(event.response.headers ?? {});
+    record.declared = Helpers.contentLength(headers);
+    record.contentEncoded = Http.isContentEncoded(Http.getHeader(headers, 'content-encoding'));
     record.arrivedAt = Date.now();
     this.#progress(record);
   }
@@ -613,7 +623,7 @@ export class PageNetworkTap {
     this.#live.delete(key);
     clearTimeout(this.#quiet.get(live.record));
     this.#quiet.delete(live.record);
-    const arrived = state === 'finished' || (state === 'failed' && live.record.settled);
+    const arrived = state === 'finished' || (state === 'failed' && PageNetworkTap.complete(live.record));
     live.record.state = arrived ? 'finished' : state;
     live.record.settled = arrived;
     if (arrived && this.#wantsBody(live.record)) live.record.body = PageNetworkTap.#streamed(live.record) ?? this.#readOnce(live.record);
@@ -678,9 +688,14 @@ export class PageNetworkTap {
     return stream !== undefined && stream.kept > 0 ? { bytes: Buffer.concat(stream.chunks), text: false } : undefined;
   }
 
-  static #expect(record: TapRecord, headers: { name: string; value: string }[]): void {
-    record.declared = Helpers.contentLength(headers);
-    record.contentEncoded = Http.isContentEncoded(Http.getHeader(headers, 'content-encoding'));
+  static #expected(record: TapRecord): number | undefined {
+    if (PageNetworkTap.BODYLESS_METHODS.has(record.method.toUpperCase())) return 0;
+    if (record.status !== undefined && (Helpers.REDIRECT_STATUSES.has(record.status) || Helpers.NO_BODY_STATUSES.has(record.status))) return 0;
+    return record.declared;
+  }
+
+  static #received(record: TapRecord): number {
+    return record.contentEncoded ? record.wireLength : record.dataLength;
   }
 
   static #respond(record: TapRecord, response: CdpResponse): void {
@@ -722,7 +737,7 @@ export class PageNetworkTap {
     return entries.length > 0 ? Buffer.concat(entries.map((entry) => Buffer.from(entry.bytes ?? '', 'base64'))) : undefined;
   }
 
-  static #create(connection: NetworkConnection, requestId: string, request: CdpRequest, wallTime: number, timestamp: number): LiveRecord {
+  static #create(connection: NetworkConnection, requestId: string, request: CdpRequest, wallTime: number, timestamp: number, fetch: boolean): LiveRecord {
     const entries = request.postDataEntries;
     const inline = entries !== undefined && entries.length > 0 && entries.every((entry) => entry.bytes !== undefined);
     let end: () => void = () => undefined;
@@ -753,9 +768,11 @@ export class PageNetworkTap {
       body: undefined,
       postData: undefined,
       stream: undefined,
+      fetch,
       declared: undefined,
       contentEncoded: false,
       wireLength: 0,
+      reports: 0,
       arrivedAt: undefined,
       settled: false,
       partial: undefined,
