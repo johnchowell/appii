@@ -52,11 +52,16 @@ export class LoginReport {
   sentence(outcome: LoginOutcome): string {
     const how = outcome.trigger === 'button' ? 'by clicking its submit button' : 'by pressing Enter in its last filled field';
     const submission = outcome.submission;
+    const invalid = outcome.invalid ?? [];
     const answer =
       submission === undefined
         ? 'no request carried it'
         : `${submission.method} ${this.url(submission.url)} ${submission.status === undefined ? 'got no response' : `answered ${submission.status}`}`;
-    return `submitted the form on ${this.url(outcome.pageUrl)} (${outcome.fields.join(', ')}) ${how}; ${answer}; now on ${this.url(outcome.finalUrl)}`;
+    const fields = outcome.fields.join(', ');
+    if (invalid.length > 0 && submission === undefined) {
+      return `filled the form on ${this.url(outcome.pageUrl)} (${fields}) and tried to submit it ${how}; not submitted: the browser's form validation refused ${invalid.map((field) => field.name).join(', ')}; now on ${this.url(outcome.finalUrl)}`;
+    }
+    return `submitted the form on ${this.url(outcome.pageUrl)} (${fields}) ${how}; ${answer}; now on ${this.url(outcome.finalUrl)}`;
   }
 
   render(outcome: LoginOutcome, ctx: CliContext): string {

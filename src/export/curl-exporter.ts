@@ -74,7 +74,6 @@ export class CurlExporter extends BaseExporter {
   static readonly JAR_WORD = `"$${CurlSessionScript.JAR_VARIABLE}"`;
   static readonly VALUE_LOCAL = 'appii_value';
   static readonly DEFAULT_PREFIX = 'appii_default_';
-  static readonly FUNCTION_SUFFIX = 'Endpoint';
   static readonly VARIANT_SUFFIX = 'Body';
   static readonly QUERY_WORD_PREFIX = 'query.';
   static readonly BODY_WORD_PREFIX = 'body.';
@@ -83,12 +82,7 @@ export class CurlExporter extends BaseExporter {
   static readonly MULTIPART_KIND = 'multipart';
   static readonly FILE_SUFFIX = ' file';
   static readonly RESERVED_FUNCTIONS: ReadonlySet<string> = new Set([
-    'list', 'usage', 'main', 'help', ...CurlSessionScript.HELPERS, ...CurlBearerScript.HELPERS, 'appii_pct', 'appii_json', 'appii_form', 'appii_curl_args', 'curl', 'cat', 'printf', 'od', 'awk', 'pwd', 'bash', 'sh', 'alias', 'bg',
-    'bind', 'break', 'builtin', 'caller', 'case', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'coproc', 'declare',
-    'dirs', 'disown', 'do', 'done', 'echo', 'elif', 'else', 'enable', 'esac', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg',
-    'fi', 'for', 'function', 'getopts', 'hash', 'history', 'if', 'in', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
-    'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'select', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'then',
-    'time', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'until', 'wait', 'while',
+    ...ShellScript.RESERVED_NAMES, ...CurlSessionScript.HELPERS, ...CurlBearerScript.HELPERS, ...Object.values(Curl.ENCODING_HELPERS), Curl.ARGUMENT_HELPER,
   ]);
   static readonly USAGE = 'Usage: bash endpoints.sh [ENDPOINT [PATH_VALUES...] [NAME=VALUE...] [CURL_ARGS...]]';
   static readonly ASSIGNABLE_NAME: RegExp = /^[^=\s-][^=\s]*$/;
@@ -123,12 +117,7 @@ export class CurlExporter extends BaseExporter {
 
   static #functionNames(endpoints: readonly Endpoint[], taken: Set<string>): Map<Endpoint, string> {
     const out = new Map<Endpoint, string>();
-    for (const endpoint of endpoints) {
-      let base = endpoint.name.replace(/[^A-Za-z0-9_]/g, '_');
-      if (base === '' || /^[0-9]/.test(base)) base = `endpoint_${base}`;
-      if (CurlExporter.RESERVED_FUNCTIONS.has(base)) base += CurlExporter.FUNCTION_SUFFIX;
-      out.set(endpoint, Text.uniqueName(base, taken, '_'));
-    }
+    for (const endpoint of endpoints) out.set(endpoint, Text.uniqueName(ShellScript.functionName(endpoint.name, CurlExporter.RESERVED_FUNCTIONS), taken, '_'));
     return out;
   }
 
@@ -356,7 +345,7 @@ export class CurlExporter extends BaseExporter {
   }
 
   protected override filename(_model: ApiModel): string {
-    return 'endpoints.sh';
+    return Samples.CURL_SCRIPT;
   }
 
   static #renamer(reserved: ReadonlySet<string>): (name: string) => string {
@@ -410,7 +399,7 @@ export class CurlExporter extends BaseExporter {
         lines.push(`  local ${arg.variable}="\${${arg.variable}:-}"`);
         continue;
       }
-      lines.push(`  ${value}=${Curl.shellArg(arg.fallback, 'shell', variable)}`);
+      lines.push(`  ${value}=${Curl.shellArg(arg.fallback, 'plain', variable)}`);
       lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
       lines.push(`  local ${arg.variable}="$${value}"`);
     }
@@ -512,18 +501,18 @@ export class CurlExporter extends BaseExporter {
       if (method !== undefined || page === undefined || !CurlSessionScript.FETCHED_SOURCES.has(token.source)) {
         const source = EndpointIndex.tokenSource(token, ctx.model.endpoints);
         const call = source === undefined ? undefined : ctx.functions.get(source.id);
-        const origin = token.sourceUrl === undefined ? '' : ` comes from the response of ${method ?? 'GET'} ${Text.printable(token.sourceUrl)}${call === undefined ? '' : ` (${call})`};`;
-        const message = `${name}: warning: no value for the CSRF token ${Text.printable(token.name)}. It${origin === '' ? ' was not captured;' : origin} set ${variable} to send it.`;
-        lines.push(`  [[ -n "$${variable}" ]] || printf '%s\\n' ${Text.shellQuote(message)} >&2`);
+        const origin = token.sourceUrl === undefined ? ' was not captured;' : SampleText.concat(` comes from the response of ${method ?? 'GET'} `, this.#urlText(token.sourceUrl, ctx).mapLiterals(Text.printable), `${call === undefined ? '' : ` (${call})`};`);
+        const message = SampleText.concat(`${name}: warning: no value for the CSRF token ${Text.printable(token.name)}. It`, origin, ` set ${variable} to send it.`);
+        lines.push(`  [[ -n "$${variable}" ]] || printf '%s\\n' ${Curl.shellArg(message, 'script')} >&2`);
         continue;
       }
       const sourceName = token.sourceName ?? token.name;
       const what = token.source === 'hidden-field' ? `the hidden field ${sourceName}` : token.source === 'meta' ? `the meta ${sourceName}` : `${sourceName} in the response`;
-      const message = `${name}: warning: GET ${Text.printable(page)} gave no value for the CSRF token ${Text.printable(token.name)} (${Text.printable(what)}). Set ${variable} to send it.`;
+      const message = SampleText.concat(`${name}: warning: GET `, this.#urlText(page, ctx).mapLiterals(Text.printable), ` gave no value for the CSRF token ${Text.printable(token.name)} (${Text.printable(what)}). Set ${variable} to send it.`);
       lines.push(
         `  if [[ -z "$${variable}" ]]; then`,
         `    ${variable}="$(${CurlSessionScript.TOKEN_HELPER} ${token.source} ${Text.shellQuote(sourceName)} ${this.#urlWord(page, ctx)})" || ${variable}=''`,
-        `    [[ -n "$${variable}" ]] || printf '%s\\n' ${Text.shellQuote(message)} >&2`,
+        `    [[ -n "$${variable}" ]] || printf '%s\\n' ${Curl.shellArg(message, 'script')} >&2`,
         '  fi',
       );
     }
@@ -536,10 +525,14 @@ export class CurlExporter extends BaseExporter {
   }
 
   #urlWord(url: string, ctx: CurlFunctionContext): string {
+    return Curl.shellArg(this.#urlText(url, ctx), 'script');
+  }
+
+  #urlText(url: string, ctx: CurlFunctionContext): SampleText {
     const parsed = Http.parseUrl(url);
     const base = parsed === undefined ? undefined : ctx.origins.get(parsed.origin);
-    if (parsed === undefined || base === undefined || !url.startsWith(parsed.origin)) return Text.shellQuote(url);
-    return Curl.shellArg(SampleText.concat(SampleText.placeholder(base), url.slice(parsed.origin.length)), 'script');
+    if (parsed === undefined || base === undefined || !url.startsWith(parsed.origin)) return SampleText.literal(url);
+    return SampleText.concat(SampleText.placeholder(base), url.slice(parsed.origin.length));
   }
 
   static #ownVariable(value: SampleText): string | undefined {

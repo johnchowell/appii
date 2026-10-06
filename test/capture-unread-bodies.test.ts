@@ -241,6 +241,25 @@ describe('PageNetworkTap: a fetch response body has arrived when its bytes say s
     await tap.close();
   });
 
+  test('a response pause that the browser reports before the renderer reports the request still streams its body', async () => {
+    const { session, tap } = await streamingTap(40);
+    const url = 'http://x/api/early';
+    const headers = [{ name: 'content-type', value: 'application/json' }];
+    const body = Buffer.from('{"status":"200"}');
+    session.emit('Fetch.requestPaused', { requestId: 'i-e1', networkId: 'e1', request: { url, method: 'GET', headers: {} }, resourceType: 'Fetch', responseStatusCode: 200, responseHeaders: headers });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    session.emit('Network.requestWillBeSent', { requestId: 'e1', request: { url, method: 'GET', headers: {} }, wallTime: 1000, timestamp: 10, type: 'Fetch' });
+    await until(() => tap.peek({ method: 'GET', url, startTime: 0 })?.stream !== undefined);
+    session.received('e1', url, headers);
+    session.data('e1', body);
+    const record = tap.peek({ method: 'GET', url, startTime: 0 });
+    assert.ok(record?.stream, 'the held response was streamed once its request was known');
+    await until(() => record.settled);
+    assert.equal(PageNetworkTap.complete(record), true);
+    assert.equal((await tap.responseBody(record))?.bytes.toString(), body.toString());
+    await tap.close();
+  });
+
   test('only fetch() bodies settle early: XHR and documents always get loadingFinished, so they wait for it', async () => {
     const { session, tap, settles } = await streamingTap(40);
     const body = Buffer.from('{"a":1}');

@@ -1,6 +1,6 @@
 import { dirname, relative, sep } from 'node:path';
 import { CaptureMerger, CaptureStore } from '../../capture/index.js';
-import type { CaptureInput } from '../../capture/index.js';
+import type { CaptureInput, RepeatedCapture } from '../../capture/index.js';
 import { BasePresenter } from '../../present/index.js';
 import { Meta } from '../../shared/index.js';
 import { BuildOptionGroup } from '../build-option-group.js';
@@ -25,6 +25,7 @@ export interface BuildCommandDeps extends CommandDeps {
 export class BuildCommand extends Command {
   static readonly DEFAULT_OUT = 'api.json';
   static readonly CAPTURES_PLACEHOLDER = '<capture.json>...';
+  static readonly NOTE_PREFIX = 'note: ';
 
   readonly spec: CommandSpec;
   readonly #store: CaptureStore;
@@ -79,16 +80,29 @@ export class BuildCommand extends Command {
     const out = await OutputTarget.of(ctx, explicit, BuildCommand.DEFAULT_OUT);
     const base = out.path ?? ctx.resolve(BuildCommand.DEFAULT_OUT);
     const inputs: CaptureInput[] = [];
+    const labels = new Map<CaptureInput, string>();
     for (const file of positionals) {
       const input = ctx.resolve(file);
       const stored = await this.#store.read(input);
       if (stored.kind === 'model') throw CaptureStore.modelInput(input, stored.value, { label: ctx.display(input), suggestion: BuildCommand.rebuild(input, stored.value, positionals, explicit, ctx) });
       if (await out.overwrites(input)) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
-      inputs.push({ capture: stored.capture, file: BuildCommand.source(base, input) });
+      const entry: CaptureInput = { capture: stored.capture, file: BuildCommand.source(base, input) };
+      inputs.push(entry);
+      labels.set(entry, file);
     }
     const merged = this.#merger.merge(inputs);
-    const source = inputs.length === 1 ? inputs[0]?.file : undefined;
+    for (const note of BuildCommand.repeatNotes(merged.repeated, (input) => labels.get(input) ?? input.file ?? '')) ctx.err(ctx.ansi.clean(note));
+    const source = merged.sources.length === 1 ? merged.sources[0]?.file : undefined;
     await this.#step.run(merged.capture, { out, ...(source === undefined ? {} : { source }), sources: merged.sources, options }, ctx);
     return ExitCode.OK;
+  }
+
+  static repeatNotes(repeated: readonly RepeatedCapture[], label: (input: CaptureInput) => string): string[] {
+    return repeated.map(({ input, of }) => {
+      const name = label(input);
+      const earlier = label(of);
+      const what = input.file !== undefined && input.file === of.file ? `${name} was given more than once` : `${name} holds the same requests as ${earlier}`;
+      return `${BuildCommand.NOTE_PREFIX}${what}; it is used once`;
+    });
   }
 }

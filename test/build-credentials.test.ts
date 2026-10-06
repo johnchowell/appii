@@ -176,7 +176,7 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     assert.deepEqual(login.auth.sets, []);
     const token = login.auth.csrf.find((candidate) => candidate.name === 'csrf_token');
     assert.deepEqual(token?.sessionCookies, ['session']);
-    assert.ok(example(model, login).includes('-b "session=${APPII_SESSION}"'), example(model, login));
+    assert.ok(example(model, login).includes('-b "session=${APPII_SESSION:?}"'), example(model, login));
     assert.deepEqual(endpoint(model, 'GET', '/logout').auth.sets, [['cookie:session']]);
   });
 

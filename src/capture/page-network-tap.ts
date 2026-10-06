@@ -122,6 +122,10 @@ interface ClaimWaiter {
   readonly arrive: (record: TapRecord | undefined) => void;
 }
 
+interface PausedWaiter {
+  readonly arrive: (record: TapRecord | undefined) => void;
+}
+
 interface AttachedEvent {
   sessionId: string;
   targetInfo: CdpTargetInfo;
@@ -177,6 +181,7 @@ export class PageNetworkTap {
   readonly #preparing = new Set<Promise<void>>();
   readonly #waiters: ClaimWaiter[] = [];
   readonly #quiet = new Map<TapRecord, NodeJS.Timeout>();
+  readonly #paused = new Map<string, PausedWaiter>();
   #closed = false;
 
   constructor(root: RootConnection, options: PageNetworkTapOptions = {}, deps: PageNetworkTapDeps = {}) {
@@ -367,6 +372,7 @@ export class PageNetworkTap {
     if (this.#closed) return;
     this.#closed = true;
     for (const waiter of [...this.#waiters]) waiter.arrive(undefined);
+    for (const waiter of [...this.#paused.values()]) waiter.arrive(undefined);
     for (const timer of this.#quiet.values()) clearTimeout(timer);
     this.#quiet.clear();
     for (const live of this.#live.values()) live.end();
@@ -497,17 +503,36 @@ export class PageNetworkTap {
     const live = PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp, event.type === PageNetworkTap.FETCH_TYPE);
     if (live.record.bodyPending) live.record.postData = this.#readPostData(live.record);
     this.#live.set(key, live);
+    this.#paused.get(event.requestId)?.arrive(live.record);
     this.#waiters.find((waiter) => PageNetworkTap.#matches(waiter.query, live.record))?.arrive(live.record);
   }
 
   async #onPaused(connection: NetworkConnection, event: CdpRequestPaused): Promise<void> {
     try {
-      const record = event.networkId === undefined ? undefined : this.#liveById(event.networkId);
-      if (record && this.#streamable(record, event)) await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
+      const limit = this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS;
+      const started = Date.now();
+      const record = event.networkId === undefined ? undefined : await this.#pausedRecord(event.networkId, limit);
+      if (record && this.#streamable(record, event)) await Helpers.settle(this.#stream(record), Math.max(0, limit - (Date.now() - started)));
     } finally {
       const response = event.responseStatusCode !== undefined && event.responseErrorReason === undefined;
       await connection.send(response ? 'Fetch.continueResponse' : 'Fetch.continueRequest', { requestId: event.requestId }).catch(() => undefined);
     }
+  }
+
+  #pausedRecord(requestId: string, timeoutMs: number): Promise<TapRecord | undefined> {
+    const known = this.#liveById(requestId);
+    if (known !== undefined || this.#closed || this.#paused.has(requestId)) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      const waiter: PausedWaiter = {
+        arrive: (record) => {
+          clearTimeout(timer);
+          if (this.#paused.get(requestId) === waiter) this.#paused.delete(requestId);
+          resolve(record);
+        },
+      };
+      const timer = setTimeout(() => waiter.arrive(undefined), timeoutMs);
+      this.#paused.set(requestId, waiter);
+    });
   }
 
   #liveById(requestId: string): TapRecord | undefined {

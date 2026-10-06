@@ -75,7 +75,8 @@ export class OpenApiOperationBuilder {
     if (endpoint.login !== undefined && LoginGuide.isLogin(endpoint)) operation[OpenApiOperationBuilder.LOGIN_KEY] = Json.clone(endpoint.login);
     if (OpenApiOperationBuilder.#authMatters(endpoint, ctx.security.roles)) operation[OpenApiOperationBuilder.ANONYMOUS_KEY] = endpoint.auth.anonymous;
     if (endpoint.auth.csrf.length > 0) operation['x-appii-csrf'] = Json.clone(endpoint.auth.csrf);
-    if (endpoint.form) operation['x-appii-form'] = { pageUrl: endpoint.form.pageUrl, selector: endpoint.form.selector, enctype: endpoint.form.enctype };
+    const form = Helpers.formFacts(endpoint);
+    if (form) operation['x-appii-form'] = form;
     if (endpoint.kind === 'graphql' && endpoint.operationName !== undefined) operation['x-appii-graphql-operations'] = [endpoint.operationName];
     const facts: OpenApiObject = { id: endpoint.id, number: ctx.index.numberOf(endpoint), kind: endpoint.kind, count: endpoint.count, firstParty: endpoint.firstParty };
     if (endpoint.auth.seen !== undefined) facts.seen = [...endpoint.auth.seen];
@@ -101,7 +102,8 @@ export class OpenApiOperationBuilder {
     if (!LoginGuide.isLogin(endpoint) && Credentials.sets(endpoint, roles).length > 0) lines.push(OpenApiOperationBuilder.ANONYMOUS_LINES[endpoint.auth.anonymous] ?? '');
     const hint = security?.guide.hint(endpoint, (login) => security.operation(login));
     if (hint !== undefined) lines.push(hint);
-    if (endpoint.form) lines.push(`Submitted by the form \`${endpoint.form.selector}\` on ${endpoint.form.pageUrl} (${endpoint.form.enctype}).`);
+    const form = Helpers.formSource(endpoint, OpenApiOperationBuilder.MARKUP);
+    if (form !== undefined) lines.push(form);
     for (const token of endpoint.auth.csrf) {
       lines.push(`CSRF token \`${token.name}\` (${token.location}) comes from ${Helpers.tokenSource(token, OpenApiOperationBuilder.MARKUP)}.`);
     }

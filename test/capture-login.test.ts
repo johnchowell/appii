@@ -256,6 +256,42 @@ describe('capture --login: finding, filling and submitting the form the way the 
     assert.equal(sent[0]?.get('go'), 'second');
   });
 
+  test('when the browser\'s constraint validation refuses the form, the outcome names each refused field with the browser\'s message and never the value (LV2-6)', async () => {
+    const before = received(site).length;
+    const value = 'not-an-email-7f3a';
+    const { outcome } = await capture(`${site.origin}/email`, [
+      { name: 'user[email]', value },
+      { name: 'user[password]', value: 'Short-1' },
+    ]);
+    assert.equal(received(site).length, before, 'nothing was sent');
+    assert.ok(outcome);
+    assert.equal(outcome.submission, undefined);
+    assert.equal(outcome.trigger, 'button');
+    assert.deepEqual(
+      outcome.invalid?.map((field) => field.name),
+      ['user[email]', 'user[password]'],
+    );
+    assert.match(outcome.invalid?.[0]?.message ?? '', /@/);
+    assert.match(outcome.invalid?.[1]?.message ?? '', /8/);
+    assert.equal(outcome.warnings.length, 1, outcome.warnings.join('\n'));
+    assert.match(outcome.warnings[0]!, /^the browser did not submit the login form: its form validation refused user\[email\] \(".+@.+"\) and user\[password\] \(".+8.+"\)$/);
+    assert.ok(!JSON.stringify(outcome).includes(value), JSON.stringify(outcome));
+    assert.ok(!JSON.stringify(outcome).includes('Short-1'));
+  });
+
+  test('a form with novalidate, or a submitter with formnovalidate, is submitted as in a browser and no field is reported as refused', async () => {
+    for (const page of ['/email-novalidate', '/email-formnovalidate']) {
+      const before = received(site).length;
+      const { outcome } = await capture(`${site.origin}${page}`, [
+        { name: 'user[email]', value: 'not-an-email' },
+        { name: 'user[password]', value: 'Short-1' },
+      ]);
+      assert.equal(received(site).slice(before)[0]?.get('user[email]'), 'not-an-email', page);
+      assert.equal(outcome?.invalid, undefined, page);
+      assert.deepEqual(outcome?.warnings, [], page);
+    }
+  });
+
   test('a form without a submit button and one field that blocks implicit submission is submitted by pressing Enter', async () => {
     const before = received(site).length;
     const { outcome } = await capture(`${site.origin}/enter`, [

@@ -151,9 +151,8 @@ export class MarkdownExporter extends BaseExporter {
       const bound = SessionGuide.bound(token, (value) => md.code(value));
       facts.push(`- **CSRF:** ${md.code(token.name)} in the ${md.text(token.location)}, from ${source}${bound === '' ? '' : `, ${bound}`}`);
     }
-    if (endpoint.form) {
-      facts.push(`- **Form:** ${md.code(endpoint.form.selector)} on ${md.code(Helpers.mapUrl(model, endpoint.form.pageUrl, options))} (${md.text(endpoint.form.enctype)})`);
-    }
+    const form = Helpers.formSource(endpoint, { text: (value) => md.text(value), code: (value) => md.code(value), url: (value) => md.code(Helpers.mapUrl(model, value, options)) });
+    if (form !== undefined) facts.push(`- **Form:** ${form}`);
     out.push(facts.join('\n'));
     const params = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams];
     if (params.length > 0) out.push('**Parameters**', this.#params(params));
@@ -191,7 +190,7 @@ export class MarkdownExporter extends BaseExporter {
   #example(model: ApiModel, endpoint: Endpoint, options: ExportOptions): string[] {
     const md = this.#md;
     const sample = Helpers.sample(model, endpoint, options);
-    const out = [md.block(Curl.curlCommand(sample, { variables: 'shell' }), 'bash')];
+    const out = [md.block(Curl.curlCommand(sample, { variables: 'shell', explain: true }), 'bash')];
     const variables = Curl.placeholderNames(sample);
     if (variables.length > 0) out.push(`${md.text(Curl.VARIABLES_LABEL)} ${variables.map((name) => md.code(name)).join(' ')}`);
     return out;

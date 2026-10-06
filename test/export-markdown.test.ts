@@ -57,7 +57,7 @@ describe('MarkdownExporter', () => {
     const login = section(markdown, '### 10. postLogin: POST /login');
     assert.ok(markdown.includes('<a id="10-post-login"></a>\n\n### 10. postLogin: POST /login'));
     assert.match(login, /- \*\*CSRF:\*\* `csrf_token` in the body, from hidden-field `csrf_token` on `http:\/\/127\.0\.0\.1:\d+\/login`/);
-    assert.match(login, /- \*\*Form:\*\* `form#login` on `http:\/\/127\.0\.0\.1:\d+\/login` \(application\/x-www-form-urlencoded\)/);
+    assert.match(login, /- \*\*Form:\*\* Submitted by the form `form#login` on `http:\/\/127\.0\.0\.1:\d+\/login` \(application\/x-www-form-urlencoded\)\./);
     assert.match(login, /\n\| `password` \| string \| yes \| html password; length 8\.\. \| Password \|\n/);
     assert.match(login, /\n\| 303 See Other \| 1 \| - \| `location`, `set-cookie: auth` \|\n/);
     assert.match(login, /\*\*Example request\*\*\n\n```bash\ncurl -sS -X POST 'http:\/\/127\.0\.0\.1:\d+\/login' \\\n {2}-H 'Content-Type: application\/x-www-form-urlencoded' \\\n/);
@@ -162,7 +162,8 @@ describe('MarkdownExporter request examples agree with the other renderers', () 
     });
     const markdown = new MarkdownExporter().export(ExportModel.model([me])).content;
     assert.ok(markdown.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), markdown);
-    assert.ok(markdown.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN}"'), markdown);
+    assert.ok(markdown.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN:?the cookie csrftoken; bash endpoints.sh postApiMe reads it from its cookie jar}"'), markdown);
+    assert.ok(markdown.includes('-b "csrftoken=${APPII_CSRFTOKEN:?}"'), markdown);
     assert.ok(markdown.includes('Variables: `APPII_ACCESS_TOKEN` `APPII_CSRFTOKEN`'), markdown);
     assert.ok(!markdown.includes('APPII_AUTHORIZATION'));
     assert.ok(!markdown.includes('APPII_X_CSRF_TOKEN'));

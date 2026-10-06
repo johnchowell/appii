@@ -24,6 +24,7 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     'read-timeout': { type: 'string' },
     'user-agent': { type: 'string' },
     login: { type: 'string', multiple: true },
+    'probe-login': { type: 'boolean' },
   };
 
   readonly docs: OptionDocs = {
@@ -38,6 +39,10 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     login: {
       value: 'name[=value]',
       description: `Log in after the first URL loads: fill this field of the login form, then submit the form like a user; repeat for each field. Without =value the value comes from ${CaptureOptionGroup.LOGIN_VARIABLE_PREFIX}<NAME>`,
+    },
+    'probe-login': {
+      description:
+        'Without an account: after the first URL loads, fill its login form with placeholder values, submit it, record what the page tries to send and stop it in the browser, so nothing reaches the server; then open the URL again',
     },
   };
 
@@ -70,6 +75,10 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     const maxTotalBodyBytes = OptionReader.integer(values, 'max-total-body', { min: 0 });
     const readTimeoutMs = OptionReader.seconds(values, 'read-timeout', { positive: true });
     const userAgent = CaptureOptionGroup.#userAgent(OptionReader.string(values, 'user-agent'));
+    const probeLogin = OptionReader.boolean(values, 'probe-login') ?? false;
+    if (probeLogin && OptionReader.strings(values, 'login').length > 0) {
+      throw new UsageError(`${OptionReader.flag('probe-login')} and ${OptionReader.flag('login')} cannot be combined: the probe fills the login form with placeholder values and stops what it sends, while ${OptionReader.flag('login')} submits your values`);
+    }
     const login = OptionReader.strings(values, 'login').map((spec) => CaptureOptionGroup.loginField(spec, ctx.io.env));
     const recorder: TrafficRecorderOptions = {};
     if (maxBodyBytes !== undefined) recorder.maxBodyBytes = maxBodyBytes;
@@ -80,6 +89,7 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     if (storageState !== undefined) out.storageState = ctx.resolve(storageState);
     if (userAgent !== undefined) out.userAgent = userAgent;
     if (login.length > 0) out.login = login;
+    if (probeLogin) out.probeLogin = true;
     if (Object.keys(recorder).length > 0) out.recorder = recorder;
     return out;
   }

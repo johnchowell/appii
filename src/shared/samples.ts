@@ -1,4 +1,4 @@
-import type { BodyKind, BodyShape, Endpoint, EndpointForm, EndpointSample, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
+import type { BodyKind, BodyShape, CsrfToken, Endpoint, EndpointForm, EndpointSample, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
 import { CharsetEncoder } from './charset.js';
 import { Credentials } from './credentials.js';
 import { EndpointIndex } from './endpoints.js';
@@ -7,6 +7,8 @@ import { isPlainObject, setOwn } from './json.js';
 import { SampleText } from './sample-text.js';
 import type { SampleTextInput } from './sample-text.js';
 import { isFileSchema, items, primaryType, properties, resolveConditions, sampleValue } from './schema.js';
+import { FormSource } from './form-source.js';
+import { ShellScript } from './shell-script.js';
 
 export const REDACTED = '<redacted>';
 export const SECRET_NAME = 'secret';
@@ -36,6 +38,10 @@ export const REPEAT_SEPARATOR = '_';
 export const LOGIN_ROLE = 'login';
 export const IDENTIFIER_LABEL = 'the user name';
 export const PASSWORD_LABEL = 'the password';
+export const CURL_SCRIPT = 'endpoints.sh';
+export const COOKIE_TOKEN_SOURCE = 'cookie';
+export const PAGE_METHOD = 'GET';
+export const FETCHED_TOKEN_SOURCES: readonly string[] = Object.freeze(['hidden-field', 'meta', 'response']);
 
 export interface SampleEntry {
   readonly name: string;
@@ -319,6 +325,47 @@ function requireLogin(entries: Map<string, SampleValue>, endpoint: Endpoint): vo
   for (const [name, label] of loginInputs(endpoint)) if (entries.has(name)) entries.set(name, SampleText.required(name, label));
 }
 
+export function tokenPage(token: CsrfToken, endpoint: Pick<Endpoint, 'form'>): string | undefined {
+  if (token.source === COOKIE_TOKEN_SOURCE) return undefined;
+  return token.sourceUrl ?? endpoint.form?.pageUrl;
+}
+
+export function fetchedToken(token: CsrfToken, endpoint: Pick<Endpoint, 'form'>): boolean {
+  return FETCHED_TOKEN_SOURCES.includes(token.source) && EndpointIndex.tokenRequest(token) === undefined && tokenPage(token, endpoint) !== undefined;
+}
+
+export function tokenField(token: CsrfToken): string {
+  const name = token.sourceName || token.name;
+  if (token.source === 'hidden-field') return `the hidden field ${name}`;
+  if (token.source === 'meta') return `the meta tag ${name}`;
+  if (token.source === 'response') return `${name} in the response`;
+  if (token.source === COOKIE_TOKEN_SOURCE) return `the cookie ${name}`;
+  return `the CSRF token ${token.name}`;
+}
+
+export function missingMessages(endpoint: Endpoint, place: (url: string) => string = (url) => url): Map<string, string> {
+  const out = new Map<string, string>();
+  const run = `bash ${CURL_SCRIPT} ${ShellScript.functionName(endpoint.name)}`;
+  const add = (name: string, message: string): void => {
+    const key = SampleText.placeholderName(name);
+    if (!out.has(key)) out.set(key, message);
+  };
+  for (const token of endpoint.auth.csrf) {
+    if (token.source === COOKIE_TOKEN_SOURCE) {
+      add(token.sourceName || token.name, `${tokenField(token)}; ${run} reads it from its cookie jar`);
+      continue;
+    }
+    const page = tokenPage(token, endpoint);
+    const fetched = fetchedToken(token, endpoint);
+    const request = page === undefined ? undefined : `${EndpointIndex.tokenRequest(token) ?? PAGE_METHOD} ${place(page)}`;
+    add(token.name, request === undefined ? `${tokenField(token)}; its source was not captured` : `${tokenField(token)} of ${request}${fetched ? `; ${run} fetches it` : ''}`);
+    for (const cookie of token.sessionCookies ?? []) {
+      add(cookie, request === undefined ? `the cookie that ${token.name} is bound to` : `the session cookie of ${request} that ${token.name} is bound to${fetched ? `; ${run} keeps it` : ''}`);
+    }
+  }
+  return out;
+}
+
 export function cookieJar(endpoint: Endpoint): SampleText | undefined {
   const names = Credentials.exampleCookies(endpoint);
   if (names.length === 0) return undefined;
@@ -338,7 +385,7 @@ export function submitterEntries(field: FormField): [string, string][] {
 
 export function formSubmission(endpoint: Endpoint): FormSubmission | undefined {
   const form = endpoint.form;
-  if (!form) return undefined;
+  if (!form || FormSource.isScript(form)) return undefined;
   const enabled = form.submitters.filter((submitter) => !submitter.disabled);
   const mime = mimeEssence(endpoint.requestBody?.mimeType);
   const candidates: FormSubmission[] = [];
@@ -356,8 +403,9 @@ export function formSubmission(endpoint: Endpoint): FormSubmission | undefined {
 export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): RequestSample {
   const submission = formSubmission(endpoint);
   const links = csrfLinks(endpoint);
-  const link = (text: SampleText): SampleText => text.map((name) => placeholder(links.get(name) ?? name));
   const base = typeof opts.baseUrl === 'string' || opts.baseUrl === undefined ? SampleText.literal((opts.baseUrl ?? endpoint.origin).replace(/\/+$/, '')) : opts.baseUrl;
+  const missing = missingMessages(endpoint, (url) => (base.isLiteral && (url === endpoint.origin || url.startsWith(endpoint.origin + '/')) ? base.toString() + url.slice(endpoint.origin.length) : url));
+  const link = (text: SampleText): SampleText => text.map((name) => placeholder(links.get(name) ?? name)).withMissing(missing);
   const { path, params } = samplePath(endpoint, opts.pathVariables === true);
   const query = sampleQuery(endpoint, submission, opts).map((entry) => ({ name: entry.name, value: link(entry.value) }));
   const component = queryComponent(submission);
@@ -377,7 +425,7 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
     query,
     headers: headers.map((header) => ({ name: header.name, value: link(header.value) })),
   };
-  const cookie = opts.cookie === false ? undefined : (opts.cookie ?? cookieJar(endpoint));
+  const cookie = opts.cookie === false ? undefined : (opts.cookie ?? cookieJar(endpoint))?.withMissing(missing);
   const user = basicAuth(endpoint) ? SampleText.concat(placeholder(BASIC_USER), ':', placeholder(BASIC_PASSWORD)) : undefined;
   const withUser = user === undefined ? sample : { ...sample, user };
   const withCookie = cookie === undefined ? withUser : { ...withUser, cookie };

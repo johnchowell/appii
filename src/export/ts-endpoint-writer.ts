@@ -1,8 +1,9 @@
 import type { ApiModel, BodyShape, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
-import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, FormSource, Http, Json, RequestBodies, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
 import { Helpers } from './helpers.js';
+import type { TokenSourceMarkup } from './helpers.js';
 import { LoginGuide } from './login-guide.js';
 import { TsClientRuntime } from './ts-client-runtime.js';
 import { TsLiteralWriter } from './ts-literal-writer.js';
@@ -68,6 +69,9 @@ export class TsEndpointWriter {
   static readonly HEADER_INDEX = '[name: string]: string | undefined;';
   static readonly METHOD_SUFFIX = 'Endpoint';
   static readonly TEXT_PLAIN = 'text/plain';
+  static readonly URLENCODED = 'application/x-www-form-urlencoded';
+  static readonly SCRIPT_CHARSET = 'UTF-8';
+  static readonly PLAIN: TokenSourceMarkup = Object.freeze({ text: (value: string) => value, code: (value: string) => value, url: (value: string) => value });
   static readonly NAVIGATE_TYPES: ReadonlySet<string> = new Set(['document']);
   static readonly CORS_TYPES: ReadonlySet<string> = new Set(['fetch', 'xhr', 'eventsource']);
   static readonly UNMAPPED = 0xfffd;
@@ -226,6 +230,8 @@ export class TsEndpointWriter {
     }
     const hint = guide.hint(endpoint, call);
     if (hint !== undefined) lines.push(hint);
+    const form = Helpers.formSource(endpoint, TsEndpointWriter.PLAIN);
+    if (form !== undefined) lines.push(form);
     const redirects = TsEndpointWriter.#typedStatuses(endpoint).filter((status) => TsEndpointWriter.REDIRECT_STATUSES.has(status));
     if (redirects.length > 0) {
       lines.push(`The server answered ${redirects.join(', ')} with a redirect. The client follows it and returns the final response; with redirect: 'manual' it returns the ${redirects.length === 1 ? 'redirect' : 'redirects'}.`);
@@ -356,11 +362,12 @@ export class TsEndpointWriter {
         if (extra && Object.keys(extra).length > 0) out.query = extra;
         return out;
       });
+    const script = FormSource.isScript(form);
     const spec: Record<string, unknown> = {
       target: query ? 'query' : 'body',
       noValidate,
-      enctype: query ? 'application/x-www-form-urlencoded' : form.enctype,
-      charset: TsEndpointWriter.charset(form.charset),
+      enctype: query ? TsEndpointWriter.URLENCODED : script ? (FormSource.contentType(endpoint) ?? '') : form.enctype,
+      charset: TsEndpointWriter.charset(script ? TsEndpointWriter.SCRIPT_CHARSET : form.charset),
       page: form.pageUrl,
     };
     if (descriptor) {
@@ -458,7 +465,7 @@ export class TsEndpointWriter {
 
   static #textPlainForm(endpoint: Endpoint): boolean {
     const shape = endpoint.requestBody;
-    return endpoint.form?.enctype === TsEndpointWriter.TEXT_PLAIN && shape?.kind === 'text' && Schema.primaryType(shape.schema) === 'object';
+    return !FormSource.isScript(endpoint.form) && endpoint.form?.enctype === TsEndpointWriter.TEXT_PLAIN && shape?.kind === 'text' && Schema.primaryType(shape.schema) === 'object';
   }
 
   #body(endpoint: Endpoint): TsBodyCode | undefined {

@@ -21,6 +21,11 @@ export interface LoginSubmission {
   status?: number;
 }
 
+export interface LoginInvalidField {
+  name: string;
+  message: string;
+}
+
 export interface LoginOutcome {
   pageUrl: string;
   action: string;
@@ -28,6 +33,7 @@ export interface LoginOutcome {
   fields: string[];
   trigger: LoginTrigger;
   submission?: LoginSubmission;
+  invalid?: LoginInvalidField[];
   finalUrl: string;
   warnings: string[];
 }
@@ -158,6 +164,30 @@ export class LoginSubmitter {
       if (names.every(function (n) { return map.has(n); })) out.push({ form: all[f], list: list, map: map });
     }
     return out;
+  }
+  function watchInvalid(controls) {
+    var watch = { invalid: [] };
+    var seen = [];
+    function label(el) {
+      var name = el.getAttribute('name');
+      if (name) return name;
+      if (el.id) return '#' + el.id;
+      return el.localName + (el.type ? ' type=' + el.type : '');
+    }
+    function stop() {
+      for (var i = 0; i < controls.length; i++) controls[i].removeEventListener('invalid', onInvalid, true);
+    }
+    function onInvalid(event) {
+      var el = event.target;
+      if (seen.indexOf(el) >= 0) return;
+      if (seen.length === 0) setTimeout(stop, 0);
+      seen.push(el);
+      var message = '';
+      try { message = String(el.validationMessage || ''); } catch (e) { message = ''; }
+      watch.invalid.push({ name: label(el), message: message });
+    }
+    for (var i = 0; i < controls.length; i++) controls[i].addEventListener('invalid', onInvalid, true);
+    return watch;
   }`;
 
   static readonly FIND_FUNCTION = `function (args) {${LoginSubmitter.PRELUDE}
@@ -219,6 +249,15 @@ export class LoginSubmitter {
   return { present: candidates.length > 0, emptyPassword: false };
 }`;
 
+  static readonly VALIDITY_FUNCTION = `function (args) {${LoginSubmitter.PRELUDE}
+  var controls = [];
+  var candidates = matching(args.names);
+  for (var f = 0; f < candidates.length; f++) {
+    for (var c = 0; c < candidates[f].list.length; c++) if (controls.indexOf(candidates[f].list[c]) < 0) controls.push(candidates[f].list[c]);
+  }
+  return watchInvalid(controls);
+}`;
+
   static create(): LoginSubmitter {
     return new LoginSubmitter();
   }
@@ -237,6 +276,7 @@ export class LoginSubmitter {
       requests.push(request);
     };
     const before = page.url();
+    const validity = await LoginSubmitter.#watchValidity(page, names);
     page.on('request', onRequest);
     let trigger: LoginTrigger;
     try {
@@ -246,6 +286,7 @@ export class LoginSubmitter {
     } finally {
       page.off('request', onRequest);
     }
+    const invalid = (await LoginSubmitter.invalidFields(validity)).map((field) => ({ name: field.name, message: LoginSubmitter.#hide(field.message, fields) }));
     const submission = await this.#submission(requests, plan.secrets, options.timeoutMs);
     const finalUrl = page.url();
     const remaining = await this.#remaining(page, names);
@@ -256,9 +297,30 @@ export class LoginSubmitter {
       fields: plan.filled,
       trigger,
       ...(submission === undefined ? {} : { submission }),
+      ...(invalid.length === 0 ? {} : { invalid }),
       finalUrl,
-      warnings: LoginSubmitter.#warnings(submission, remaining, requests.length === 0 && finalUrl === before),
+      warnings: LoginSubmitter.#warnings(submission, remaining, requests.length === 0 && finalUrl === before, invalid),
     };
+  }
+
+  static async #watchValidity(page: Page, names: readonly string[]): Promise<JSHandle | undefined> {
+    try {
+      return await page.evaluateHandle(LoginSubmitter.expression(LoginSubmitter.VALIDITY_FUNCTION, { names }));
+    } catch {
+      return undefined;
+    }
+  }
+
+  static async invalidFields(validity: JSHandle | undefined): Promise<LoginInvalidField[]> {
+    if (validity === undefined) return [];
+    try {
+      const found = (await (await validity.getProperty('invalid')).jsonValue()) as unknown;
+      return Array.isArray(found) ? found.filter((entry): entry is LoginInvalidField => typeof entry?.name === 'string' && typeof entry?.message === 'string') : [];
+    } catch {
+      return [];
+    } finally {
+      await validity.dispose().catch(() => undefined);
+    }
   }
 
   async #find(page: Page, names: readonly string[], timeoutMs: number): Promise<FoundForm> {
@@ -380,15 +442,21 @@ export class LoginSubmitter {
     return [...new Set([value, encoded, encoded.replace(/%20/g, '+'), JSON.stringify(value).slice(1, -1)])];
   }
 
-  static #warnings(submission: LoginSubmission | undefined, remaining: Remaining, silent: boolean): string[] {
+  static #warnings(submission: LoginSubmission | undefined, remaining: Remaining, silent: boolean, invalid: readonly LoginInvalidField[]): string[] {
     const out: string[] = [];
     const status = submission?.status;
     if (submission !== undefined && status !== undefined && status >= LoginSubmitter.CLIENT_ERROR_MIN && status <= LoginSubmitter.CLIENT_ERROR_MAX) {
       out.push(`the login submission ${submission.method} ${LoginSubmitter.#withoutQuery(submission.url)} answered ${status}; the credentials are probably wrong`);
     }
     if (remaining.present && remaining.emptyPassword) out.push('the login form is still on the page with an empty password after submitting; the credentials were probably not accepted');
-    if (silent) out.push('submitting the login form sent no request and stayed on the same page');
+    if (invalid.length > 0) out.push(LoginSubmitter.refusal(invalid));
+    else if (silent) out.push('submitting the login form sent no request and stayed on the same page');
     return out;
+  }
+
+  static refusal(invalid: readonly LoginInvalidField[], subject = 'the login form'): string {
+    const fields = invalid.map((field) => (field.message === '' ? field.name : `${field.name} ("${field.message}")`));
+    return `the browser did not submit ${subject}: its form validation refused ${fields.join(' and ')}`;
   }
 
   static #handle(handles: readonly ElementHandle[], index: number, name: string): ElementHandle {

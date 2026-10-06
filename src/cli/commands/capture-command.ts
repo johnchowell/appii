@@ -1,5 +1,5 @@
 import { CaptureStore } from '../../capture/index.js';
-import type { LoginOutcome } from '../../capture/index.js';
+import type { LoginOutcome, ProbeOutcome } from '../../capture/index.js';
 import { BasePresenter, PresenterFactory, TextLayout } from '../../present/index.js';
 import { Meta } from '../../shared/index.js';
 import type { Capture } from '../../model/index.js';
@@ -12,6 +12,7 @@ import type { CommandDeps, CommandSpec } from '../command.js';
 import { ExitCode } from '../exit-code.js';
 import { Helpers } from '../helpers.js';
 import { LoginReport } from '../login-report.js';
+import { ProbeReport } from '../probe-report.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
 import { OutputTarget } from '../output-target.js';
@@ -54,6 +55,7 @@ export class CaptureCommand extends Command {
       examples: [
         `${app} capture https://example.com`,
         `${app} capture https://example.com/app --headless --duration 30 -o app.json`,
+        `${app} capture https://example.com/login --headless --probe-login -o anon.json`,
         `${app} capture https://example.com/login https://example.com/account --headless --login username --login password -o authed.json`,
         `${app} capture --from-har session.har`,
       ],
@@ -75,6 +77,7 @@ export class CaptureCommand extends Command {
     const har = OptionReader.string(values, 'from-har');
     let capture: Capture;
     let login: LoginOutcome | undefined;
+    let probe: ProbeOutcome | undefined;
     let report = LoginReport.create();
     if (har !== undefined) {
       if (positionals.length > 0) throw new UsageError(`--from-har converts a file and takes no URL (got '${positionals[0]}')`);
@@ -90,7 +93,7 @@ export class CaptureCommand extends Command {
       report = LoginReport.create(options.login ?? []);
       await this.#saver.preflight([out]);
       capture = await this.#runner
-        .record({ ...options, url, ...(visits.length === 0 ? {} : { visits }), onLogin: (outcome) => (login = outcome) }, ctx)
+        .record({ ...options, url, ...(visits.length === 0 ? {} : { visits }), onLogin: (outcome) => (login = outcome), onProbe: (outcome) => (probe = outcome) }, ctx)
         .catch(async (err: unknown) => {
           throw await this.#saver.keepPartial(err, out);
         });
@@ -99,6 +102,7 @@ export class CaptureCommand extends Command {
     const summary = new PresenterFactory(ctx.presenterOptions()).captureSummary();
     const blocks = [out.stdout ? summary.render({ capture, written: out.label }) : summary.render({ capture, file: out.label })];
     if (login !== undefined) blocks.push(report.render(login, ctx));
+    if (probe !== undefined) blocks.push(ProbeReport.create().render(probe, ctx));
     if (!out.stdout) blocks.push(CaptureCommand.next(`${Meta.APP_NAME} build ${BasePresenter.fileArgument(out.label)}`, ctx));
     out.report(blocks.join('\n\n'));
     return ExitCode.OK;

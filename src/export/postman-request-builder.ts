@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse } from '../model/index.js';
-import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, Samples, SampleText, Schema, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, FormSource, Http, Json, RequestBodies, Samples, SampleText, Schema, Text } from '../shared/index.js';
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -193,8 +193,9 @@ export class PostmanRequestBuilder {
     const lines = [`**${endpoint.method} ${endpoint.path}** - endpoint ${ctx.index.numberOf(endpoint)}, \`${endpoint.name}\` (${endpoint.kind}).`];
     if (endpoint.count === 0) lines.push('Inferred from an HTML form; no request was captured.');
     else lines.push(`Observed ${endpoint.count} time${endpoint.count === 1 ? '' : 's'}; statuses ${EndpointIndex.statuses(endpoint).join(', ') || 'none'}.`);
-    if (endpoint.form) lines.push(`Form \`${endpoint.form.selector}\` on ${Helpers.mapUrl(ctx.model, endpoint.form.pageUrl, ctx.options)}.`);
-    if (endpoint.form && !CharsetEncoder.for(endpoint.form.charset).utf8) {
+    const form = Helpers.formSource(endpoint, { text: (value) => value, code: (value) => `\`${value}\``, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
+    if (form !== undefined) lines.push(form);
+    if (endpoint.form && !FormSource.isScript(endpoint.form) && !CharsetEncoder.for(endpoint.form.charset).utf8) {
       lines.push(`The website encodes this form in ${endpoint.form.charset}. Postman uses UTF-8, so the bytes of non-ASCII values are different.`);
     }
     const guide = ctx.guide ?? new LoginGuide(ctx.model);

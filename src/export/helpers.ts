@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, CsrfToken, Endpoint, FormDescriptor, JsonSchema } from '../model/index.js';
-import { AppiiError, EndpointIndex, Http, Json, Samples, Schema, Text } from '../shared/index.js';
+import { AppiiError, EndpointIndex, FormSource, Http, Json, Samples, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 
 export interface TokenSourceMarkup {
@@ -80,9 +80,24 @@ export class Helpers {
     return undefined;
   }
 
+  static formSource(endpoint: Endpoint, markup: TokenSourceMarkup): string | undefined {
+    const form = endpoint.form;
+    if (!form) return undefined;
+    const where = `${markup.code(form.selector)} on ${markup.url(form.pageUrl)}`;
+    const type = FormSource.contentType(endpoint);
+    if (FormSource.isScript(form)) return `Sent by a script of the form ${where}${type ? ` as ${markup.text(type)}` : ''}.`;
+    return `Submitted by the form ${where} (${markup.text(form.enctype)}).`;
+  }
+
+  static formFacts(endpoint: Endpoint): Record<string, unknown> | undefined {
+    const form = endpoint.form;
+    if (!form) return undefined;
+    if (FormSource.isScript(form)) return { pageUrl: form.pageUrl, selector: form.selector, submittedBy: FormSource.SCRIPT };
+    return { pageUrl: form.pageUrl, selector: form.selector, enctype: form.enctype };
+  }
+
   static tokenPage(token: CsrfToken, endpoint: Endpoint): string | undefined {
-    if (token.source === 'cookie') return undefined;
-    return token.sourceUrl ?? endpoint.form?.pageUrl;
+    return Samples.tokenPage(token, endpoint);
   }
 
   static sample(model: ApiModel, endpoint: Endpoint, options: ExportOptions, extra: Samples.SampleOptions = {}): Samples.RequestSample {

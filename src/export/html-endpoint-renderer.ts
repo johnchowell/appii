@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse, ParamInfo } from '../model/index.js';
-import { Credentials, Curl, EndpointIndex, Http, Json, RequestBodies, Schema, Text } from '../shared/index.js';
+import { Credentials, Curl, EndpointIndex, FormSource, Http, Json, RequestBodies, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { LoginGuide } from './login-guide.js';
@@ -117,13 +117,11 @@ export class HtmlEndpointRenderer {
       const bound = SessionGuide.bound(token, (value) => `<code>${esc(value)}</code>`);
       meta.push(['CSRF', `<code>${esc(token.name)}</code> in the ${esc(token.location)}, from ${source}${bound === '' ? '' : `, ${bound}`}`]);
     }
-    if (endpoint.form) {
-      const form = endpoint.form;
-      const submitters = form.submitters.filter((s) => s.name !== '').map((s) => `<code>${esc(s.name)}=${esc(s.value)}</code>${s.formNoValidate ? ' (novalidate)' : ''}`);
-      meta.push([
-        'Form',
-        `<code>${esc(form.selector)}</code> on <code>${esc(Helpers.mapUrl(ctx.model, form.pageUrl, ctx.options))}</code> (${esc(form.enctype)})${submitters.length > 0 ? `; submitters ${submitters.join(', ')}` : ''}`,
-      ]);
+    const form = endpoint.form;
+    const source = Helpers.formSource(endpoint, { text: (value) => esc(value), code: (value) => `<code>${esc(value)}</code>`, url: (value) => `<code>${esc(Helpers.mapUrl(ctx.model, value, ctx.options))}</code>` });
+    if (form && source !== undefined) {
+      const submitters = FormSource.isScript(form) ? [] : form.submitters.filter((s) => s.name !== '').map((s) => `<code>${esc(s.name)}=${esc(s.value)}</code>${s.formNoValidate ? ' (novalidate)' : ''}`);
+      meta.push(['Form', `${source}${submitters.length > 0 ? ` Submitters: ${submitters.join(', ')}.` : ''}`]);
     }
     if (endpoint.samples.length > 0) meta.push(['Samples', endpoint.samples.map((sample) => `<code>${esc(sample.url)}</code>${sample.status !== undefined ? ` ${sample.status}` : ''}`).join('<br>')]);
     out.push(`<dl class="meta">${meta.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${value}</dd>`).join('')}</dl>`);
@@ -156,7 +154,7 @@ export class HtmlEndpointRenderer {
   example(endpoint: Endpoint, ctx: HtmlEndpointContext, id: string): string {
     const esc = HtmlEndpointRenderer.esc;
     const sample = Helpers.sample(ctx.model, endpoint, ctx.options);
-    const curl = Curl.curlCommand(sample, { variables: 'shell' });
+    const curl = Curl.curlCommand(sample, { variables: 'shell', explain: true });
     const variables = Curl.placeholderNames(sample);
     const block = `<div class="copy-block"><button type="button" class="copy" data-target="${esc(id)}">Copy</button><pre id="${esc(id)}">\n${esc(curl)}</pre></div>`;
     return variables.length === 0 ? block : `${block}<p class="variables">${esc(Curl.VARIABLES_LABEL)} ${variables.map((name) => `<code>${esc(name)}</code>`).join(' ')}</p>`;

@@ -1,5 +1,5 @@
 import type { ApiModel, CsrfToken, Endpoint } from '../model/index.js';
-import { Curl, EndpointIndex, Meta } from '../shared/index.js';
+import { Curl, EndpointIndex, Meta, Samples } from '../shared/index.js';
 import { CurlBearerScript } from './curl-bearer-script.js';
 import { CurlExporter } from './curl-exporter.js';
 import { CurlSessionScript } from './curl-session-script.js';
@@ -21,7 +21,7 @@ export interface SessionMarkup {
 
 export class SessionGuide {
   static readonly TITLE = 'Session steps';
-  static readonly SCRIPT = 'endpoints.sh';
+  static readonly SCRIPT = Samples.CURL_SCRIPT;
   static readonly MODEL_FILE = 'api.json';
   static readonly FORMAT = 'curl';
   static readonly VALUE = 'VALUE';
@@ -48,7 +48,7 @@ export class SessionGuide {
   }
 
   static fetched(endpoint: Endpoint): CsrfToken[] {
-    return endpoint.auth.csrf.filter((token) => CurlSessionScript.FETCHED_SOURCES.has(token.source) && EndpointIndex.tokenRequest(token) === undefined && Helpers.tokenPage(token, endpoint) !== undefined);
+    return endpoint.auth.csrf.filter((token) => Samples.fetchedToken(token, endpoint));
   }
 
   static step(token: CsrfToken, endpoint: Endpoint, markup: SessionMarkup): string {

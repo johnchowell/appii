@@ -118,9 +118,30 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     const markdown = new MarkdownExporter().export(model).content;
     const block = /```bash\n(curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
     assert.ok(block, markdown);
-    const run = await bash(['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`], dir, { APPII_CSRF_TOKEN: 't', APPII_USERNAME: 'u' });
+    const run = await bash(['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`], dir, { APPII_CSRF_TOKEN: 't', APPII_SESSION: 's', APPII_USERNAME: 'u' });
     assert.notEqual(run.code, 0);
+    assert.equal(run.stdout, '');
     assert.match(run.stderr, /APPII_PASSWORD: parameter null or not set/);
+  });
+
+  test('the documented example stops when the CSRF token or the session cookie it is bound to is not set, and names the page and the curl function (P3b)', async () => {
+    const markdown = new MarkdownExporter().export(model).content;
+    const block = /```bash\n(curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
+    assert.ok(block, markdown);
+    const script = ['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`];
+    const credentials = { APPII_USERNAME: 'u', APPII_PASSWORD: 'p' };
+    const noSession = await bash(script, dir, { ...credentials, APPII_CSRF_TOKEN: 't' });
+    assert.notEqual(noSession.code, 0);
+    assert.equal(noSession.stdout, '');
+    assert.match(noSession.stderr, new RegExp(`APPII_SESSION: the session cookie of GET ${site.origin.replace(/[.]/g, '\\.')}/login that csrf_token is bound to; bash endpoints\\.sh postLogin keeps it`));
+    const noToken = await bash(script, dir, { ...credentials, APPII_SESSION: 's' });
+    assert.notEqual(noToken.code, 0);
+    assert.equal(noToken.stdout, '');
+    assert.match(noToken.stderr, new RegExp(`APPII_CSRF_TOKEN: the hidden field csrf_token of GET ${site.origin.replace(/[.]/g, '\\.')}/login; bash endpoints\\.sh postLogin fetches it`));
+    const all = await bash(script, dir, { ...credentials, APPII_SESSION: 's1', APPII_CSRF_TOKEN: 't1' });
+    assert.equal(all.code, 0, all.stderr);
+    assert.ok(all.stdout.split('\n').includes('session=s1'), all.stdout);
+    assert.ok(all.stdout.split('\n').includes('csrf_token=t1'), all.stdout);
   });
 
   test('a CSRF header taken from a cookie: the function loads the page that sets it into the jar and sends the decoded value', async () => {

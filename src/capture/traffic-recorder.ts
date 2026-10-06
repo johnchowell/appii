@@ -25,6 +25,8 @@ export interface TrafficRecorderOptions {
 
 export type SettleListener = (request: Request, settled: boolean) => void;
 
+export type ProbeCheck = (method: string, url: string) => boolean;
+
 export type WorkerSetup = (channel: TargetChannel) => Promise<unknown>;
 
 export type TapOpener = (context: BrowserContext, page: Page, options: PageNetworkTapOptions) => Promise<PageNetworkTap | undefined>;
@@ -53,10 +55,12 @@ interface PendingRequest {
   readonly resourceType: ResourceType;
   readonly pageUrl: string | undefined;
   readonly redirectedFrom: string | undefined;
+  readonly probe: ProbeCheck | undefined;
   response?: Response;
   reads?: ResponseReads;
   finish?: () => void;
   settled?: boolean;
+  grace?: NodeJS.Timeout;
 }
 
 interface Tapped {
@@ -122,6 +126,7 @@ export class TrafficRecorder {
   #context: BrowserContext | undefined;
   #watcher: Promise<PageTargetWatcher | undefined> = Promise.resolve(undefined);
   #generation = 0;
+  #probe: ProbeCheck | undefined;
 
   constructor(options: TrafficRecorderOptions = {}, deps: TrafficRecorderDeps = {}) {
     this.#captureBodies = options.captureBodies ?? true;
@@ -231,6 +236,13 @@ export class TrafficRecorder {
     await this.#workers.attach(channel);
   }
 
+  probe(blocked: ProbeCheck): () => void {
+    this.#probe = blocked;
+    return () => {
+      if (this.#probe === blocked) this.#probe = undefined;
+    };
+  }
+
   onExchange(listener: (e: Exchange) => void): () => void {
     this.#listeners.add(listener);
     return () => {
@@ -277,6 +289,7 @@ export class TrafficRecorder {
       resourceType: ResourceTypeMapper.fromBrowser(request.resourceType()),
       pageUrl: TrafficRecorder.#pageUrlOf(request),
       redirectedFrom: previous ? this.#ids.get(previous) : undefined,
+      probe: this.#probe,
     };
     this.#pending.set(request, entry);
   };
@@ -310,7 +323,12 @@ export class TrafficRecorder {
   #settled(request: Request, entry: PendingRequest, settled: boolean): void {
     if ((entry.settled ?? false) === settled) return;
     entry.settled = settled;
-    if (settled) entry.finish?.();
+    clearTimeout(entry.grace);
+    entry.grace = undefined;
+    if (settled) {
+      entry.grace = setTimeout(() => entry.finish?.(), PageNetworkTap.SESSION_LAG_MS);
+      entry.grace.unref();
+    }
     for (const listener of [...this.#settleListeners]) {
       try {
         listener(request, settled);
@@ -391,6 +409,7 @@ export class TrafficRecorder {
     const entry = this.#pending.get(request);
     if (!entry) return;
     this.#pending.delete(request);
+    clearTimeout(entry.grace);
     this.#startBuild(request, entry, outcome);
     entry.finish?.();
   }
@@ -474,9 +493,14 @@ export class TrafficRecorder {
     }
     const finished = (outcome.kind === 'finished' && !arrived) || outcome.kind === 'downloaded';
     const timing = TrafficRecorder.#timing(request, entry, finished, endedAt);
+    const probed = capturedResponse === undefined && entry.probe?.(captured.method, captured.url) === true;
+    if (probed) {
+      const startMs = TrafficRecorder.#startTime(request) || entry.wallStart;
+      this.#workers.claim(captured.method, captured.url, startMs, Math.max(endedAt, startMs));
+    }
     const exchange: Exchange = {
       id: entry.id,
-      source: 'browser',
+      source: probed ? 'probe' : 'browser',
       resourceType: entry.resourceType,
       ...(entry.pageUrl ? { pageUrl: entry.pageUrl } : {}),
       startedAt: timing.startedAt,

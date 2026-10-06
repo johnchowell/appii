@@ -8,6 +8,8 @@ import { BrowserStateTracker } from './browser-state-tracker.js';
 import { CaptureStore } from './capture-store.js';
 import { CookieParser } from './cookie-parser.js';
 import { Helpers } from './helpers.js';
+import { LoginProbe } from './login-probe.js';
+import type { ProbeOutcome } from './login-probe.js';
 import { LoginSubmitter } from './login-submitter.js';
 import type { LoginField, LoginOutcome } from './login-submitter.js';
 import { NetworkIdleMonitor } from './network-idle-monitor.js';
@@ -21,6 +23,7 @@ export interface CaptureSessionOptions extends BrowserLauncherOptions {
   url?: string;
   visits?: readonly string[];
   login?: readonly LoginField[];
+  probeLogin?: boolean;
   durationMs?: number;
   idleMs?: number;
   recorder?: TrafficRecorderOptions;
@@ -29,6 +32,7 @@ export interface CaptureSessionOptions extends BrowserLauncherOptions {
   onExchange?: (e: Exchange) => void;
   onReady?: () => void;
   onLogin?: (outcome: LoginOutcome) => void;
+  onProbe?: (outcome: ProbeOutcome) => void;
 }
 
 export interface CaptureSessionDeps {
@@ -40,6 +44,7 @@ export interface CaptureSessionDeps {
   idle?: () => NetworkIdleMonitor;
   identity?: (identity: UserAgentIdentity) => UserAgentOverride;
   login?: () => LoginSubmitter;
+  probe?: () => LoginProbe;
 }
 
 interface RunFactories {
@@ -48,6 +53,7 @@ interface RunFactories {
   readonly idle: () => NetworkIdleMonitor;
   readonly identity: (identity: UserAgentIdentity) => UserAgentOverride;
   readonly login: () => LoginSubmitter;
+  readonly probe: () => LoginProbe;
 }
 
 interface CaptureRun {
@@ -101,6 +107,7 @@ export class CaptureSession {
       idle: deps.idle ?? (() => new NetworkIdleMonitor()),
       identity: deps.identity ?? ((identity) => new UserAgentOverride(identity)),
       login: deps.login ?? (() => new LoginSubmitter()),
+      probe: deps.probe ?? (() => new LoginProbe()),
     };
     this.recorder = deps.recorder;
     let resolveStop: () => void = () => undefined;
@@ -120,6 +127,7 @@ export class CaptureSession {
       idle: () => new NetworkIdleMonitor(),
       identity: (identity) => new UserAgentOverride(identity),
       login: () => LoginSubmitter.create(),
+      probe: () => LoginProbe.create(),
     });
   }
 
@@ -267,10 +275,12 @@ export class CaptureSession {
     const url = this.#options.url;
     const visits = this.#options.visits ?? [];
     const login = this.#options.login ?? [];
+    const probe = this.#options.probeLogin === true;
     if (url) await this.#open(run, page, url);
-    if (login.length > 0 || (url && visits.length > 0)) await run.idle.waitForIdle(this.#idleMs);
+    if (login.length > 0 || probe || (url && visits.length > 0)) await run.idle.waitForIdle(this.#idleMs);
     if (this.#stopped) return;
-    await this.#login(run, page, login);
+    if (probe) await this.#probe(run, page);
+    else await this.#login(run, page, login);
     for (const visit of visits) {
       if (this.#stopped) return;
       await this.#open(run, page, visit);
@@ -299,6 +309,15 @@ export class CaptureSession {
     if (fields.length === 0) return;
     const outcome = await this.#factories.login().submit(page, fields, { timeoutMs: this.#readTimeoutMs, settle: () => run.idle.waitForIdle(this.#idleMs) });
     if (!this.#stopped) this.#options.onLogin?.(outcome);
+  }
+
+  async #probe(run: CaptureRun, page: Page): Promise<void> {
+    const outcome = await this.#factories.probe().run(run.context, page, {
+      timeoutMs: this.#readTimeoutMs,
+      settle: () => run.idle.waitForIdle(this.#idleMs),
+      window: (blocked) => this.recorder.probe(blocked),
+    });
+    if (!this.#stopped) this.#options.onProbe?.(outcome);
   }
 
   async #open(run: CaptureRun, page: Page, url: string): Promise<void> {
@@ -389,6 +408,9 @@ export class CaptureSession {
   }
 
   static #checkLogin(options: CaptureSessionOptions): void {
+    if (options.probeLogin === true && (options.login?.length ?? 0) > 0) {
+      throw new AppiiError('BAD_INPUT', 'Capture options probeLogin and login cannot be combined: the probe fills the login form with placeholder values and stops what it sends, login submits your values');
+    }
     for (const field of options.login ?? []) {
       if (typeof field.name !== 'string' || field.name === '' || typeof field.value !== 'string') {
         throw new AppiiError('BAD_INPUT', 'Capture option login needs fields with a non-empty name and a string value');

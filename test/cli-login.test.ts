@@ -133,6 +133,32 @@ describe('appii build with several captures', () => {
     const model = await new ModelStore().load(join(dir, 'twice.json'));
     assert.equal(model.source.exchanges, authed.exchanges.length);
     assert.equal(model.endpoints.find((entry) => entry.path === '/account')?.count, 1);
+    assert.equal(model.source.file, 'authed.json');
+    assert.equal(model.source.captures, undefined);
+  });
+
+  test('a capture given twice is listed once in the model and in Built from, with a note that it is used once (P7)', async () => {
+    await copyFile(join(dir, 'anon.json'), join(dir, 'anon-copy.json'));
+    const run = await cli.run(['build', 'anon.json', 'anon.json', 'authed.json', './authed.json', 'anon-copy.json', '-o', 'repeated.json', '--width', '200']);
+    assert.equal(run.code, 0, run.stderr);
+    const model = await new ModelStore().load(join(dir, 'repeated.json'));
+    assert.deepEqual(
+      model.source.captures?.map((source) => [source.file, source.exchanges]),
+      [
+        ['anon.json', anon.exchanges.length],
+        ['authed.json', authed.exchanges.length],
+      ],
+    );
+    assert.equal(model.source.exchanges, anon.exchanges.length + authed.exchanges.length);
+    const built = run.stdout.split('\n').filter((line) => /Built from/.test(line));
+    assert.equal(built.length, 1, run.stdout);
+    assert.equal(built[0]?.match(/anon\.json/g)?.length, 1, built[0]);
+    assert.equal(built[0]?.match(/authed\.json/g)?.length, 1, built[0]);
+    assert.deepEqual(run.stderr.trim().split('\n'), [
+      'note: anon.json was given more than once; it is used once',
+      'note: ./authed.json was given more than once; it is used once',
+      'note: anon-copy.json holds the same requests as anon.json; it is used once',
+    ]);
   });
 
   test('the output may not overwrite any of the inputs, and every input must exist', async () => {
@@ -251,6 +277,15 @@ describe('appii capture --login and several URLs in a real browser', () => {
     assert.ok(!`${run.stdout}${run.stderr}`.includes(BAD_PASSWORD));
   });
 
+  test('a submission that the browser\'s form validation refuses is reported with the field and the browser\'s message, says not submitted, and never prints the value (LV2-6)', async () => {
+    const run = await cli.run(['capture', `${variants.origin}/email`, '--headless', '--idle', '0.3', '--login', 'user[email]=not-an-email-5c2e', '--login', 'user[password]=Long-Enough-Pass-1', '-o', 'invalid.json', '--width', '400']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(run.stderr, /\nwarning: the browser did not submit the login form: its form validation refused user\[email\] \("Please include an '@' in the email address\. '<hidden>' is missing an '@'\."\)\n/);
+    assert.doesNotMatch(run.stderr, /sent no request/);
+    assert.match(run.stdout, new RegExp(`\\n\\nLogin: filled the form on ${variants.origin}/email \\(user\\[email\\], user\\[password\\]\\) and tried to submit it by clicking its submit button; not submitted: the browser's form validation refused user\\[email\\]; now on ${variants.origin}/email\\n`));
+    for (const value of ['not-an-email-5c2e', 'Long-Enough-Pass-1']) assert.ok(!`${run.stdout}${run.stderr}`.includes(value), value);
+  });
+
   test('a GET login form keeps the values out of the summary', async () => {
     const run = await cli.run(['capture', `${variants.origin}/get`, '--headless', '--idle', '0.3', '--login', 'user=get-user-name', '--login', 'pass=Get-Pass-Secret-1', '-o', 'get.json', '--width', '400'], { stderrTty: true });
     assert.equal(run.code, 0, run.stderr);
@@ -286,11 +321,12 @@ describe('appii capture --login and several URLs in a real browser', () => {
     );
   });
 
-  test('run --with builds one model from an earlier anonymous capture and the new logged-in one', async () => {
+  test('run --with builds one model from an earlier anonymous capture and the new logged-in one, and an earlier capture given twice is used once', async () => {
     const anon = await cli.run(['capture', `${site.origin}/login`, '--headless', '--idle', '0.3', '-o', 'anon.json']);
     assert.equal(anon.code, 0, anon.stderr);
-    const run = await cli.run(['run', `${site.origin}/login`, `${site.origin}/account`, '--headless', '--idle', '0.3', '--login', 'username', '--login', 'password', '--with', 'anon.json', '--out-dir', 'authed', '--width', '200'], { env: ENV });
+    const run = await cli.run(['run', `${site.origin}/login`, `${site.origin}/account`, '--headless', '--idle', '0.3', '--login', 'username', '--login', 'password', '--with', 'anon.json', '--with', 'anon.json', '--out-dir', 'authed', '--width', '200'], { env: ENV });
     assert.equal(run.code, 0, run.stderr);
+    assert.match(run.stderr, /\nnote: anon\.json was given more than once; it is used once\n/);
     assert.match(run.stdout, /\n\nLogin: submitted the form on .*\/login \(username, password\) by clicking its submit button; POST .*\/login answered 302; now on .*\/\n/);
     const model = await new ModelStore().load(join(dir, 'authed', 'api.json'));
     assert.deepEqual(
@@ -304,6 +340,36 @@ describe('appii capture --login and several URLs in a real browser', () => {
     assert.ok(endpoint(model, 'POST', '/login'));
     assert.equal(model.endpoints.find((entry) => entry.method === 'POST' && entry.path === '/login')?.count, 1);
     for (const value of [LOGIN_USER.password]) assert.ok(!(await readFile(join(dir, 'authed', 'api.json'), 'utf8')).includes(value));
+  });
+
+  test('capture --probe-login records what the login form would send, says so, and nothing reaches the server (LV2-4)', async () => {
+    const before = site.requests.filter((request) => request.method === 'POST').length;
+    const run = await cli.run(['capture', `${site.origin}/login`, '--headless', '--idle', '0.3', '--probe-login', '-o', 'probe.json', '--width', '400']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(site.requests.filter((request) => request.method === 'POST').length, before, 'the probe reached the server');
+    assert.match(run.stderr, /^Recording headless: probing the login form with placeholder values, then waiting until the network is idle\./);
+    assert.match(run.stdout, /\nProbed: +POST \/login \(stopped in the browser while probing the login form; not sent\)\n/);
+    assert.match(run.stdout, new RegExp(`\\n\\nProbe: filled the login form on ${site.origin}/login \\(username, password\\) with placeholder values and clicked its submit button; the page tried to send POST /login; appii stopped it in the browser, so nothing reached the server; opened ${site.origin}/login again\\n`));
+    const capture = await new CaptureStore().load(join(dir, 'probe.json'));
+    assert.deepEqual(
+      capture.exchanges.filter((exchange) => exchange.source === 'probe').map((exchange) => `${exchange.request.method} ${new URL(exchange.request.url).pathname}`),
+      ['POST /login'],
+    );
+  });
+
+  test('run --probe-login gives the anonymous model a login endpoint known from the form, and --probe-login with --login is refused before a browser starts', async () => {
+    const run = await cli.run(['run', `${site.origin}/login`, '--headless', '--idle', '0.3', '--probe-login', '--out-dir', 'probed', '--width', '200']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(run.stdout, /\nLogin: +#\d+ POST \/login with username and password, known from a form; not submitted yet\n/);
+    const model = await new ModelStore().load(join(dir, 'probed', 'api.json'));
+    const login = model.endpoints.find((entry) => entry.method === 'POST' && entry.path === '/login');
+    assert.equal(login?.role, 'login');
+    assert.equal(login?.count, 0);
+    const requests = site.requests.length;
+    const both = await cli.run(['capture', `${site.origin}/login`, '--headless', '--probe-login', '--login', 'username=x'], { env: ENV });
+    assert.equal(both.code, 2);
+    assert.match(both.stderr, /^error: --probe-login and --login cannot be combined/);
+    assert.equal(site.requests.length, requests);
   });
 
   test('run --with refuses the capture file that the run itself overwrites', async () => {

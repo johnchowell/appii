@@ -2,7 +2,7 @@ import type { ApiModel, Endpoint, Exchange, FormDescriptor } from '../model/inde
 import { HarConverter } from '../capture/index.js';
 import { FormLinker, SecretCollector } from '../build/index.js';
 import type { Har } from '../capture/index.js';
-import { AppiiError, Json } from '../shared/index.js';
+import { AppiiError, FormSource, Json } from '../shared/index.js';
 import { ExchangeSanitizer } from './exchange-sanitizer.js';
 import type { SanitizeContext } from './exchange-sanitizer.js';
 import { BaseExporter } from './exporter.js';
@@ -67,7 +67,8 @@ export class HarExporter extends BaseExporter {
     const context = (endpoint: Endpoint): SanitizeContext => {
       let found = contexts.get(endpoint);
       if (!found) {
-        found = { secrets: FormLinker.endpointSecrets(endpoint, forms), ...(endpoint.form ? { formEnctype: endpoint.form.enctype, formCharset: endpoint.form.charset } : {}) };
+        const form = endpoint.form && !FormSource.isScript(endpoint.form) ? endpoint.form : undefined;
+        found = { secrets: FormLinker.endpointSecrets(endpoint, forms), ...(form ? { formEnctype: form.enctype, formCharset: form.charset } : {}) };
         contexts.set(endpoint, found);
       }
       return found;
@@ -85,7 +86,7 @@ export class HarExporter extends BaseExporter {
     for (const entry of har.log.entries) {
       const item = entry._appiiId === undefined ? undefined : byId.get(entry._appiiId);
       const postData = entry.request.postData;
-      if (item && postData) entry.request.postData = this.#postData.postData(postData, item.exchange, item.endpoint.form?.charset);
+      if (item && postData) entry.request.postData = this.#postData.postData(postData, item.exchange, FormSource.isScript(item.endpoint.form) ? undefined : item.endpoint.form?.charset);
     }
     return har;
   }

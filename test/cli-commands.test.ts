@@ -294,7 +294,11 @@ describe('cli commands', () => {
       const update = join(dir, 'update');
       await mkdir(join(update, 'captures'), { recursive: true });
       const capture = CaptureFactory.fixture().capture;
-      for (const name of ['anon.json', 'authed.json', 'later.json']) await new CaptureStore().save(join(update, 'captures', name), capture);
+      for (const name of ['anon.json', 'authed.json', 'later.json']) {
+        const tag = (id: string): string => `${name}-${id}`;
+        const own = { ...capture, exchanges: capture.exchanges.map((exchange) => ({ ...exchange, id: tag(exchange.id), ...(exchange.redirectedFrom === undefined ? {} : { redirectedFrom: tag(exchange.redirectedFrom) }) })) };
+        await new CaptureStore().save(join(update, 'captures', name), own);
+      }
       const harness = new CliHarness(update);
       const made = await harness.run(['build', 'captures/anon.json', 'captures/authed.json', '-o', 'models/api.json']);
       assert.equal(made.code, 0, made.stderr);

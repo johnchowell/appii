@@ -54,7 +54,22 @@ browser, about 2 ms on a local machine), and the body then reaches the page and
 appii together. Nothing is buffered: the page receives every chunk as it
 arrives, an event stream (`text/event-stream`) and a response whose
 `Content-Length` is above `--max-body` are let through without streaming, and
-routes that a Playwright script sets still answer. Responses that a service
+routes that a Playwright script sets still answer. The browser can report a held
+response before it reports the request itself; appii then waits for the request
+(at most 2 s, the response stays held) instead of letting the body through
+unstreamed. Chromium reports that a `fetch()` response has finished only once
+the page has read its body, and for a response that may not be stored
+(`Cache-Control: no-store`) whose body the page never reads, it never does. So
+appii does not wait for that report: the body has arrived once the bytes the
+browser delivered reach the `Content-Length` (counted on the wire for a
+compressed body), or, without a `Content-Length`, once Chromium delivered the
+body in a single report and nothing followed for the idle time (Chromium reports
+an unread body once, when the network has delivered all of it). Such a request
+no longer keeps the network busy, so the capture moves on after the idle time
+instead of after 30 s, and the recorded response has its full body and no
+error, also when the page navigates away and the browser cancels the request. A
+body that was cut off before all its bytes came is kept as a part and marked
+truncated. Responses that a service
 worker gives the page are not held and are read after they finish, so a page
 that navigates away at once loses them. The first requests of a
 new tab can start before appii's own browser session is attached to it; their
@@ -127,8 +142,66 @@ Login: submitted the form on https://example.com/login (username, password) by c
 appii prints a warning, and keeps the capture, when the submission answered
 with a 4xx status or the login form is still on the page with an empty
 password (the credentials were probably wrong), and when submitting sent no
-request at all. When no form has all the names, the capture stops with an
-error that lists the forms of the page and the names of their controls.
+request at all. When the browser's form validation refused the submission (a
+`type=email` field without `@`, a `required` field left empty, a `pattern` or
+`minlength` that the value does not meet), the browser fires an `invalid`
+event at each field it refused and sends nothing; appii records those events
+and names each field with the browser's own message, with the value hidden, and
+the summary says the form was not submitted:
+
+```
+warning: the browser did not submit the login form: its form validation refused user[email] ("Please include an '@' in the email address. '<hidden>' is missing an '@'.")
+Login: filled the form on https://example.com/signin (user[email], user[password]) and tried to submit it by clicking its submit button;
+       not submitted: the browser's form validation refused user[email]; now on https://example.com/signin
+```
+
+A form with `novalidate`, or a submit button with `formnovalidate`, is not
+validated, as in a browser. When no form has all the names, the capture stops
+with an error that lists the forms of the page and the names of their
+controls.
+
+#### Probing the login form without an account
+
+```sh
+appii capture https://example.com/login --headless --probe-login -o anon.json
+```
+
+A login form whose `action` is the page itself and that a script sends (a
+`fetch()` of JSON to `/api/auth/login`, for example) shows nothing about its
+endpoint until it is submitted. `--probe-login` submits it without an account
+and without letting anything reach the server: after the first URL has loaded
+and the network is idle, appii looks for the login form (a form with exactly
+one password field whose `autocomplete` is not `new-password`; a sign-up or
+change-password form has two, or a new password), waiting for it up to
+`--read-timeout`. It then stops every request the page starts, in the page, in
+its frames (also those in another process) and in its service workers, at the
+request stage of the DevTools Fetch domain, before anything leaves the
+browser. It fills the user name field (`autocomplete` `username` or `email`, a
+`type=email` field, or the one text field before the password) and the password
+with placeholder values (`appii-probe-user`, `appii-probe@example.invalid`,
+`appii-probe-password`, padded or cut to `minlength` and `maxlength`), checks
+required checkboxes and fills other required fields, and submits the form like
+`--login` does. Each request the page then tries to send is recorded with
+source `probe` and no response; appii fails it in the browser, opens a blank
+page so that the probed page cannot send anything later, stops intercepting
+and opens the first URL again, so the rest of the capture is not affected. The
+model takes from a probe only the method, URL and body shape of the request and
+the form that sent it: it never counts as a hit, a sample, a credential or an
+example, and the placeholder values never reach the model. A login request
+that the page sends only after another request it makes first (a CSRF token
+fetch, for example) is not seen, because that first request is stopped too.
+
+```
+Probed: POST /api/auth/login (stopped in the browser while probing the login form; not sent)
+
+Probe:  filled the login form on https://example.com/login (username, password) with placeholder values and clicked
+        its submit button; the page tried to send POST /api/auth/login; appii stopped it in the browser, so nothing
+        reached the server; opened https://example.com/login again
+```
+
+When the page has no login form, appii warns and records the capture without
+probing. `--probe-login` cannot be combined with `--login`. `appii run` takes
+it too.
 
 ### build: infer the API
 
@@ -168,7 +241,8 @@ appii build anon.json authed.json
 
 A capture made without an account already gives the login endpoint: the login
 form becomes an endpoint known from the form, with its fields and its CSRF
-token, even though nobody submitted it. `appii build` with several captures or
+token, even though nobody submitted it. For a login form that a script sends,
+record the anonymous capture with `--probe-login` (see above). `appii build` with several captures or
 HAR files builds one model from all of them, so the second build updates the
 model with what logging in found (the login request, the credential it issued,
 the endpoints that need it or only appear once logged in, the logout) and keeps
@@ -183,8 +257,18 @@ path and partition key (the cookie identity of RFC 6265bis) the capture that
 ended last wins. The start URL is the one of the earliest capture, and the
 model covers the time from the earliest start to the latest end. With more
 than one input, `source.captures` in `api.json` lists each input with its
-file, start URL, time span and number of requests. `-o` must not name one of
-the inputs.
+file, start URL, time span and number of requests. An input whose requests all
+come from an input given before it (the same file given twice, or a copy of
+it) adds nothing, so it is listed once, in `source.captures` and in `Built
+from`, and appii says so on stderr:
+
+```
+note: anon.json was given more than once; it is used once
+note: copy.json holds the same requests as anon.json; it is used once
+```
+
+When only one input remains, the model names it in `source.file`, as if it was
+given once. `-o` must not name one of the inputs.
 
 `appii run` takes `--with <file>` (repeatable) to do the same in one step: it
 records, then builds `api.json` from the earlier captures and the new one.
@@ -555,7 +639,8 @@ The login identifier and the password have no default value: give them as
 arguments or in `APPII_USERNAME` and `APPII_PASSWORD` (the variable names come
 from the field names), or the function stops with a message that names the
 variable. A token that only JavaScript puts into the page cannot be read from
-the HTML; the function then prints a warning that names the variable to set.
+the HTML; the function then prints a warning that names the URL it requested
+(under `APPII_BASE_URL` when you set it) and the variable to set.
 
 A login that answers with a bearer token in its JSON body
 (`login.issues.tokens`, a field path such as `accessToken` or
@@ -629,15 +714,37 @@ that the test scripts fill, and the order.
 
 The Markdown and HTML reports name the session cookie a CSRF token is bound to
 (`csrfToken.sessionCookies`: the token is only valid with the cookie that the
-same response set). Their example request is one curl command; for a login,
-and for an endpoint whose CSRF token comes from a page, a `Session steps`
-paragraph says how to get the token and gives the curl export commands that
-do it with a cookie jar, with the name of the curl function:
+same response set). Their example request is one curl command. It stops
+before it sends anything when the CSRF token or a cookie the token is bound to
+is not set, with a message that names where the value comes from and the curl
+function that gets it, so it never sends an empty token:
+
+```sh
+-b "session=${APPII_SESSION:?the session cookie of GET https://quotes.toscrape.com/login that csrf_token is bound to; bash endpoints.sh postLogin keeps it}"
+--data-urlencode "csrf_token=${APPII_CSRF_TOKEN:?the hidden field csrf_token of GET https://quotes.toscrape.com/login; bash endpoints.sh postLogin fetches it}"
+```
+
+The example in `list --show` stops the same way with the shell's own message
+(`${APPII_CSRF_TOKEN:?}`), because it folds the command to the terminal width.
+Site text in the message is percent-encoded where the shell would read it.
+For a login, and for an endpoint whose CSRF token comes from a page, a
+`Session steps` paragraph says how to get the token and gives the curl export
+commands that do it with a cookie jar, with the name of the curl function:
 
 ```sh
 appii export api.json --format curl -o endpoints.sh
 bash endpoints.sh postLogin username=VALUE password=VALUE
 ```
+
+An endpoint that a script of a form sends (`form.submittedBy: "script"`, for
+example a login form whose script posts JSON) is described as sent by a
+script of that form, with the content type of the request that was observed:
+`Sent by a script of the form form#login on https://example.com/login as
+application/json.` OpenAPI `x-appii-form` then has `submittedBy: "script"`
+instead of the form's `enctype`, and no export describes the form's own
+action, method, enctype or charset as the request. The examples, the curl
+script, the TypeScript client and the `har` export encode the body as the
+script sent it (UTF-8, the observed type), not as the form would.
 
 The Markdown and HTML reports list the distinct forms with how many times and
 on which pages each one appears. Their constraint cells list every enum value

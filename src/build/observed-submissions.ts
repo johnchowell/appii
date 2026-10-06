@@ -80,12 +80,18 @@ export class ObservedSubmissions {
   }
 
   scripted(form: FormDescriptor): Exchange[] {
+    const tokens = new Set(form.tokenFields);
     const names = SubmissionRules.fieldNames(form);
-    if (names.length === 0) return [];
+    if (!names.some((name) => !tokens.has(name))) return [];
     return (this.#scripts.get(HtmlPages.documentKey(form.pageUrl)) ?? []).filter((exchange) => {
       const carried = this.#names(exchange, form.charset);
-      return names.every((name) => carried.has(name));
+      return names.every((name) => carried.has(name) || (tokens.has(name) && ObservedSubmissions.#inHeader(form, name, exchange)));
     });
+  }
+
+  static #inHeader(form: FormDescriptor, name: string, exchange: Exchange): boolean {
+    const values = form.fields.filter((field) => field.name === name && field.value !== '').map((field) => field.value);
+    return values.length > 0 && exchange.request.headers.some((header) => values.includes(header.value));
   }
 
   entries(exchange: Exchange, charset: string): ReadonlyMap<string, readonly string[]> | undefined {

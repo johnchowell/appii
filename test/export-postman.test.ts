@@ -129,7 +129,7 @@ describe('PostmanExporter on a real browser capture of the fixture site', () => 
   test('descriptions document CSRF sources and forms', () => {
     const login = String(obj(find(collection, 'postLogin').request).description);
     assert.match(login, /CSRF token `csrf_token` \(body\) from hidden-field `csrf_token` on http:\/\/127\.0\.0\.1:\d+\/login/);
-    assert.match(login, /Form `form#login`/);
+    assert.match(login, /Submitted by the form `form#login` on http:\/\/127\.0\.0\.1:\d+\/login \(application\/x-www-form-urlencoded\)\./);
   });
 
   test('baseUrl option sets the variable value and maps documented URLs', () => {

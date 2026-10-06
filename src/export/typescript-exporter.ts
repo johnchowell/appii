@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Fs, Http, Meta, NamedReferences, Text } from '../shared/index.js';
+import { FormSource, Fs, Http, Meta, NamedReferences, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -89,7 +89,7 @@ export class TypeScriptExporter extends BaseExporter {
   static indexes(endpoints: readonly Endpoint[]): Record<string, string> {
     const out = new Map<string, string>();
     for (const endpoint of endpoints) {
-      const index = endpoint.form === undefined ? undefined : TsEndpointWriter.index(endpoint.form.charset);
+      const index = endpoint.form === undefined || FormSource.isScript(endpoint.form) ? undefined : TsEndpointWriter.index(endpoint.form.charset);
       if (index !== undefined) out.set(index[0], index[1]);
     }
     return Object.fromEntries([...out].sort(([a], [b]) => Text.compare(a, b)));

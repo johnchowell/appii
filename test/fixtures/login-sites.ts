@@ -294,6 +294,9 @@ export async function startFormVariantsSite(): Promise<LoginSite> {
     '/get': `<form action="/submit" method="get"><input name="user"><input type="password" name="pass"><button>Go</button></form>`,
     '/nothing': `<form action="/search"><input name="q"><button>Search</button></form><input name="loose">`,
     '/invisible': `<form action="/submit" method="post" style="display:none"><input name="user"><input type="password" name="pass"><button>Go</button></form>`,
+    '/email': `<form action="/submit" method="post"><input type="email" name="user[email]" required><input type="password" name="user[password]" minlength="8" required><button>Sign in</button></form>`,
+    '/email-novalidate': `<form action="/submit" method="post" novalidate><input type="email" name="user[email]" required><input type="password" name="user[password]" minlength="8" required><button>Sign in</button></form>`,
+    '/email-formnovalidate': `<form action="/submit" method="post"><input type="email" name="user[email]" required><input type="password" name="user[password]" required><button formnovalidate>Sign in</button></form>`,
   };
   return LoginServer.start((req, res, url, body) => {
     const html = pages[url.pathname];
@@ -391,4 +394,40 @@ fetch('/api/profile', { headers: token ? { authorization: 'Bearer ' + token } : 
     }
     return LoginServer.json(res, 404, { error: 'not found' });
   });
+}
+
+export async function startProbeEdgeSite(): Promise<LoginSite> {
+  let port = 0;
+  const pages: Record<string, () => string> = {
+    '/sw-login': () => `<div id="app">Loading...</div><script>
+(async () => {
+  await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  if (!navigator.serviceWorker.controller) await new Promise((resolve) => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
+  const status = await (await fetch('/api/status')).json();
+  document.getElementById('app').innerHTML = '<form id="login"><input type="email" name="email" autocomplete="email"><input type="password" name="secret" minlength="24" autocomplete="current-password"><label><input type="checkbox" name="terms" value="yes" required> I agree</label><label><input type="checkbox" name="remember" value="1"> Remember me</label><button>Sign in</button></form><iframe id="beacon" src="http://localhost:${port}/beacon-frame"></iframe><p>' + status.ok + '</p>';
+  const form = document.getElementById('login');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    document.getElementById('beacon').contentWindow.postMessage('login', '*');
+    fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: form.elements.email.value, secret: form.elements.secret.value, terms: form.elements.terms.checked, remember: form.elements.remember.checked }) });
+  });
+})();
+</script>`,
+    '/beacon-frame': () => `<script>window.addEventListener('message', () => { fetch('/api/frame-beacon', { method: 'POST', body: 'login-seen' }); });</script>`,
+    '/signup': () => `<form action="/register" method="post"><input name="user" autocomplete="username"><input type="password" name="pass"><input type="password" name="pass2"><button>Create account</button></form>`,
+    '/new-password': () => `<form action="/register" method="post"><input name="user" autocomplete="username"><input type="password" name="pass" autocomplete="new-password"><button>Create account</button></form>`,
+    '/pattern': () => `<form action="/session" method="post"><input name="member" pattern="[0-9]{6}" required><input type="password" name="pin"><button>Go</button></form>`,
+  };
+  const worker = `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', (event) => { if (new URL(event.request.url).pathname.startsWith('/api/')) event.respondWith(fetch(event.request)); });`;
+  const site = await LoginServer.start((req, res, url) => {
+    const page = pages[url.pathname];
+    if (page !== undefined) return LoginServer.send(res, 200, LoginServer.page('Probe', page()));
+    if (url.pathname === '/sw.js') return LoginServer.send(res, 200, worker, 'text/javascript; charset=utf-8');
+    return LoginServer.json(res, 200, { ok: true });
+  });
+  port = Number(new URL(site.origin).port);
+  return site;
 }

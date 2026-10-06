@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import type { ApiModel, CookieInfo } from '../src/model/index.js';
 import {
   BasePresenter,
@@ -498,20 +498,24 @@ describe('EndpointDetailPresenter', () => {
     assert.doesNotMatch(detail(12), /Samples/);
   });
 
-  test('example curl links CSRF headers to their cookie and is valid shell at any width', () => {
+  test('example curl links CSRF headers to their cookie, stops when the token is not set, and is valid shell at any width', () => {
     const wide = section(detail(4, { width: 200 }), 'Example request (curl)');
     const command = wide.slice(0, wide.indexOf(''));
     assert.deepEqual(command, [
       "curl -sS -X POST 'https://shop.example.com/api/items' \\",
-      '  -H "x-csrf-token: ${APPII_CSRF}" \\',
+      '  -H "x-csrf-token: ${APPII_CSRF:?}" \\',
       "  -H 'Content-Type: application/json' \\",
-      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF}" \\',
+      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF:?}" \\',
       `  --data-raw '{"name":"Thing","price":5}' \\`,
       '  --compressed',
     ]);
     assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF');
+    const unset = spawnSync('sh', ['-c', command.join('\n').replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a' }, encoding: 'utf8' });
+    assert.notEqual(unset.status, 0);
+    assert.equal(unset.stdout, '');
+    assert.match(unset.stderr, /APPII_CSRF/);
     const argv = (script: string) =>
-      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_SID: 's', APPII_THEME: 't', APPII_EMAIL: 'e', APPII_PASSWORD: 'p' } }).toString();
+      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_CSRF_TOKEN: 'k', APPII_SID: 's', APPII_THEME: 't', APPII_EMAIL: 'e', APPII_PASSWORD: 'p' } }).toString();
     for (const ref of [4, 9, 12]) {
       const reference = section(detail(ref, { width: 400 }), 'Example request (curl)');
       const expected = argv(reference.slice(0, reference.indexOf('')).join('\n'));
@@ -532,7 +536,8 @@ describe('EndpointDetailPresenter', () => {
     assert.match(signup, /--form-string 'username=username'/);
     assert.match(signup, /--form-string 'interests=a' \\\n {2}--form-string 'interests=c'/);
     const login = detail(9, { width: 200 });
-    assert.match(login, /--data-urlencode "csrf_token=\$\{APPII_CSRF_TOKEN\}"/);
+    assert.match(login, /--data-urlencode "csrf_token=\$\{APPII_CSRF_TOKEN:\?\}"/);
+    assert.match(login, /-b "sid=\$\{APPII_SID:\?\}; theme=\$\{APPII_THEME\}"|-b "[^"]*sid=\$\{APPII_SID:\?\}/);
   });
 
   test('exampleRequest links double-submit cookies and leaves other placeholders alone', () => {

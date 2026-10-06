@@ -89,7 +89,53 @@ describe('CaptureMerger', () => {
     assert.equal(twice.capture.pages.length, authed.pages.length);
     assert.equal(twice.capture.websockets.length, authed.websockets.length);
     assert.equal(twice.capture.cookies.length, authed.cookies.length);
-    assert.equal(twice.sources.length, 2);
+  });
+
+  test('a capture given twice is listed once, like its exchanges, and the repeat is reported (P7)', () => {
+    const anon = anonymous();
+    const authed = authenticated();
+    const once = CaptureMerger.create().merge([{ capture: anon, file: 'anon.json' }, { capture: authed, file: 'authed.json' }]);
+    const inputs = [
+      { capture: anon, file: 'anon.json' },
+      { capture: anon, file: 'anon.json' },
+      { capture: authed, file: 'authed.json' },
+      { capture: structuredClone(authed), file: 'copy.json' },
+    ];
+    const twice = CaptureMerger.create().merge(inputs);
+    assert.deepEqual(twice.sources, once.sources);
+    assert.deepEqual(
+      twice.capture.exchanges.map((exchange) => exchange.id),
+      once.capture.exchanges.map((exchange) => exchange.id),
+    );
+    assert.equal(
+      twice.sources.reduce((sum, source) => sum + source.exchanges, 0),
+      twice.capture.exchanges.length,
+    );
+    assert.deepEqual(
+      twice.repeated.map(({ input, of }) => [input.file, of.file]),
+      [
+        ['anon.json', 'anon.json'],
+        ['copy.json', 'authed.json'],
+      ],
+    );
+    assert.equal(twice.repeated[0]?.input, inputs[1]);
+    assert.equal(twice.repeated[0]?.of, inputs[0]);
+    assert.deepEqual(once.repeated, []);
+  });
+
+  test('a capture whose requests are only partly known from an earlier input, or an empty capture of another time, is its own source', () => {
+    const anon = anonymous();
+    const part = { ...structuredClone(anon), exchanges: [...structuredClone(anon.exchanges), ...authenticated().exchanges] };
+    const empty: Capture = { ...anon, exchanges: [], startedAt: new Date(Date.parse(anon.startedAt) + HOUR).toISOString(), endedAt: new Date(Date.parse(anon.endedAt) + HOUR).toISOString() };
+    const merged = CaptureMerger.create().merge([{ capture: anon, file: 'a.json' }, { capture: part, file: 'b.json' }, { capture: empty, file: 'c.json' }, { capture: structuredClone(empty), file: 'd.json' }]);
+    assert.deepEqual(
+      merged.sources.map((source) => source.file),
+      ['a.json', 'b.json', 'c.json'],
+    );
+    assert.deepEqual(
+      merged.repeated.map(({ input, of }) => [input.file, of.file]),
+      [['d.json', 'c.json']],
+    );
   });
 
   test('cookies are unioned by name, domain, host-only flag, path and partition key, and the capture that ended last wins', () => {

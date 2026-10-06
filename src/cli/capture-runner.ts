@@ -7,6 +7,7 @@ import type { CliContext } from './cli-context.js';
 import { CliBrowserLauncher } from './cli-browser-launcher.js';
 import { ExitCode } from './exit-code.js';
 import { LoginReport } from './login-report.js';
+import { ProbeReport } from './probe-report.js';
 import type { CliSignal } from './process-signals.js';
 
 export interface RecordingSession {
@@ -67,6 +68,7 @@ export class CaptureRunner {
     const steps: string[] = [];
     const login = options.login ?? [];
     if (login.length > 0) steps.push(`logging in with the form that has ${[...new Set(login.map((field) => field.name))].join(', ')}`);
+    if (options.probeLogin === true) steps.push('probing the login form with placeholder values');
     const visits = options.visits?.length ?? 0;
     if (visits > 0) steps.push(`opening ${Text.plural(visits, 'more URL')} in order`);
     return steps.length === 0 ? undefined : steps.join(', then ');
@@ -78,6 +80,8 @@ export class CaptureRunner {
     const onExchange = options.onExchange;
     const onReady = options.onReady;
     const onLogin = options.onLogin;
+    const onProbe = options.onProbe;
+    const probe = ProbeReport.create();
     let interrupted = false;
     const session = this.#sessions({
       ...options,
@@ -92,6 +96,10 @@ export class CaptureRunner {
       onLogin: (outcome) => {
         for (const warning of report.warnings(outcome)) ctx.err(ctx.ansi.clean(warning));
         onLogin?.(outcome);
+      },
+      onProbe: (outcome) => {
+        for (const warning of probe.warnings(outcome)) ctx.err(ctx.ansi.clean(warning));
+        onProbe?.(outcome);
       },
     });
     const traps = CaptureRunner.SIGNALS.map((signal) => {

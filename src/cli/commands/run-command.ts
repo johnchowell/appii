@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { CaptureMerger, CaptureStore } from '../../capture/index.js';
-import type { CaptureInput, LoginOutcome } from '../../capture/index.js';
+import type { CaptureInput, LoginOutcome, ProbeOutcome } from '../../capture/index.js';
 import { ExporterRegistry } from '../../export/index.js';
 import { BasePresenter, PresenterFactory, TextLayout } from '../../present/index.js';
 import { Fs, Meta } from '../../shared/index.js';
@@ -16,6 +16,7 @@ import type { CommandDeps, CommandSpec } from '../command.js';
 import { ExitCode } from '../exit-code.js';
 import { Helpers } from '../helpers.js';
 import { LoginReport } from '../login-report.js';
+import { ProbeReport } from '../probe-report.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
 import { OutputTarget } from '../output-target.js';
@@ -30,6 +31,11 @@ export interface RunCommandDeps extends CommandDeps {
   registry?: ExporterRegistry;
   capture?: CaptureOptionGroup;
   build?: BuildOptionGroup;
+}
+
+interface EarlierCapture {
+  readonly input: CaptureInput;
+  readonly label: string;
 }
 
 export class RunCommand extends Command {
@@ -73,6 +79,7 @@ export class RunCommand extends Command {
       examples: [
         `${app} run https://example.com`,
         `${app} run https://example.com/app --headless --duration 20 --out-dir shop`,
+        `${app} run https://example.com/login --headless --probe-login --out-dir anon`,
         `${app} run https://example.com/login https://example.com/account --headless --login username --login password --with anon/capture.json --out-dir authed`,
       ],
     };
@@ -106,17 +113,22 @@ export class RunCommand extends Command {
     const earlier = await this.#earlier(OptionReader.strings(values, 'with'), [captureFile, modelFile], modelFile.path ?? join(dir, RunCommand.MODEL_FILE), ctx);
     await this.#saver.preflight([captureFile, modelFile]);
     let login: LoginOutcome | undefined;
+    let probe: ProbeOutcome | undefined;
     const capture = await this.#runner
-      .record({ ...captureOptions, url, ...(visits.length === 0 ? {} : { visits }), onLogin: (outcome) => (login = outcome) }, ctx)
+      .record({ ...captureOptions, url, ...(visits.length === 0 ? {} : { visits }), onLogin: (outcome) => (login = outcome), onProbe: (outcome) => (probe = outcome) }, ctx)
       .catch(async (err: unknown) => {
         throw await this.#saver.keepPartial(err, captureFile);
       });
     await this.#saver.save(captureFile, capture);
     ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: captureFile.label }));
     if (login !== undefined) ctx.out('\n' + LoginReport.create(captureOptions.login ?? []).render(login, ctx));
+    if (probe !== undefined) ctx.out('\n' + ProbeReport.create().render(probe, ctx));
     ctx.out('');
-    const merged = this.#merger.merge([...earlier, { capture, file: RunCommand.CAPTURE_FILE }]);
-    const source = earlier.length === 0 ? RunCommand.CAPTURE_FILE : undefined;
+    const current: CaptureInput = { capture, file: RunCommand.CAPTURE_FILE };
+    const merged = this.#merger.merge([...earlier.map((entry) => entry.input), current]);
+    const labels = new Map<CaptureInput, string>(earlier.map((entry): [CaptureInput, string] => [entry.input, entry.label]));
+    for (const note of BuildCommand.repeatNotes(merged.repeated, (input) => labels.get(input) ?? input.file ?? '')) ctx.err(ctx.ansi.clean(note));
+    const source = merged.sources.length === 1 ? merged.sources[0]?.file : undefined;
     await this.#step.run(merged.capture, { out: modelFile, ...(source === undefined ? {} : { source }), sources: merged.sources, options: buildOptions, hints: false }, ctx);
     const formats = this.#registry.list().map((exporter) => exporter.format).join(', ');
     const model = BasePresenter.fileArgument(modelFile.label);
@@ -125,14 +137,14 @@ export class RunCommand extends Command {
     return ExitCode.OK;
   }
 
-  async #earlier(files: readonly string[], outputs: readonly OutputTarget[], model: string, ctx: CliContext): Promise<CaptureInput[]> {
-    const inputs: CaptureInput[] = [];
+  async #earlier(files: readonly string[], outputs: readonly OutputTarget[], model: string, ctx: CliContext): Promise<EarlierCapture[]> {
+    const inputs: EarlierCapture[] = [];
     for (const file of files) {
       const path = ctx.resolve(file);
       for (const output of outputs) {
         if (await output.overwrites(path)) throw new UsageError(`--with ${file} is the ${output.label} that this run writes; copy it elsewhere or use another --out-dir`);
       }
-      inputs.push({ capture: await this.#store.load(path), file: BuildCommand.source(model, path) });
+      inputs.push({ input: { capture: await this.#store.load(path), file: BuildCommand.source(model, path) }, label: file });
     }
     return inputs;
   }

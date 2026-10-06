@@ -1,5 +1,5 @@
 import type { ApiModel } from '../model/index.js';
-import { Text } from '../shared/index.js';
+import { Samples, Text } from '../shared/index.js';
 
 export class CurlSessionScript {
   static readonly JAR_VARIABLE = 'APPII_COOKIE_JAR';
@@ -13,7 +13,7 @@ export class CurlSessionScript {
   static readonly TOKEN_HELPER = 'appii_token';
   static readonly HELPERS: readonly string[] = Object.freeze(['appii_jar', 'appii_cookie', 'appii_unpct', 'appii_page', 'appii_html', 'appii_token']);
   static readonly DOCUMENT_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
-  static readonly FETCHED_SOURCES: ReadonlySet<string> = new Set(['hidden-field', 'meta', 'response']);
+  static readonly FETCHED_SOURCES: ReadonlySet<string> = new Set(Samples.FETCHED_TOKEN_SOURCES);
   static readonly SCANNER = String.raw`function hexval(h,   i, c, v) { v = 0; h = tolower(h); if (h == "") return -1; for (i = 1; i <= length(h); i++) { c = index("0123456789abcdef", substr(h, i, 1)) - 1; if (c < 0) return -1; v = v * 16 + c } return v }
 function utf8(cp) {
   if (cp < 0 || cp > 1114111) return "?"

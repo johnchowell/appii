@@ -7,13 +7,14 @@ import type { PlaceholderEncoding, PlaceholderPart, SampleTextInput } from './sa
 import { ShellScript } from './shell-script.js';
 import { shellQuote } from './text.js';
 
-export type VariableMode = 'literal' | 'shell' | 'script';
+export type VariableMode = 'literal' | 'plain' | 'shell' | 'script';
 
 export interface CurlOptions {
   variables?: VariableMode;
   variable?: (name: string) => string;
   cookie?: SampleText;
   jar?: string;
+  explain?: boolean;
   multiline?: boolean;
   extraArgs?: readonly string[];
 }
@@ -152,16 +153,27 @@ export function variableName(name: string): string {
   return VARIABLE_PREFIX + name.toUpperCase();
 }
 
-export function variableReference(name: string, part: PlaceholderPart, variables: VariableMode, variable: (name: string) => string = variableName): string {
+export function variableReference(name: string, part: PlaceholderPart, variables: VariableMode, variable: (name: string) => string = variableName, explain: (variable: string) => boolean = () => false): string {
   const helper = variables === 'script' && part.encoding !== undefined ? ENCODING_HELPERS[part.encoding] : undefined;
   if (helper !== undefined) return `$(${helper} ${variable(name)})`;
-  return variables === 'shell' && part.required !== undefined ? `\${${variable(name)}${REQUIRED_OPERATOR}}` : `\${${variable(name)}}`;
+  if (variables !== 'shell' || (part.required === undefined && part.missing === undefined)) return `\${${variable(name)}}`;
+  const message = part.required === undefined && part.missing !== undefined && explain(variable(name)) ? ShellScript.expansionWord(part.missing) : '';
+  return `\${${variable(name)}${REQUIRED_OPERATOR}${message}}`;
 }
 
-export function shellArg(input: SampleTextInput, variables: VariableMode = 'literal', variable: (name: string) => string = variableName): string {
+export function firstUse(enabled: boolean): (variable: string) => boolean {
+  const seen = new Set<string>();
+  return (variable: string): boolean => {
+    if (!enabled || seen.has(variable)) return false;
+    seen.add(variable);
+    return true;
+  };
+}
+
+export function shellArg(input: SampleTextInput, variables: VariableMode = 'literal', variable: (name: string) => string = variableName, explain: (variable: string) => boolean = () => false): string {
   const text = SampleText.of(input);
   if (variables === 'literal' || text.isLiteral) return shellQuote(text.toString());
-  const reference = (name: string, part: PlaceholderPart): string => variableReference(name, part, variables, variable);
+  const reference = (name: string, part: PlaceholderPart): string => variableReference(name, part, variables, variable, explain);
   if (text.parts.every((part) => part.kind === 'placeholder' || !DOUBLE_QUOTE_SPECIAL.test(part.text))) {
     return `"${text.render({ literal: (literal) => literal, placeholder: reference })}"`;
   }
@@ -212,7 +224,8 @@ export function rawBody(body: SampleBody | undefined): RawBody | undefined {
 export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): string {
   const vars = opts.variables ?? 'literal';
   const variable = opts.variable ?? variableName;
-  const arg = (text: SampleTextInput): string => shellArg(text, vars, variable);
+  const explain = firstUse(opts.explain === true);
+  const arg = (text: SampleTextInput): string => shellArg(text, vars, variable, explain);
   const head: string[] = ['curl', '-sS'];
   if (sample.method === HEAD_METHOD) head.push(HEAD_FLAG);
   else if (sample.method !== GET_METHOD || sample.body) head.push('-X', shellWord(sample.method));
@@ -225,7 +238,7 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   const cookie = opts.cookie ?? sample.cookie;
   if (cookie) groups.push(['-b', arg(cookie)]);
   if (opts.jar !== undefined) groups.push(['-b', opts.jar, '-c', opts.jar]);
-  if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
+  if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable, explain)})`]);
   else groups.push(...bodyGroups(sample.body, arg, vars));
   groups.push([COMPRESSED_FLAG]);
   for (const extra of opts.extraArgs ?? []) groups.push([extra]);
@@ -279,7 +292,7 @@ function multipartBody(entries: readonly FormEntry[], charset: string | undefine
   return { contentType: MULTIPART_CONTENT_TYPE + mark, chunks };
 }
 
-function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: string) => string): string {
+function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: string) => string, explain: (variable: string) => boolean): string {
   const commands: string[] = [];
   let format = '';
   let args: string[] = [];
@@ -301,7 +314,7 @@ function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: strin
       else if (vars === 'literal') format += printfFormat(new TextEncoder().encode(SampleText.DISPLAY.placeholder(part.name, part)));
       else {
         format += PRINTF_PLACEHOLDER;
-        args.push(`"${variableReference(part.name, { ...part, encoding: undefined }, vars, variable)}"`);
+        args.push(`"${variableReference(part.name, { ...part, encoding: undefined }, vars, variable, explain)}"`);
       }
     }
   }

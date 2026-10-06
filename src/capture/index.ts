@@ -18,7 +18,7 @@ export type { WorkerNetworkLogOptions, WorkerRequest } from './worker-network-lo
 export { ServiceWorkerRecorder } from './service-worker-recorder.js';
 export type { ServiceWorkerRecorderDeps, ServiceWorkerRecorderOptions, WorkerNetworkLogFactory } from './service-worker-recorder.js';
 export type * from './cdp-network-types.js';
-export type { TapOpener, TargetWatcherStarter, TrafficRecorderDeps, TrafficRecorderOptions, WorkerSetup } from './traffic-recorder.js';
+export type { ProbeCheck, TapOpener, TargetWatcherStarter, TrafficRecorderDeps, TrafficRecorderOptions, WorkerSetup } from './traffic-recorder.js';
 export { ResourceTypeMapper } from './resource-type-mapper.js';
 export type { ResourceTypeHints } from './resource-type-mapper.js';
 export { LiveDom } from './live-dom.js';
@@ -37,7 +37,11 @@ export type { BrandVersion, UserAgentMetadata, UserAgentProbe } from './user-age
 export { UserAgentOverride } from './user-agent-override.js';
 export type { BrowserLauncherOptions, LaunchedBrowser } from './browser-launcher.js';
 export { LoginSubmitter } from './login-submitter.js';
-export type { LoginField, LoginOutcome, LoginSubmission, LoginSubmitOptions, LoginTrigger } from './login-submitter.js';
+export type { LoginField, LoginInvalidField, LoginOutcome, LoginSubmission, LoginSubmitOptions, LoginTrigger } from './login-submitter.js';
+export { RequestBlocker } from './request-blocker.js';
+export type { BlockedRequest, RequestBlockerDeps } from './request-blocker.js';
+export { LoginProbe } from './login-probe.js';
+export type { LoginProbeDeps, LoginProbeOptions, ProbeOutcome, ProbeWindow, RequestBlockerStarter } from './login-probe.js';
 export { CaptureSession } from './capture-session.js';
 export type { CaptureSessionDeps, CaptureSessionOptions } from './capture-session.js';
 export { HarConverter } from './har-converter.js';
@@ -47,4 +51,4 @@ export { CaptureValidator } from './capture-validator.js';
 export { CaptureStore } from './capture-store.js';
 export type { CaptureStoreDeps, ModelInputAdvice, StoredInput, StoredKind } from './capture-store.js';
 export { CaptureMerger } from './capture-merger.js';
-export type { CaptureInput, MergedCapture } from './capture-merger.js';
+export type { CaptureInput, MergedCapture, RepeatedCapture } from './capture-merger.js';

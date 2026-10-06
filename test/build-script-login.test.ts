@@ -287,3 +287,39 @@ describe('a logout page that only runs the logout script is not the logout next 
     assert.equal(logout.name, 'getLogout');
   });
 });
+
+describe('a script login that sends the CSRF token of its form in a header is linked to the form', () => {
+  const CSRF = 'csrf-6b1d9e4f2a7c3085d1e6f4a9b2c7d0e3';
+  const SPA_FORM = CaptureFactory.page(
+    'Tasks',
+    `<div id="app"><form id="login"><input type="hidden" name="_csrf" value="${CSRF}"><input type="email" name="email" autocomplete="username"><input type="password" name="pass" autocomplete="current-password"><button type="submit">Sign in</button></form></div>`,
+  );
+
+  function capture(f: CaptureFactory, headers: Record<string, string>): void {
+    f.document('/login', SHELL);
+    f.snapshot('/login', 'Tasks', SPA_FORM);
+    f.json('POST', '/api/login', 200, { ok: true }, {
+      pageUrl: `${ORIGIN}/login`,
+      requestHeaders: { 'content-type': 'application/json', ...headers },
+      requestBody: { json: { email: 'someone@example.test', pass: 'Sesame-2026' } },
+      responseHeaders: { 'set-cookie': `sid=${TOKEN}; Path=/; HttpOnly` },
+    });
+  }
+
+  test('the token value in a request header stands for the hidden token field, so the request is the form login', () => {
+    const f = new CaptureFactory(ORIGIN);
+    capture(f, { 'x-csrf-token': CSRF });
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/api/login');
+    assert.equal(login.role, 'login');
+    assert.equal(login.form?.submittedBy, 'script');
+    assert.deepEqual(model.forms.map((form) => form.endpoints), [[login.id]]);
+  });
+
+  test('a request without the token value is not linked to the form by its other fields alone', () => {
+    const f = new CaptureFactory(ORIGIN);
+    capture(f, { 'x-csrf-token': 'some-other-value' });
+    const model = build(f);
+    assert.equal(endpoint(model, 'POST', '/api/login').form, undefined);
+  });
+});

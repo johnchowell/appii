@@ -265,7 +265,7 @@ describe('PageNetworkTap: fetch and XHR responses are held at their headers only
   });
 
   test('a pause whose request the tap never saw, or whose streaming cannot start, is still let through', async () => {
-    const { session, tap } = await pausingTap();
+    const { session, tap } = await pausingTap({ holdLimitMs: 100 });
     session.send = async function (method: string, params: Record<string, unknown> = {}): Promise<unknown> {
       this.sent.push({ method, params });
       if (method === 'Network.streamResourceContent') throw new Error('Request with the provided ID does not exists');
@@ -275,7 +275,12 @@ describe('PageNetworkTap: fetch and XHR responses are held at their headers only
     session.request('n7', 'http://x/worker-owned');
     session.pause('i7', 'n7', 200);
     await until(() => session.methods().filter((method) => method === 'Fetch.continueResponse').length === 2);
-    assert.deepEqual(session.methods(), ['Fetch.continueResponse', 'Network.streamResourceContent', 'Fetch.continueResponse']);
+    assert.deepEqual(session.methods(), ['Network.streamResourceContent', 'Fetch.continueResponse', 'Fetch.continueResponse']);
+    assert.deepEqual(
+      session.sent.filter((entry) => entry.method === 'Fetch.continueResponse').map((entry) => entry.params.requestId),
+      ['i7', 'i6'],
+      'a pause whose request is not reported yet is held for the request, at most the hold limit, and then let through',
+    );
     await tap.close();
   });
 

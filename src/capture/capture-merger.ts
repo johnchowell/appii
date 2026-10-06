@@ -8,9 +8,15 @@ export interface CaptureInput {
   file?: string;
 }
 
+export interface RepeatedCapture {
+  input: CaptureInput;
+  of: CaptureInput;
+}
+
 export interface MergedCapture {
   capture: Capture;
   sources: SourceCapture[];
+  repeated: RepeatedCapture[];
 }
 
 interface Ranked {
@@ -34,11 +40,30 @@ export class CaptureMerger {
     };
   }
 
+  static repeats(inputs: readonly CaptureInput[]): Map<CaptureInput, CaptureInput> {
+    const repeats = new Map<CaptureInput, CaptureInput>();
+    const owners = new Map<string, CaptureInput>();
+    const kept: CaptureInput[] = [];
+    for (const input of inputs) {
+      const ids = input.capture.exchanges.map((exchange) => exchange.id);
+      const of = ids.length > 0 ? CaptureMerger.#owner(ids, owners) : kept.find((earlier) => CaptureMerger.#sameEmpty(earlier.capture, input.capture));
+      if (of !== undefined) {
+        repeats.set(input, of);
+        continue;
+      }
+      kept.push(input);
+      for (const id of ids) if (!owners.has(id)) owners.set(id, input);
+    }
+    return repeats;
+  }
+
   merge(inputs: readonly CaptureInput[]): MergedCapture {
     const first = inputs[0];
     if (first === undefined) throw new AppiiError('BAD_INPUT', 'Nothing to merge: give at least one capture or HAR file');
-    const sources = inputs.map((input) => CaptureMerger.source(input));
-    if (inputs.length === 1) return { capture: first.capture, sources };
+    const repeats = CaptureMerger.repeats(inputs);
+    const sources = inputs.filter((input) => !repeats.has(input)).map((input) => CaptureMerger.source(input));
+    const repeated = [...repeats].map(([input, of]): RepeatedCapture => ({ input, of }));
+    if (inputs.length === 1) return { capture: first.capture, sources, repeated };
     const ranked = inputs.map((input, order) => ({ input, order }));
     const chronological = [...ranked].sort((a, b) => CaptureMerger.#time(a.input.capture.startedAt) - CaptureMerger.#time(b.input.capture.startedAt) || a.order - b.order);
     const captures = chronological.map((item) => item.input.capture);
@@ -57,7 +82,17 @@ export class CaptureMerger {
         pages: CaptureMerger.#distinct(captures.flatMap((capture) => capture.pages), (page: PageSnapshot) => JSON.stringify([page.url, page.capturedAt, page.html])),
       },
       sources,
+      repeated,
     };
+  }
+
+  static #owner(ids: readonly string[], owners: ReadonlyMap<string, CaptureInput>): CaptureInput | undefined {
+    const first = owners.get(ids[0] ?? '');
+    return ids.every((id) => owners.has(id)) ? first : undefined;
+  }
+
+  static #sameEmpty(a: Capture, b: Capture): boolean {
+    return a.exchanges.length === 0 && a.startedAt === b.startedAt && a.endedAt === b.endedAt && a.startUrl === b.startUrl;
   }
 
   static #cookies(ranked: readonly Ranked[]): Cookie[] {

@@ -12,6 +12,7 @@ export interface PlaceholderPart {
   readonly name: string;
   readonly encoding?: PlaceholderEncoding;
   readonly required?: string;
+  readonly missing?: string;
 }
 
 export type SamplePart = LiteralPart | PlaceholderPart;
@@ -93,12 +94,23 @@ export class SampleText {
     return new SampleText(this.parts.map((part): SamplePart => (part.kind === 'placeholder' && part.required === undefined ? { ...part, required: label } : part)));
   }
 
+  withMissing(messages: ReadonlyMap<string, string>): SampleText {
+    return new SampleText(
+      this.parts.map((part): SamplePart => {
+        if (part.kind === 'literal' || part.required !== undefined || part.missing !== undefined) return part;
+        const message = messages.get(part.name);
+        return message === undefined ? part : { ...part, missing: message };
+      }),
+    );
+  }
+
   map(rename: (name: string) => SampleTextInput): SampleText {
     return SampleText.concat(
       ...this.parts.map((part) => {
         if (part.kind === 'literal') return SampleText.literal(part.text);
         const renamed = SampleText.of(rename(part.name));
-        const next = part.required === undefined ? renamed : renamed.requiring(part.required);
+        const required = part.required === undefined ? renamed : renamed.requiring(part.required);
+        const next = part.missing === undefined ? required : required.withMissing(new Map(required.placeholders().map((name): [string, string] => [name, part.missing ?? ''])));
         return part.encoding === undefined ? next : next.encoded(part.encoding);
       }),
     );
