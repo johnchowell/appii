@@ -1,7 +1,6 @@
 import { ModelStore } from '../../build/index.js';
 import { ExporterRegistry } from '../../export/index.js';
 import type { ExportOptions } from '../../export/index.js';
-import { TextLayout } from '../../present/index.js';
 import { AppiiError, EndpointIndex, Fs, Meta, Text } from '../../shared/index.js';
 import type { ApiModel, Capture } from '../../model/index.js';
 import type { CliContext } from '../cli-context.js';
@@ -102,7 +101,7 @@ export class ExportCommand extends Command {
     const options: ExportOptions = capture === undefined ? base : { ...base, capture };
     const result = exporter.export(loaded.model, options);
     if (exporter.format === ExportCommand.HAR_FORMAT && capture !== undefined && !ExportCommand.matchesCapture(loaded.model, options.endpoints, capture)) {
-      ctx.err(TextLayout.clean(`warning: ${captureFile ?? file} holds none of the sample requests of the exported endpoints; was ${file} built from it?`));
+      ctx.err(ctx.ansi.clean(`warning: ${captureFile ?? file} holds none of the sample requests of the exported endpoints; was ${file} built from it?`));
     }
     if (out === ExportCommand.STDOUT) {
       ctx.write(result.content);
@@ -111,7 +110,7 @@ export class ExportCommand extends Command {
     const target = await Helpers.outputFile(ctx, out, result.filename);
     if (await Fs.sameFile(target, input)) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
     await Fs.writeFileAtomic(target, result.content, redact ? {} : { mode: ModelStore.PRIVATE_MODE });
-    ctx.out(TextLayout.clean(`Wrote ${ctx.display(target)} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
+    ctx.out(ctx.ansi.clean(`Wrote ${ctx.display(target)} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
     return ExitCode.OK;
   }
 

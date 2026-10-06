@@ -124,6 +124,15 @@ export async function follow(client: Client): Promise<string> {
   return String(login.status);
 }
 
+export async function followed(client: Client): Promise<string> {
+  const login = await client.postLogin({ body: { username: 'ada', password: 'pw' } });
+  if (login.status === 200) {
+    const page: string = login.data;
+    return page;
+  }
+  return '';
+}
+
 export async function manual(): Promise<string> {
   const client = new Client({ redirect: 'manual' });
   const login = await client.postLogin({ body: { username: 'ada', password: 'pw' } });
@@ -159,6 +168,13 @@ export async function bodies(client: Client): Promise<number> {
 `;
 
 describe('TypeScript client: bearer tokens, redirects, request body types and JSON lines (HTTPBIN-6, QTS-6, HTTPBIN-2, HTTPBIN-10)', () => {
+  test('the build records where a redirect leads (QTS-6)', () => {
+    const login = model('https://shop.example.com').endpoints.find((endpoint) => endpoint.method === 'POST' && endpoint.path === '/login');
+    assert.deepEqual(login?.responses.map((response) => [response.status, response.redirectTo]), [[302, ['https://shop.example.com/']]]);
+    const source = new TypeScriptExporter().source(model('https://shop.example.com'), model('https://shop.example.com').endpoints);
+    assert.match(source, /export type PostLoginResponse =\n {2}\| GetHomePageResponse;/);
+  });
+
   const server = new HttpbinServer();
   let harness: TsClientHarness;
   let built: ApiModel;

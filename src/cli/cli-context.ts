@@ -17,6 +17,7 @@ export interface CliIo {
 export interface CliContextOptions {
   color?: boolean;
   width?: number;
+  unicode?: boolean;
 }
 
 export interface CliContextDeps {
@@ -41,7 +42,7 @@ export class CliContext {
     this.#options = CliContext.#defined(options);
     this.color = options.color ?? CliContext.autoColor(io);
     this.width = options.width === undefined ? CliContext.autoWidth(io) : TextLayout.checkWidth(options.width);
-    this.ansi = this.color ? Ansi.color : Ansi.plain;
+    this.ansi = Ansi.of(this.color, options.unicode === true);
     this.signals = deps.signals ?? io.signals ?? new ProcessSignals();
     this.#status = deps.status ?? new StatusLine(io.stderr);
   }
@@ -93,7 +94,7 @@ export class CliContext {
       this.#status.clear();
       return;
     }
-    this.#status.show(TextLayout.fit(TextLayout.clean(text), Math.max(1, this.progressWidth - 1)));
+    this.#status.show(TextLayout.fit(this.ansi.clean(text), Math.max(1, this.progressWidth - 1)));
   }
 
   withOptions(options: CliContextOptions): CliContext {
@@ -113,13 +114,14 @@ export class CliContext {
   }
 
   presenterOptions(extra: PresenterOptions = {}): PresenterOptions {
-    return { color: this.color, width: this.width, ...extra };
+    return { color: this.color, width: this.width, ...(this.ansi.unicode ? { unicode: true } : {}), ...extra };
   }
 
   static #defined(options: CliContextOptions): CliContextOptions {
     const out: CliContextOptions = {};
     if (options.color !== undefined) out.color = options.color;
     if (options.width !== undefined) out.width = options.width;
+    if (options.unicode !== undefined) out.unicode = options.unicode;
     return out;
   }
 }

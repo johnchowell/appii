@@ -1,5 +1,6 @@
 import type { BodyKind, BodyShape, Endpoint, EndpointForm, EndpointSample, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
 import { CharsetEncoder } from './charset.js';
+import { Credentials } from './credentials.js';
 import { EndpointIndex } from './endpoints.js';
 import { mimeEssence, parseUrl } from './http.js';
 import { isPlainObject, setOwn } from './json.js';
@@ -12,6 +13,9 @@ export const SECRET_NAME = 'secret';
 export const BEARER_TOKEN = 'access_token';
 export const BEARER_SCHEME = 'Bearer';
 export const AUTHORIZATION_HEADER = 'Authorization';
+export const BASIC_SCHEME = 'basic';
+export const BASIC_USER = 'username';
+export const BASIC_PASSWORD = 'password';
 export const CONTENT_TYPE_HEADER = 'Content-Type';
 export const COOKIE_SEPARATOR = '; ';
 export const IMAGE_SUBMITTER = 'image';
@@ -56,6 +60,7 @@ export interface RequestSample {
   readonly headers: readonly SampleEntry[];
   readonly body?: SampleBody;
   readonly cookie?: SampleText;
+  readonly user?: SampleText;
 }
 
 export interface FormEntry {
@@ -237,7 +242,7 @@ export function formEntries(value: SampleValue | undefined): FormEntry[] {
 
 export function placeholderNames(sample: RequestSample, extra: readonly SampleText[] = []): string[] {
   const names = new Set<string>();
-  const texts = [sample.url, ...sample.headers.map((header) => header.value), ...(sample.cookie ? [sample.cookie] : []), ...extra];
+  const texts = [sample.url, ...sample.headers.map((header) => header.value), ...(sample.cookie ? [sample.cookie] : []), ...(sample.user ? [sample.user] : []), ...extra];
   if (sample.body) texts.push(jsonText(sample.body.value));
   for (const text of texts) for (const name of text.placeholders()) names.add(name);
   return [...names].sort();
@@ -256,13 +261,15 @@ export function renamePlaceholders(sample: RequestSample, rename: (name: string)
     headers: sample.headers.map(entry),
   };
   const withBody = sample.body ? { ...out, body: { ...sample.body, value: linkValue(sample.body.value, text) } } : out;
-  return sample.cookie ? { ...withBody, cookie: text(sample.cookie) } : withBody;
+  const withUser = sample.user ? { ...withBody, user: text(sample.user) } : withBody;
+  return sample.cookie ? { ...withUser, cookie: text(sample.cookie) } : withUser;
 }
 
 export function cookieJar(endpoint: Endpoint): SampleText | undefined {
-  if (endpoint.auth.cookies.length === 0) return undefined;
+  const names = Credentials.exampleCookies(endpoint);
+  if (names.length === 0) return undefined;
   return SampleText.join(
-    endpoint.auth.cookies.map((name) => SampleText.concat(`${name}=`, placeholder(name))),
+    names.map((name) => SampleText.concat(`${name}=`, placeholder(name))),
     COOKIE_SEPARATOR,
   );
 }
@@ -317,7 +324,9 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
     headers: headers.map((header) => ({ name: header.name, value: link(header.value) })),
   };
   const cookie = opts.cookie === false ? undefined : (opts.cookie ?? cookieJar(endpoint));
-  const withCookie = cookie === undefined ? sample : { ...sample, cookie };
+  const user = basicAuth(endpoint) ? SampleText.concat(placeholder(BASIC_USER), ':', placeholder(BASIC_PASSWORD)) : undefined;
+  const withUser = user === undefined ? sample : { ...sample, user };
+  const withCookie = cookie === undefined ? withUser : { ...withUser, cookie };
   return body ? { ...withCookie, body: { ...body, value: linkValue(body.value, link) } } : withCookie;
 }
 
@@ -422,12 +431,18 @@ function applySubmitter(entries: Map<string, SampleValue>, submission: FormSubmi
   for (const [name, value] of chosen) entries.set(name, SampleText.literal(value));
 }
 
+export function basicAuth(endpoint: Endpoint): boolean {
+  return !endpoint.auth.bearer && (Credentials.schemes(endpoint).includes(BASIC_SCHEME) || (endpoint.auth.schemes ?? []).includes(BASIC_SCHEME));
+}
+
 function sampleHeaders(endpoint: Endpoint, opts: SampleOptions): SampleEntry[] {
   const headers: SampleEntry[] = [];
   const bearer = SampleText.concat(`${BEARER_SCHEME} `, placeholder(BEARER_TOKEN));
   const authorization = AUTHORIZATION_HEADER.toLowerCase();
+  const basic = basicAuth(endpoint);
   for (const param of endpoint.headerParams) {
     if (opts.requiredOnly && !param.required) continue;
+    if (basic && param.name.toLowerCase() === authorization) continue;
     const value = paramValue(param);
     const replace = endpoint.auth.bearer && param.name.toLowerCase() === authorization && !value.isLiteral;
     headers.push({ name: param.name, value: replace ? bearer : value });

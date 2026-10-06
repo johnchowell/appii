@@ -1,6 +1,6 @@
 import { ModelBuilder, ModelStore } from '../build/index.js';
 import type { BuildOptions } from '../build/index.js';
-import { PresenterFactory, TextLayout } from '../present/index.js';
+import { PresenterFactory } from '../present/index.js';
 import { Text } from '../shared/index.js';
 import type { ApiModel, Capture } from '../model/index.js';
 import type { CliContext } from './cli-context.js';
@@ -45,7 +45,7 @@ export class BuildStep {
   report(model: ApiModel, out: string, ctx: CliContext, hints = true): string {
     const file = ctx.display(out);
     const presenters = new PresenterFactory(ctx.presenterOptions({ file, hints }));
-    const wrote = TextLayout.clean(`Wrote ${file} (${Text.plural(model.endpoints.length, 'endpoint')})`);
+    const wrote = ctx.ansi.clean(`Wrote ${file} (${Text.plural(model.endpoints.length, 'endpoint')})`);
     return [wrote, presenters.summary().render(model), presenters.list().render(model)].join('\n\n');
   }
 }

@@ -168,6 +168,7 @@ export type LineBreaks = 'space' | 'normalize' | 'lf';
 
 export interface PrintableOptions {
   lineBreaks?: LineBreaks;
+  unicode?: boolean;
 }
 
 export const LINE_BREAK_SOURCE = '\\r\\n|[\\r\\n\\t]';
@@ -180,11 +181,45 @@ export function controlEscape(ch: string): string {
   return '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0');
 }
 
+export const UNSAFE_UNICODE_SOURCE = '[\\p{Cf}\\p{Zl}\\p{Zp}\\p{Co}\\p{Cn}\\p{Cs}]';
+export const ZERO_WIDTH: RegExp = /^[\p{Mn}\p{Me}]$/u;
+export const WIDE: RegExp =
+  /^[\u1100-\u115f\u231a\u231b\u2329\u232a\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{16fe0}-\u{16fe4}\u{17000}-\u{18cff}\u{1b000}-\u{1b2ff}\u{1f004}\u{1f0cf}\u{1f18e}\u{1f191}-\u{1f19a}\u{1f200}-\u{1f251}\u{1f300}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{1f7e0}-\u{1f7eb}\u{1f90c}-\u{1f9ff}\u{1fa70}-\u{1faff}\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}]$/u;
+
 export function printable(input: string, options: PrintableOptions = {}): string {
   const mode = options.lineBreaks ?? 'space';
   const text =
     mode === 'space' ? input.replace(new RegExp(LINE_BREAK_SOURCE, 'g'), ' ') : mode === 'normalize' ? input.replace(new RegExp(NEWLINE_SOURCE, 'g'), '\n') : input;
-  return toAscii(text.replace(new RegExp(mode === 'space' ? CONTROL_SOURCE : BLOCK_CONTROL_SOURCE, 'g'), controlEscape), 'escape');
+  const controlled = text.replace(new RegExp(mode === 'space' ? CONTROL_SOURCE : BLOCK_CONTROL_SOURCE, 'g'), controlEscape);
+  if (options.unicode !== true) return toAscii(controlled, 'escape');
+  return controlled.replace(new RegExp(UNSAFE_UNICODE_SOURCE, 'gu'), (ch) => toAscii(ch, 'escape'));
+}
+
+export function charWidth(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0;
+  if (cp < 0x300) return 1;
+  if (ZERO_WIDTH.test(ch)) return 0;
+  return WIDE.test(ch) ? 2 : 1;
+}
+
+export function displayWidth(input: string): number {
+  if (isAscii(input)) return input.length;
+  let width = 0;
+  for (const ch of input) width += charWidth(ch);
+  return width;
+}
+
+export function sliceWidth(input: string, max: number): string {
+  if (isAscii(input)) return input.slice(0, Math.max(0, max));
+  let out = '';
+  let width = 0;
+  for (const ch of input) {
+    const w = charWidth(ch);
+    if (width + w > max) break;
+    out += ch;
+    width += w;
+  }
+  return out;
 }
 
 export const JSON_RAW_CONTROL_SOURCE = '[\\x7f-\\x9f]';
@@ -227,9 +262,20 @@ export function uniqueName(base: string, taken: Set<string>, separator = ''): st
   }
 }
 
-export function redact(value: string, keep = 4): string {
-  if (value.length <= keep) return '<redacted>';
-  return value.slice(0, keep) + '...';
+export const MASK = '<redacted>';
+export const MASK_PREFIX_LENGTH = 4;
+export const MASK_PREFIX_MIN_LENGTH = 24;
+export const MASKED_PREFIX: RegExp = /^[\s\S]{4}\.\.\. \([0-9]+ characters\)$/;
+
+export function redact(value: string, secret = true): string {
+  if (value === '') return '';
+  const length = ` (${plural(value.length, 'character')})`;
+  if (secret || value.length < MASK_PREFIX_MIN_LENGTH) return MASK + length;
+  return value.slice(0, MASK_PREFIX_LENGTH) + '...' + length;
+}
+
+export function isMasked(value: string): boolean {
+  return value.includes(MASK) || MASKED_PREFIX.test(value);
 }
 
 export function formatBytes(bytes: number): string {

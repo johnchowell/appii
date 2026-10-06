@@ -45,18 +45,19 @@ describe('AuthDetector on the fixture flow', () => {
       headers: [],
       bearer: false,
       csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }],
+      sets: [['cookie:auth']],
     });
   });
 
   test('csrf body field sourced from the hidden field of the login page', () => {
     const login = find(endpoints, `POST ${ORIGIN}/login`);
-    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${ORIGIN}/login` }]);
+    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${ORIGIN}/login`, sessionCookies: ['sid'] }]);
     assert.deepEqual(login.auth.cookies, ['sid', 'theme']);
   });
 
   test('endpoints that sent only cookies list the cookie names and nothing else', () => {
     const item = find(endpoints, `GET ${ORIGIN}/api/items/{itemId}`);
-    assert.deepEqual(item.auth, { cookies: ['auth', 'csrf', 'sid', 'theme'], headers: [], bearer: false, csrf: [] });
+    assert.deepEqual(item.auth, { cookies: ['auth', 'csrf', 'sid', 'theme'], headers: [], bearer: false, csrf: [], sets: [['cookie:auth']] });
     assert.deepEqual(find(endpoints, `GET ${ORIGIN}/`).auth.cookies, []);
   });
 });
@@ -168,8 +169,8 @@ describe('AuthDetector headers and bearer', () => {
     f.json('GET', '/api/me', 200, {}, { requestHeaders: { authorization: 'Bearer abc', 'x-api-key': 'k', 'x-request-id': '1' } });
     f.json('GET', '/api/basic', 200, {}, { requestHeaders: { Authorization: 'Basic dTpw' } });
     const endpoints = detect(f.capture());
-    assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/me`).auth, { cookies: [], headers: ['authorization', 'x-api-key'], bearer: true, csrf: [] });
-    assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/basic`).auth, { cookies: [], headers: ['authorization'], bearer: false, csrf: [] });
+    assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/me`).auth, { cookies: [], headers: ['authorization', 'x-api-key'], bearer: true, csrf: [], schemes: ['bearer'], sets: [['header:x-api-key', 'http:bearer']] });
+    assert.deepEqual(find(endpoints, `GET ${ORIGIN}/api/basic`).auth, { cookies: [], headers: ['authorization'], bearer: false, csrf: [], schemes: ['basic'], sets: [['http:basic']] });
   });
 });
 

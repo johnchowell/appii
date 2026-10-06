@@ -1,5 +1,5 @@
 import type { FormField, JsonSchema } from '../model/index.js';
-import { Http } from '../shared/index.js';
+import { Http, Schema } from '../shared/index.js';
 import { ControlRules } from './control-rules.js';
 import { HtmlDecimal } from './html-decimal.js';
 import { HtmlMicrosyntax } from './html-microsyntax.js';
@@ -69,7 +69,7 @@ export class EntrySlotFactory {
   static readonly COORDINATES: readonly string[] = ['x', 'y'];
   static readonly MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/;
   static readonly NO_DEFAULT_TYPES: ReadonlySet<string> = new Set(['password', 'file']);
-  static readonly OPEN_CHOICES = 'x-appii-dynamic-options';
+  static readonly OPEN_CHOICES = Schema.DYNAMIC_OPTIONS;
 
   readonly #sanitizer: ValueSanitizer;
 

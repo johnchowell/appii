@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse } from '../model/index.js';
-import { CharsetEncoder, EndpointIndex, Http, Json, SampleText, Samples, Schema, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, SampleText, Samples, Schema, Text } from '../shared/index.js';
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -46,6 +46,15 @@ export class PostmanRequestBuilder {
     };
     const body = this.body(sample);
     if (body) request.body = body;
+    if (sample.user) {
+      request.auth = {
+        type: 'basic',
+        basic: [
+          { key: 'username', value: `{{${Samples.BASIC_USER}}}`, type: 'string' },
+          { key: 'password', value: `{{${Samples.BASIC_PASSWORD}}}`, type: 'string' },
+        ],
+      };
+    }
     return request;
   }
 
@@ -171,7 +180,9 @@ export class PostmanRequestBuilder {
       const source = Helpers.tokenSource(token, { text: (value) => value, code: (value) => `\`${value}\``, url: (value) => Helpers.mapUrl(ctx.model, value, ctx.options) });
       lines.push(`CSRF token \`${token.name}\` (${token.location}) from ${source}.`);
     }
-    if (endpoint.auth.cookies.length > 0) lines.push(`Cookies: ${endpoint.auth.cookies.map((name) => `\`${name}\``).join(', ')}.`);
+    const credentials = Credentials.describe(endpoint, Credentials.roles(ctx.model));
+    if (credentials !== '') lines.push(`Credentials: ${credentials}.`);
+    if (endpoint.auth.cookies.length > 0) lines.push(`Cookies sent: ${endpoint.auth.cookies.map((name) => `\`${name}\``).join(', ')}.`);
     return lines.join('\n\n');
   }
 

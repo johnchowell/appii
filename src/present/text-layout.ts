@@ -41,15 +41,16 @@ export class TextLayout {
     let line = '';
     for (const word of text.split(' ')) {
       if (word === '') continue;
-      if (line !== '' && line.length + 1 + word.length <= max) {
+      if (line !== '' && Text.displayWidth(line) + 1 + Text.displayWidth(word) <= max) {
         line += ' ' + word;
         continue;
       }
       if (line !== '') lines.push(line);
       let rest = word;
-      while (rest.length > max) {
-        lines.push(rest.slice(0, max));
-        rest = rest.slice(max);
+      while (Text.displayWidth(rest) > max) {
+        const head = Text.sliceWidth(rest, max) || String.fromCodePoint(rest.codePointAt(0) ?? 0);
+        lines.push(head);
+        rest = rest.slice(head.length);
       }
       line = rest;
     }
@@ -88,12 +89,12 @@ export class TextLayout {
     if (entries.length === 0) return [];
     const indent = Math.max(0, options.indent ?? 0);
     const style = options.label ?? ((text: string) => text);
-    const labelWidth = Math.max(...entries.map(([label]) => label.length + 1));
+    const labelWidth = Math.max(...entries.map(([label]) => Text.displayWidth(label) + 1));
     const gutter = indent + labelWidth + 1;
     const room = width - gutter;
     const lines: string[] = [];
     for (const [label, value] of entries) {
-      const head = ' '.repeat(indent) + style(label + ':') + ' '.repeat(labelWidth - label.length - 1) + ' ';
+      const head = ' '.repeat(indent) + style(label + ':') + ' '.repeat(labelWidth - Text.displayWidth(label) - 1) + ' ';
       if (room >= TextLayout.MIN_VALUE_WIDTH) {
         TextLayout.wrap(value, room).forEach((piece, i) => lines.push((i === 0 ? head : ' '.repeat(gutter)) + piece));
         continue;

@@ -1,7 +1,6 @@
 import { parseArgs } from 'node:util';
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { Meta, Text } from '../shared/index.js';
-import { TextLayout } from '../present/index.js';
 import type { CliContext } from './cli-context.js';
 import { DisplayOptionGroup } from './display-option-group.js';
 import { ErrorReporter } from './error-reporter.js';
@@ -81,7 +80,7 @@ export abstract class Command {
     const lines = this.spec.usage.split('\n');
     ctx.err(
       [
-        ErrorReporter.PREFIX + TextLayout.clean(message),
+        ErrorReporter.PREFIX + ctx.ansi.clean(message),
         ...lines.map((line, i) => (i === 0 ? 'usage: ' : '       ') + line),
         `Run '${Meta.APP_NAME} help ${this.spec.name}' for all options.`,
       ].join('\n'),

@@ -1,6 +1,7 @@
 import type { FormDescriptor, FormField, JsonSchema } from '../model/index.js';
 import { TokenDetector } from '../forms/index.js';
 import { Http, Json, Samples, Schema, SecretNames, Text } from '../shared/index.js';
+import { SecretValues } from './secret-values.js';
 
 export interface RedactorDeps {
   tokens?: TokenDetector;
@@ -77,6 +78,9 @@ export class Redactor {
   static readonly TOKEN_EXAMPLE = 'x-appii-token-example';
   static readonly SCHEMA_LISTS: readonly string[] = ['anyOf', 'oneOf', 'allOf', 'prefixItems'];
   static readonly SCHEMA_CHILDREN: readonly string[] = ['items', 'if', 'then', 'else', 'not'];
+  static readonly SCHEMA_VALUES: readonly string[] = ['default', 'const', 'enum', 'examples', 'x-appii-token-example'];
+  static readonly ABSOLUTE_URL: RegExp = /^https?:\/\/[^\s]+$/i;
+  static readonly COOKIE_HEADERS: ReadonlySet<string> = new Set(['cookie', 'set-cookie']);
   static readonly JSON_STARTS: readonly string[] = ['{', '['];
   static readonly LINE_BREAK: RegExp = /(\r\n|\n|\r)/;
   static readonly PAIR_NAME: RegExp = /^[^\s=]+$/;
@@ -116,6 +120,7 @@ export class Redactor {
 
   readonly #enabled: boolean;
   readonly #tokens: TokenDetector;
+  #values: SecretValues = SecretValues.EMPTY;
 
   constructor(enabled = true, deps: RedactorDeps = {}) {
     this.#enabled = enabled;
@@ -134,6 +139,18 @@ export class Redactor {
     return this.#enabled;
   }
 
+  get values(): SecretValues {
+    return this.#values;
+  }
+
+  useValues(values: SecretValues): void {
+    this.#values = values;
+  }
+
+  scrub(text: string): string {
+    return this.#enabled ? this.#values.scrub(text) : text;
+  }
+
   isSecretField(name: string): boolean {
     return SecretNames.isSecret(name) || this.#tokens.isHiddenTokenField(name);
   }
@@ -148,7 +165,7 @@ export class Redactor {
   }
 
   isSecretValue(value: string): boolean {
-    return Redactor.looksSecret(value);
+    return Redactor.looksSecret(value) || this.#values.has(value);
   }
 
   header(name: string, value: string): string {
@@ -165,12 +182,15 @@ export class Redactor {
       return m ? `${m[1]} ${Samples.REDACTED}` : Samples.REDACTED;
     }
     if (this.isSecretHeader(name) || this.isSecretValue(value)) return Samples.REDACTED;
-    return value;
+    return this.#values.scrub(value);
   }
 
   field(name: string, value: unknown): unknown {
     if (!this.#enabled) return value;
     if (this.isSecretField(name)) return Redactor.#all(value);
+    const lower = name.toLowerCase();
+    if (Redactor.COOKIE_HEADERS.has(lower) || Redactor.SCHEME_HEADERS.has(lower)) return typeof value === 'string' ? this.header(name, value) : this.#headerList(name, value);
+    if (Redactor.SECRET_HEADERS.has(lower)) return Redactor.#all(value);
     return this.deep(value);
   }
 
@@ -182,21 +202,23 @@ export class Redactor {
 
   deep(value: unknown): unknown {
     if (!this.#enabled) return value;
-    if (typeof value === 'string') return this.isSecretValue(value) ? Samples.REDACTED : this.#jsonString(value);
+    if (typeof value === 'string') return this.#string(value);
     if (Array.isArray(value)) return value.map((item) => this.deep(item));
     if (Json.isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.field(key, item)]));
     return value;
   }
 
   named(name: string, value: unknown, names: ReadonlySet<string>): unknown {
-    return this.#enabled && names.has(name) ? Redactor.#all(value) : value;
+    if (!this.#enabled) return value;
+    return names.has(name) ? Redactor.#all(value) : this.#values.scrubDeep(value);
   }
 
   examples(examples: readonly unknown[], names: ReadonlySet<string>): unknown[] {
-    if (!this.#enabled || names.size === 0) return [...examples];
+    if (!this.#enabled) return [...examples];
+    if (names.size === 0) return examples.map((example) => this.#values.scrubDeep(example));
     return examples.map((example) => {
       if (typeof example === 'string') return this.plainText(example, names, 'form');
-      if (!Json.isPlainObject(example)) return example;
+      if (!Json.isPlainObject(example)) return this.#values.scrubDeep(example);
       return Object.fromEntries(Object.entries(example).map(([key, item]) => [key, this.named(key, item, names)]));
     });
   }
@@ -238,10 +260,14 @@ export class Redactor {
   url(url: string, names: ReadonlySet<string> = Redactor.NO_NAMES): string {
     if (!this.#enabled) return url;
     const parsed = Http.parseUrl(url);
-    if (!parsed) return url;
+    if (!parsed) return this.#values.scrub(url);
     let changed = false;
     if (parsed.password !== '') {
       parsed.password = Samples.REDACTED;
+      changed = true;
+    }
+    if (parsed.username !== '' && this.#values.contains(Http.decodeComponent(parsed.username))) {
+      parsed.username = encodeURIComponent(this.#values.scrub(Http.decodeComponent(parsed.username)));
       changed = true;
     }
     const path = this.#segments(parsed.pathname);
@@ -272,6 +298,8 @@ export class Redactor {
     const out: FormField = { ...field };
     const secret = token || (this.isSecretField(field.name) && !Redactor.CONSTANT_VALUE_TYPES.has(field.type));
     if (secret && out.value !== '') out.value = Samples.REDACTED;
+    else out.value = this.#values.scrub(out.value);
+    if (out.options !== undefined) out.options = out.options.map((option) => ({ ...option, value: this.#values.scrub(option.value), label: this.#values.scrub(option.label) }));
     if (out.formAction !== undefined) out.formAction = this.url(out.formAction);
     return out;
   }
@@ -314,7 +342,7 @@ export class Redactor {
         changed = true;
         return `${rawName}=${encodeURIComponent(Samples.REDACTED)}`;
       }
-      const inner = this.#jsonString(value);
+      const inner = this.#values.scrub(this.#jsonString(value));
       if (inner === value) return part;
       changed = true;
       return `${rawName}=${encodeURIComponent(inner)}`;
@@ -337,9 +365,14 @@ export class Redactor {
     let changed = false;
     const raw = path.split('/');
     const segments = raw.map((segment, position) => {
-      if (!Redactor.isSecretSegment(raw, position)) return segment;
+      if (Redactor.isSecretSegment(raw, position)) {
+        changed = true;
+        return encodeURIComponent(Samples.REDACTED);
+      }
+      const decoded = Http.decodeComponent(segment);
+      if (!this.#values.contains(decoded)) return segment;
       changed = true;
-      return encodeURIComponent(Samples.REDACTED);
+      return encodeURIComponent(this.#values.scrub(decoded));
     });
     return changed ? segments.join('/') : undefined;
   }
@@ -388,6 +421,23 @@ export class Redactor {
     return count;
   }
 
+  #string(value: string): string {
+    if (this.isSecretValue(value)) return Samples.REDACTED;
+    if (Redactor.ABSOLUTE_URL.test(value) && Http.parseUrl(value)) return this.url(value);
+    if (Redactor.LINE_BREAK.test(value) && Redactor.#pairLines(value)) return this.plainText(value, Redactor.NO_NAMES, 'pairs');
+    return this.#values.scrub(this.#jsonString(value));
+  }
+
+  #headerList(name: string, value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => (typeof item === 'string' ? this.header(name, item) : Redactor.#all(item)));
+    return Redactor.#all(value);
+  }
+
+  static #pairLines(text: string): boolean {
+    const lines = text.split(Redactor.LINE_BREAK).filter((line, i) => i % 2 === 0 && line !== '');
+    return lines.length > 0 && lines.every((line) => Redactor.#pairEnd(line, 'pairs') > 0);
+  }
+
   #jsonString(value: string): string {
     const start = value.trimStart().charAt(0);
     if (!Redactor.JSON_STARTS.includes(start)) return value;
@@ -415,7 +465,7 @@ export class Redactor {
         const colon = line.indexOf(':');
         if (colon < 0) return line;
         const name = line.slice(0, colon);
-        return this.isSecretHeader(name) || this.isSecretValue(line.slice(colon + 1)) ? `${name}:${Samples.REDACTED}` : line;
+        return this.isSecretHeader(name) || this.isSecretValue(line.slice(colon + 1)) ? `${name}:${Samples.REDACTED}` : this.#values.scrub(line);
       })
       .join('');
     if (!blank) return headers;
@@ -427,6 +477,7 @@ export class Redactor {
   }
 
   #schemaNode(node: JsonSchema, secret: boolean): void {
+    for (const key of Redactor.SCHEMA_VALUES) if (Object.hasOwn(node, key)) node[key] = this.#values.scrubDeep(node[key]);
     if (Object.hasOwn(node, Redactor.TOKEN_EXAMPLE)) node[Redactor.TOKEN_EXAMPLE] = Samples.REDACTED;
     if (secret && Object.hasOwn(node, 'default')) node.default = Redactor.#all(node.default);
     for (const [name, child] of Object.entries(Schema.properties(node))) this.#schemaNode(child, this.isSecretField(name) || child['x-appii-token'] === true);

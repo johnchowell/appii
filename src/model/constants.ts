@@ -43,3 +43,5 @@ export const ENDPOINT_KINDS = Object.freeze(['json', 'form', 'graphql', 'documen
 export const COOKIE_ROLES = Object.freeze(['session', 'auth', 'csrf', 'preference', 'tracking', 'unknown'] as const);
 
 export const CREDENTIAL_COOKIE_ROLES = Object.freeze(['session', 'auth'] as const);
+
+export const SKIP_REASONS = Object.freeze(['other-origin', 'static', 'document', 'preflight', 'websocket', 'service-worker', 'cache', 'not-http'] as const);

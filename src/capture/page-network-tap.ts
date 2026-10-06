@@ -48,6 +48,7 @@ export interface TapRecord {
   state: 'loading' | 'finished' | 'failed' | 'redirected';
   claimed: boolean;
   body: Promise<TapBody | undefined> | undefined;
+  postData: Promise<string | undefined> | undefined;
 }
 
 export interface TapBody {
@@ -260,9 +261,18 @@ export class PageNetworkTap {
   }
 
   async postData(record: TapRecord): Promise<string | undefined> {
-    if (this.#closed) return undefined;
-    const result = await record.connection.send<CdpPostData>('Network.getRequestPostData', { requestId: record.requestId });
-    return result.postData;
+    const early = record.postData === undefined ? undefined : await record.postData;
+    if (early !== undefined || this.#closed) return early;
+    return this.#readPostData(record);
+  }
+
+  async #readPostData(record: TapRecord): Promise<string | undefined> {
+    try {
+      const result = await record.connection.send<CdpPostData>('Network.getRequestPostData', { requestId: record.requestId });
+      return result.postData;
+    } catch {
+      return undefined;
+    }
   }
 
   async responseBody(record: TapRecord): Promise<TapBody | undefined> {
@@ -408,6 +418,7 @@ export class PageNetworkTap {
       this.#end(connection, event.requestId, 'redirected');
     }
     const live = PageNetworkTap.#create(connection, event.requestId, event.request, event.wallTime, event.timestamp);
+    if (live.record.bodyPending) live.record.postData = this.#readPostData(live.record);
     this.#live.set(key, live);
     this.#waiters.find((waiter) => PageNetworkTap.#matches(waiter.query, live.record))?.arrive(live.record);
   }
@@ -570,6 +581,7 @@ export class PageNetworkTap {
       state: 'loading',
       claimed: false,
       body: undefined,
+      postData: undefined,
     };
     return { record, end };
   }

@@ -1,4 +1,4 @@
-import { Json, Text, isAppiiError } from '../shared/index.js';
+import { Ansi, Json, Text, isAppiiError } from '../shared/index.js';
 import { TextLayout } from '../present/index.js';
 import type { CliContext } from './cli-context.js';
 import { ExitCode } from './exit-code.js';
@@ -21,8 +21,8 @@ export class ErrorReporter {
   ];
 
   report(err: unknown, ctx: CliContext): number {
-    const lines = [ErrorReporter.PREFIX + TextLayout.clean(Text.errorMessage(err))];
-    if (isAppiiError(err)) lines.push(...ErrorReporter.details(err.details));
+    const lines = [ErrorReporter.PREFIX + ctx.ansi.clean(Text.errorMessage(err))];
+    if (isAppiiError(err)) lines.push(...ErrorReporter.details(err.details, ctx.ansi));
     if (ErrorReporter.debug(ctx)) lines.push(...ErrorReporter.trace(err));
     ctx.err(lines.join('\n'));
     return err instanceof UsageError ? ExitCode.USAGE : ExitCode.ERROR;
@@ -41,7 +41,7 @@ export class ErrorReporter {
     return lines;
   }
 
-  static details(details: unknown): string[] {
+  static details(details: unknown, ansi: Ansi = Ansi.plain): string[] {
     if (!Json.isPlainObject(details)) return [];
     const lines: string[] = [];
     for (const { key, title } of ErrorReporter.DETAIL_LISTS) {
@@ -50,7 +50,7 @@ export class ErrorReporter {
       const items = value.filter((item): item is string => typeof item === 'string' && item !== '');
       if (items.length === 0) continue;
       lines.push(title);
-      for (const item of items.slice(0, ErrorReporter.MAX_DETAIL_LINES)) lines.push('  ' + TextLayout.clean(item));
+      for (const item of items.slice(0, ErrorReporter.MAX_DETAIL_LINES)) lines.push('  ' + ansi.clean(item));
       if (items.length > ErrorReporter.MAX_DETAIL_LINES) lines.push(`  ... and ${items.length - ErrorReporter.MAX_DETAIL_LINES} more`);
     }
     return lines;

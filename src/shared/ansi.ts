@@ -1,4 +1,4 @@
-import { printable } from './text.js';
+import { charWidth, displayWidth, printable } from './text.js';
 
 const CODES = Object.freeze({
   bold: [1, 22],
@@ -29,26 +29,36 @@ const STYLE_SOURCE = `\\x1b\\[(?:${[...new Set([RESET_CODE, ...Object.values(COD
 export class Ansi {
   static readonly plain = new Ansi(false);
   static readonly color = new Ansi(true);
+  static readonly plainUnicode = new Ansi(false, true);
+  static readonly colorUnicode = new Ansi(true, true);
   static readonly RESET = `\x1b[${RESET_CODE}m`;
   static readonly CARRIAGE_RETURN = '\r';
   static readonly ERASE_LINE = '\x1b[K';
 
-  constructor(readonly enabled: boolean) {}
+  constructor(
+    readonly enabled: boolean,
+    readonly unicode: boolean = false,
+  ) {}
+
+  static of(color: boolean, unicode = false): Ansi {
+    if (unicode) return color ? Ansi.colorUnicode : Ansi.plainUnicode;
+    return color ? Ansi.color : Ansi.plain;
+  }
 
   static strip(input: string): string {
     return input.replace(new RegExp(ESCAPE_SOURCE, 'g'), '');
   }
 
-  static printable(input: string, keepStyles = true): string {
-    if (!keepStyles) return printable(input, { lineBreaks: 'lf' });
+  static printable(input: string, keepStyles = true, unicode = false): string {
+    if (!keepStyles) return printable(input, { lineBreaks: 'lf', unicode });
     const style = new RegExp(STYLE_SOURCE, 'g');
     let out = '';
     let last = 0;
     for (const match of input.matchAll(style)) {
-      out += printable(input.slice(last, match.index), { lineBreaks: 'lf' }) + match[0];
+      out += printable(input.slice(last, match.index), { lineBreaks: 'lf', unicode }) + match[0];
       last = match.index + match[0].length;
     }
-    return out + printable(input.slice(last), { lineBreaks: 'lf' });
+    return out + printable(input.slice(last), { lineBreaks: 'lf', unicode });
   }
 
   static statusLine(text: string): string {
@@ -56,11 +66,19 @@ export class Ansi {
   }
 
   printable(input: string): string {
-    return Ansi.printable(input, this.enabled);
+    return Ansi.printable(input, this.enabled, this.unicode);
+  }
+
+  clean(text: string): string {
+    return printable(text, { lineBreaks: 'space', unicode: this.unicode });
+  }
+
+  cleanBlock(text: string): string {
+    return printable(text, { lineBreaks: 'normalize', unicode: this.unicode });
   }
 
   static width(input: string): number {
-    return Ansi.strip(input).length;
+    return displayWidth(Ansi.strip(input));
   }
 
   static truncate(input: string, max: number, ellipsis = '...'): string {
@@ -80,10 +98,12 @@ export class Ansi {
         i += m[0].length;
         continue;
       }
-      if (visible >= keep) break;
-      out += input[i];
-      visible++;
-      i++;
+      const ch = String.fromCodePoint(input.codePointAt(i) ?? 0);
+      const w = charWidth(ch);
+      if (visible + w > keep) break;
+      out += ch;
+      visible += w;
+      i += ch.length;
     }
     out += ellipsis.slice(0, max - visible);
     return sawCode ? out + Ansi.RESET : out;

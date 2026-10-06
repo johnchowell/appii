@@ -1,5 +1,5 @@
-import type { ApiModel, Capture, Endpoint, FormField, WebSocketCapture } from '../model/index.js';
-import { MODEL_VERSION } from '../model/index.js';
+import type { ApiModel, Capture, Endpoint, Exchange, FormField, SkippedRequests, SkipReason, WebSocketCapture } from '../model/index.js';
+import { MODEL_VERSION, SKIP_REASONS } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
 import { AppiiError, Http, Text } from '../shared/index.js';
@@ -8,8 +8,10 @@ import { BodyParser } from './body-parser.js';
 import { BodyShaper } from './body-shaper.js';
 import { CookieClassifier } from './cookie-classifier.js';
 import { CookieInventory } from './cookie-inventory.js';
+import { CredentialAnalyzer } from './credential-analyzer.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointGrouper } from './endpoint-grouper.js';
+import type { GroupContext } from './endpoint-grouper.js';
 import { EndpointNamer } from './endpoint-namer.js';
 import { ExchangeSignature } from './exchange-signature.js';
 import { FormCollector } from './form-collector.js';
@@ -23,6 +25,7 @@ import { ParamInferrer } from './param-inferrer.js';
 import { PathEvidenceCollector } from './path-evidence-collector.js';
 import { PathTemplater } from './path-templater.js';
 import { Redactor } from './redactor.js';
+import { SecretCollector } from './secret-collector.js';
 import { SchemaInferrer } from './schema-inferrer.js';
 import { CsrfSourceResolver } from './csrf-source-resolver.js';
 
@@ -44,6 +47,8 @@ export interface ModelBuilderParts {
   forms: FormLinker;
   namer: EndpointNamer;
   redactor?: Redactor;
+  secrets?: SecretCollector;
+  credentials?: CredentialAnalyzer;
 }
 
 export class ModelBuilder {
@@ -51,9 +56,13 @@ export class ModelBuilder {
   static readonly WEBSOCKET_EXAMPLE_LENGTH = 200;
   static readonly WEBSOCKET_SCHEMES: Readonly<Record<string, string>> = { 'ws:': 'http:', 'wss:': 'https:' };
   static readonly DEFAULT_NAME = 'api';
+  static readonly SKIPPED_EXAMPLES = 3;
+  static readonly SKIPPED_EXAMPLE_LENGTH = 60;
 
   readonly #parts: ModelBuilderParts;
   readonly #redactor: Redactor;
+  readonly #secrets: SecretCollector;
+  readonly #credentials: CredentialAnalyzer;
   readonly #options: Readonly<BuildOptions>;
   readonly #origins: readonly string[] | undefined;
   readonly #maxExamples: number;
@@ -64,6 +73,8 @@ export class ModelBuilder {
     this.#origins = options.origins === undefined ? undefined : Helpers.distinct(options.origins.map((origin) => ModelBuilder.normalizeOrigin(origin))).sort(Text.compare);
     this.#parts = parts;
     this.#redactor = parts.redactor ?? Redactor.create({ redact: options.redact ?? true });
+    this.#secrets = parts.secrets ?? new SecretCollector({ redactor: this.#redactor, body: BodyParser.create(), cookies: new CookieClassifier() });
+    this.#credentials = parts.credentials ?? CredentialAnalyzer.create();
     this.#options = { ...options };
   }
 
@@ -113,7 +124,9 @@ export class ModelBuilder {
       params,
       redactor,
     });
-    return new ModelBuilder({ grouper, auth, cookies, forms, namer: new EndpointNamer(), redactor }, options);
+    const secrets = new SecretCollector({ redactor, body, cookies: classifier });
+    const credentials = new CredentialAnalyzer({ cookies: classifier, body, headers, redactor });
+    return new ModelBuilder({ grouper, auth, cookies, forms, namer: new EndpointNamer(), redactor, secrets, credentials }, options);
   }
 
   static firstPartyOrigins(capture: Capture): string[] {
@@ -127,18 +140,25 @@ export class ModelBuilder {
   }
 
   build(capture: Capture): ApiModel {
+    this.#redactor.useValues(this.#secrets.collect(capture, this.#parts.forms.secretFields(capture)));
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
-    const grouped = this.#parts.grouper.group(exchanges, { forms: this.#parts.forms.targets(capture), encoding: this.#parts.forms.submissionEncoding(capture) });
+    const context: GroupContext = {
+      forms: this.#parts.forms.targets(capture),
+      encoding: this.#parts.forms.submissionEncoding(capture),
+      submitted: this.#parts.forms.submitted(capture),
+    };
+    const grouped = this.#parts.grouper.group(exchanges, context);
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
-    this.#parts.auth.detect(endpoints, capture);
+    const evidence = this.#credentials.analyze(capture, { passwordFields: this.#parts.forms.passwordFields(capture), loginPages: this.#parts.forms.loginPages(capture) });
+    this.#parts.auth.detect(endpoints, capture, evidence);
     endpoints.sort(ModelBuilder.#compare);
     this.#parts.namer.name(endpoints);
     const domains = OriginSelector.referenceDomains(capture);
     for (const endpoint of endpoints) endpoint.firstParty = OriginSelector.isFirstParty(endpoint.origin, domains);
-    const cookies = this.#parts.cookies.build(capture, endpoints, chosen);
+    const cookies = this.#parts.cookies.build(capture, endpoints, chosen, evidence);
     const primaryOrigin = OriginSelector.primary(capture, chosen);
     const shown = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
     const forms = FormLinker.endpointIds(linked, shown, endpoints);
@@ -151,6 +171,7 @@ export class ModelBuilder {
         exchanges: capture.exchanges.length,
         capturedFrom: capture.startedAt,
         capturedTo: capture.endedAt,
+        ...ModelBuilder.#present('skipped', this.#skipped(capture, allowed, context)),
       },
       primaryOrigin,
       origins: [...chosen],
@@ -190,6 +211,32 @@ export class ModelBuilder {
     }
     for (const socket of model.websockets) socket.url = url(socket.url);
     return model;
+  }
+
+  #skipped(capture: Capture, allowed: ReadonlySet<string>, context: GroupContext): SkippedRequests[] {
+    const tally = new Map<SkipReason, SkippedRequests>();
+    for (const exchange of capture.exchanges) {
+      const reason: SkipReason | undefined = !allowed.has(Helpers.originOf(exchange.request.url) ?? '')
+        ? Helpers.httpUrl(exchange.request.url) ? 'other-origin' : 'not-http'
+        : (this.#parts.grouper.skipReason(exchange, context) ?? (Http.reachedServer(exchange) ? undefined : 'cache'));
+      if (reason === undefined) continue;
+      const entry = tally.get(reason) ?? { reason, count: 0, examples: [] };
+      entry.count++;
+      const example = this.#skippedExample(exchange, reason);
+      if (entry.examples.length < ModelBuilder.SKIPPED_EXAMPLES && !entry.examples.includes(example)) entry.examples.push(example);
+      tally.set(reason, entry);
+    }
+    return SKIP_REASONS.flatMap((reason) => {
+      const entry = tally.get(reason);
+      return entry ? [entry] : [];
+    });
+  }
+
+  #skippedExample(exchange: Exchange, reason: SkipReason): string {
+    const url = Http.parseUrl(this.#redactor.url(exchange.request.url));
+    if (!url || reason === 'not-http') return url?.protocol ?? '';
+    if (reason === 'other-origin') return url.origin;
+    return Text.truncate(`${exchange.request.method} ${url.pathname}`, ModelBuilder.SKIPPED_EXAMPLE_LENGTH);
   }
 
   #chosenOrigins(capture: Capture): string[] {
@@ -237,6 +284,10 @@ export class ModelBuilder {
       Text.compare(a.operationName ?? '', b.operationName ?? '') ||
       Text.compare(a.key, b.key)
     );
+  }
+
+  static #present<K extends string, V>(key: K, list: readonly V[]): Partial<Record<K, V[]>> {
+    return list.length > 0 ? ({ [key]: [...list] } as Partial<Record<K, V[]>>) : {};
   }
 
   static #checkMaxExamples(value: number | undefined): number {

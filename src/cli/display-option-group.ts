@@ -10,12 +10,14 @@ export class DisplayOptionGroup implements OptionGroup<CliContextOptions> {
   readonly options: ParseArgsOptionsConfig = {
     color: { type: 'boolean' },
     width: { type: 'string' },
+    unicode: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   };
 
   readonly docs: OptionDocs = {
     color: { flag: '--color, --no-color', description: 'Force or disable colors (default: colors on a terminal unless NO_COLOR is set)' },
     width: { value: 'n', description: 'Output width in columns (default: the terminal width, else 100)' },
+    unicode: { description: 'Show site text as UTF-8 instead of \\u escapes; control and formatting characters stay escaped (default: ASCII only)' },
     help: { description: 'Show help' },
   };
 
@@ -23,8 +25,10 @@ export class DisplayOptionGroup implements OptionGroup<CliContextOptions> {
     const out: CliContextOptions = {};
     const color = OptionReader.boolean(values, 'color');
     const width = OptionReader.integer(values, 'width', { min: 1 });
+    const unicode = OptionReader.boolean(values, 'unicode');
     if (color !== undefined) out.color = color;
     if (width !== undefined) out.width = width;
+    if (unicode !== undefined) out.unicode = unicode;
     return out;
   }
 

@@ -1,5 +1,6 @@
 import type { ApiModel, BodyShape, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
-import { CharsetEncoder, EndpointIndex, Http, Json, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
+import type { CookieRoles } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
 import { Helpers } from './helpers.js';
@@ -13,6 +14,7 @@ export interface TsEndpointContext {
   methods: ReadonlyMap<string, string>;
   endpoints: readonly Endpoint[];
   sources: ReadonlySet<string>;
+  responseTypes?: ReadonlyMap<string, string>;
 }
 
 export interface TsEndpointCode {
@@ -158,13 +160,13 @@ export class TsEndpointWriter {
       declarations.push(TsEndpointWriter.#interface(variantType, variantMembers));
       requestTypes.push(variantType);
     }
-    const responses = this.#responses(endpoint, name('Response'), name);
+    const responses = this.#responses(endpoint, ctx.responseTypes?.get(endpoint.id) ?? name('Response'), name, this.#redirectTargets(endpoint, ctx));
     declarations.push(...responses.declarations);
     const specName = Text.uniqueName(`${Text.camelCase(pascal)}Spec`, ctx.taken);
     const spec = `const ${specName}: EndpointSpec = ${this.#literals.write(this.spec(endpoint, ctx))};`;
     const optional = requestMembers.every((member) => !member.required);
     const result = responses.manual === undefined ? responses.follow : `ResponseFor<${TsEndpointWriter.CLIENT_REDIRECT_PARAMETER}, ${responses.follow}, ${responses.manual}>`;
-    const docs = TsEndpointWriter.#docs(endpoint);
+    const docs = TsEndpointWriter.#docs(endpoint, Credentials.roles(ctx.model));
     const member = [
       ...docs.map((line) => `  ${line}`),
       `  async ${method}(request: ${requestTypes.join(' | ')}${optional ? ' = {}' : ''}): Promise<${result}> {`,
@@ -193,8 +195,18 @@ export class TsEndpointWriter {
     return method === 'GET' || method === 'HEAD';
   }
 
-  static #docs(endpoint: Endpoint): string[] {
+  static #docs(endpoint: Endpoint, roles: CookieRoles): string[] {
     const lines: string[] = [];
+    const cookies = Credentials.cookies(endpoint, roles);
+    if (cookies.length > 0) {
+      const names = cookies.join(', ');
+      lines.push(
+        Credentials.optional(endpoint)
+          ? `Sends the credential cookie ${names} when the client has it; the server also answered without it.`
+          : `Needs the credential cookie ${names}: log in through this client first (its cookie jar keeps the cookie) or pass it in the cookies option.`,
+      );
+    }
+    if (Samples.basicAuth(endpoint)) lines.push("Needs HTTP Basic credentials: set the authorization header to 'Basic ' followed by the base64 of user:password.");
     if (endpoint.auth.bearer) {
       lines.push(
         endpoint.auth.anonymous === true
@@ -474,7 +486,35 @@ export class TsEndpointWriter {
     return EndpointIndex.statuses(endpoint).filter((status) => Helpers.isHttpStatus(status) && status >= TsEndpointWriter.FIRST_TYPED_STATUS);
   }
 
-  #responses(endpoint: Endpoint, typeName: string, name: (suffix: string) => string): TsResponseCode {
+  responseTypeNames(endpoints: readonly Endpoint[], taken: Set<string>): Map<string, string> {
+    return new Map(endpoints.map((endpoint) => [endpoint.id, Text.uniqueName(TsEndpointWriter.pascal(endpoint.name) + 'Response', taken)]));
+  }
+
+  static followMethod(method: string, status: number): string {
+    const upper = method.toUpperCase();
+    if ((status === 301 || status === 302) && upper === 'POST') return 'GET';
+    if (status === 303 && upper !== 'GET' && upper !== 'HEAD') return 'GET';
+    return upper;
+  }
+
+  #redirectTargets(endpoint: Endpoint, ctx: TsEndpointContext): string[] {
+    const names = new Set<string>();
+    for (const response of endpoint.responses) {
+      if (!TsEndpointWriter.REDIRECT_STATUSES.has(response.status)) continue;
+      const method = TsEndpointWriter.followMethod(endpoint.method, response.status);
+      for (const target of response.redirectTo ?? []) {
+        const url = Http.parseUrl(target);
+        const found = url && ctx.endpoints.find((candidate) => candidate.method.toUpperCase() === method && candidate.origin === url.origin && EndpointIndex.matchPath(candidate.path, url.pathname) !== undefined);
+        if (!found || found === endpoint || found.responses.some((each) => TsEndpointWriter.REDIRECT_STATUSES.has(each.status))) return [];
+        const name = ctx.responseTypes?.get(found.id);
+        if (name === undefined) return [];
+        names.add(name);
+      }
+    }
+    return [...names];
+  }
+
+  #responses(endpoint: Endpoint, typeName: string, name: (suffix: string) => string, targets: readonly string[] = []): TsResponseCode {
     const declarations: string[] = [];
     const head = endpoint.method.toUpperCase() === 'HEAD';
     const members = new Map<number, string>();
@@ -496,7 +536,10 @@ export class TsEndpointWriter {
       return { declarations, follow: typeName };
     }
     const manual = name('ManualResponse');
-    declarations.push(`export type ${typeName} =\n${union(final)};`, `export type ${manual} =\n${union(all)};`);
+    const follow = targets.length > 0 && endpoint.responses.every((response) => response.redirectTo !== undefined || !TsEndpointWriter.REDIRECT_STATUSES.has(response.status))
+      ? [...final.map((status) => `  | ${members.get(status) ?? ''}`), ...targets.map((target) => `  | ${target}`)].join('\n')
+      : union(final);
+    declarations.push(`export type ${typeName} =\n${follow};`, `export type ${manual} =\n${union(all)};`);
     return { declarations, follow: typeName, manual };
   }
 

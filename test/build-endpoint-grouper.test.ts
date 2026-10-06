@@ -111,7 +111,7 @@ describe('EndpointGrouper on the fixture flow', () => {
       required: ['csrf_token', 'email', 'password', 'action'],
     });
     assert.deepEqual(login.requestBody?.examples, [{ csrf_token: Samples.REDACTED, email: 'user@example.com', password: Samples.REDACTED, action: 'login' }]);
-    assert.deepEqual(login.responses, [{ status: 303, count: 1, headers: ['location', 'set-cookie: auth'] }]);
+    assert.deepEqual(login.responses, [{ status: 303, count: 1, headers: ['location', 'set-cookie: auth'], redirectTo: ['https://shop.example.com/account'] }]);
     assert.deepEqual(login.headerParams, []);
   });
 
@@ -182,6 +182,16 @@ describe('EndpointGrouper filtering', () => {
     assert.equal(g.isDocument(failedNav), true);
     assert.equal(EndpointGrouper.extension('/a/b.min.JS'), 'js');
     assert.equal(EndpointGrouper.extension('/a/.hidden'), '');
+  });
+
+  test('a file name with an encoded query keeps its real extension (BOOKS-5)', () => {
+    assert.equal(EndpointGrouper.extension('/a/b.woff%3Fv=3.2.1'), 'woff');
+    assert.equal(EndpointGrouper.extension('/a/b.svg%23icon'), 'svg');
+    assert.equal(EndpointGrouper.extension('/a/report%2Ev1.PDF'), 'pdf');
+    const f = new CaptureFactory();
+    const font = f.exchange({ url: '/static/fonts/fontawesome-webfont.woff%3Fv=3.2.1', resourceType: 'other', status: 200, responseHeaders: { 'content-type': 'application/octet-stream' }, responseBody: 'wOFF' });
+    assert.equal(grouper().isStaticAsset(font), true);
+    assert.deepEqual(grouper().group([font]), []);
   });
 });
 

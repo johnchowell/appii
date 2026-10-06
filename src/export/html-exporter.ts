@@ -162,14 +162,17 @@ export class HtmlExporter extends BaseExporter {
   #forms(model: ApiModel, options: ExportOptions): string {
     const esc = HtmlEndpointRenderer.esc;
     if (model.forms.length === 0) return '<section id="forms"><h2>Forms</h2><p class="empty">No forms were found.</p></section>';
-    const rows = model.forms.map(
-      (form) =>
+    const rows = model.forms.map((form) => {
+      const pages = Helpers.formPages(form);
+      const list = pages.length > 1 ? `<details><summary>${esc(Helpers.formSeen(form))}</summary>${pages.map((page) => `<code>${esc(Helpers.mapUrl(model, page, options))}</code>`).join('<br>')}</details>` : esc(Helpers.formSeen(form));
+      return (
         `<tr><td><code>${esc(Helpers.mapUrl(model, form.pageUrl, options))}</code></td><td><code>${esc(form.selector)}</code></td><td>${esc(form.method)}</td>` +
-        `<td><code>${esc(Helpers.mapUrl(model, form.action, options))}</code></td><td>${esc(form.enctype)}</td><td>${form.fields.length}</td><td>${esc(form.tokenFields.join(', ') || '-')}</td></tr>`,
-    );
+        `<td><code>${esc(Helpers.mapUrl(model, form.action, options))}</code></td><td>${esc(form.enctype)}</td><td>${form.fields.length}</td><td>${esc(form.tokenFields.join(', ') || '-')}</td><td>${list}</td></tr>`
+      );
+    });
     return [
       '<section id="forms"><h2>Forms</h2><div class="scroll"><table>',
-      '<thead><tr><th>Page</th><th>Selector</th><th>Method</th><th>Action</th><th>Encoding</th><th>Fields</th><th>Token fields</th></tr></thead>',
+      '<thead><tr><th>Page</th><th>Selector</th><th>Method</th><th>Action</th><th>Encoding</th><th>Fields</th><th>Token fields</th><th>Seen</th></tr></thead>',
       `<tbody>${rows.join('')}</tbody></table></div></section>`,
     ].join('');
   }

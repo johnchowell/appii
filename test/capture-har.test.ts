@@ -247,6 +247,30 @@ describe('HarConverter.toHar', () => {
     assert.equal(entry('e1').request.bodySize, 0);
   });
 
+  test('textual request bodies captured as bytes are plain text in the HAR, and come back as the same bytes', () => {
+    const multipart = '------WebKitFormBoundaryAB\r\nContent-Disposition: form-data; name="title"\r\n\r\nh\u00e9llo\r\n------WebKitFormBoundaryAB--\r\n';
+    const bytes = Buffer.from(multipart, 'utf8');
+    const exchange: Exchange = {
+      id: 'mp',
+      source: 'browser',
+      resourceType: 'fetch',
+      startedAt: '2026-05-01T10:00:00.000Z',
+      durationMs: 1,
+      request: {
+        method: 'POST',
+        url: 'https://example.com/post',
+        headers: [{ name: 'Content-Type', value: 'multipart/form-data; boundary=----WebKitFormBoundaryAB' }],
+        body: { mimeType: 'multipart/form-data; boundary=----WebKitFormBoundaryAB', encoding: 'base64', data: bytes.toString('base64'), size: bytes.length },
+      },
+    };
+    const har = converter.toHar([exchange]);
+    const postData = har.log.entries[0]?.request.postData;
+    assert.equal(postData?.text, multipart);
+    assert.equal(postData?._appiiEncoding, undefined);
+    const back = converter.fromHar(har).exchanges[0]?.request.body;
+    assert.equal(Buffer.from(Http.bodyBytes(back)).equals(bytes), true);
+  });
+
   test('maps responses: Set-Cookie attributes, redirects, content encodings and sizes', () => {
     const home = entry('e1');
     assert.deepEqual(home.response.cookies[0], { name: 'sid', value: '1', path: '/', httpOnly: true, sameSite: 'Lax' });

@@ -53,6 +53,7 @@ interface Hop {
   memoryCache: boolean;
   dataLength: number;
   ended: boolean;
+  postData: Promise<CdpPostData | undefined> | undefined;
 }
 
 interface Chain {
@@ -207,9 +208,20 @@ export class WorkerNetworkLog {
       memoryCache: false,
       dataLength: 0,
       ended: false,
+      postData: undefined,
     };
+    if (this.#options.captureBodies && WorkerNetworkLog.#bodyPending(event)) {
+      hop.postData = Helpers.settle(this.#channel.send<CdpPostData>('Network.getRequestPostData', { requestId: event.requestId }), this.#options.readTimeoutMs);
+    }
     chain.hops.push(hop);
     this.#options.onRequest?.(request);
+  }
+
+  static #bodyPending(event: CdpRequestWillBeSent): boolean {
+    const request = event.request;
+    if (request.hasPostData !== true || request.postData !== undefined) return false;
+    const entries = request.postDataEntries;
+    return !(entries !== undefined && entries.length > 0 && entries.every((entry) => entry.bytes !== undefined));
   }
 
   #chain(requestId: string): Chain {
@@ -328,7 +340,7 @@ export class WorkerNetworkLog {
     } else if (source.postData !== undefined) {
       bytes = PageNetworkTap.bytes(source.postData, expected);
     } else if (source.hasPostData === true) {
-      const read = await Helpers.settle(this.#channel.send<CdpPostData>('Network.getRequestPostData', { requestId: hop.event.requestId }), this.#options.readTimeoutMs);
+      const read = (hop.postData === undefined ? undefined : await hop.postData) ?? (await Helpers.settle(this.#channel.send<CdpPostData>('Network.getRequestPostData', { requestId: hop.event.requestId }), this.#options.readTimeoutMs));
       bytes = read ? PageNetworkTap.bytes(read.postData, expected) : undefined;
     }
     if (!bytes || bytes.length === 0) {

@@ -130,7 +130,7 @@ describe('CookieInventory on the fixture flow', () => {
     assert.equal(sid.domain, 'shop.example.com');
     assert.deepEqual(sid.setBy, ['get-root']);
     assert.ok(sid.usedBy.includes('post-login') && sid.usedBy.includes('get-api-items-itemid'));
-    assert.equal(sid.valueExample, 'a1b2...');
+    assert.equal(sid.valueExample, '<redacted> (24 characters)');
     const auth = cookie(cookies, 'auth');
     assert.deepEqual(auth.setBy, ['post-login']);
     assert.ok(!auth.usedBy.includes('post-login'));
@@ -175,7 +175,7 @@ describe('CookieInventory observations', () => {
     assert.equal(session.expires, new Date(Date.parse(capture.exchanges[0]!.startedAt) + 20 + 600_000).toISOString());
     assert.deepEqual(session.setBy, ['get-api-login', 'get-api-logout']);
     assert.deepEqual(session.usedBy, ['get-api-logout']);
-    assert.equal(session.valueExample, 'abc1...');
+    assert.equal(session.valueExample, '<redacted> (9 characters)');
     const legacy = cookie(cookies, 'legacy');
     assert.deepEqual([legacy.setBy, legacy.usedBy, legacy.httpOnly, legacy.path, legacy.session], [[], ['get-api-logout'], false, '/', true]);
   });

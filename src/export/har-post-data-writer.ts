@@ -1,4 +1,4 @@
-import type { BodyData, Exchange } from '../model/index.js';
+import type { Exchange } from '../model/index.js';
 import { BodyParser, MultipartParser } from '../build/index.js';
 import type { HarParam, HarPostData } from '../capture/index.js';
 import { Http } from '../shared/index.js';
@@ -28,19 +28,6 @@ export class HarPostDataWriter {
     } catch {
       return undefined;
     }
-  }
-
-  textBody(body: BodyData): BodyData {
-    if (body.encoding !== 'base64') return body;
-    const text = HarPostDataWriter.utf8(Http.bodyBytes(body));
-    return text === undefined ? body : { ...body, encoding: 'utf8', data: text };
-  }
-
-  textExchange(exchange: Exchange): Exchange {
-    const body = exchange.request.body;
-    if (!body) return exchange;
-    const text = this.textBody(body);
-    return text === body ? exchange : { ...exchange, request: { ...exchange.request, body: text } };
   }
 
   postData(postData: HarPostData, exchange: Exchange, charset?: string): HarPostData {

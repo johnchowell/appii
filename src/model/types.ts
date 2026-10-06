@@ -13,6 +13,7 @@ import type {
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
   SERVED_BY_VALUES,
+  SKIP_REASONS,
   TOKEN_SOURCES,
 } from './constants.js';
 
@@ -221,6 +222,7 @@ export interface EndpointResponse {
   count: number;
   body?: BodyShape;
   headers: string[];
+  redirectTo?: string[];
 }
 
 export type TokenSource = (typeof TOKEN_SOURCES)[number];
@@ -234,6 +236,7 @@ export interface CsrfToken {
   sourceName?: string;
   sourceUrl?: string;
   sourceMethod?: string;
+  sessionCookies?: string[];
 }
 
 export interface EndpointAuth {
@@ -242,6 +245,8 @@ export interface EndpointAuth {
   bearer: boolean;
   csrf: CsrfToken[];
   anonymous?: boolean;
+  schemes?: string[];
+  sets?: string[][];
 }
 
 export interface EndpointForm {
@@ -291,6 +296,14 @@ export interface Endpoint {
 
 export type CookieRole = (typeof COOKIE_ROLES)[number];
 
+export type SkipReason = (typeof SKIP_REASONS)[number];
+
+export interface SkippedRequests {
+  reason: SkipReason;
+  count: number;
+  examples: string[];
+}
+
 export interface CookieInfo {
   name: string;
   domain: string;
@@ -317,6 +330,7 @@ export interface ApiModel {
     exchanges: number;
     capturedFrom?: string;
     capturedTo?: string;
+    skipped?: SkippedRequests[];
   };
   primaryOrigin: string;
   origins: string[];

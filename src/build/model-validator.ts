@@ -10,11 +10,12 @@ import {
   PARAM_LOCATIONS,
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
+  SKIP_REASONS,
   TOKEN_SOURCES,
 } from '../model/index.js';
 import type { ApiModel } from '../model/index.js';
 import { CaptureStore } from '../capture/index.js';
-import { Json } from '../shared/index.js';
+import { Credentials, Json } from '../shared/index.js';
 
 type Fields = Record<string, unknown>;
 
@@ -32,6 +33,7 @@ export class ModelValidator {
   static readonly CSRF_LOCATIONS: ReadonlySet<string> = new Set(CSRF_LOCATIONS);
   static readonly TOKEN_SOURCES: ReadonlySet<string> = new Set(TOKEN_SOURCES);
   static readonly COOKIE_ROLES: ReadonlySet<string> = new Set(COOKIE_ROLES);
+  static readonly SKIP_REASONS: ReadonlySet<string> = new Set(SKIP_REASONS);
   static readonly SAME_SITE: ReadonlySet<string> = new Set(SAME_SITE_VALUES);
   static readonly FORM_METHODS: ReadonlySet<string> = new Set(FORM_METHODS);
   static readonly FORM_ENCTYPES: ReadonlySet<string> = new Set(FORM_ENCTYPES);
@@ -59,6 +61,13 @@ export class ModelValidator {
     if (source) {
       this.#number(problems, source, 'exchanges', 'source.');
       for (const key of ['startUrl', 'file', 'capturedFrom', 'capturedTo']) this.#string(problems, source, key, 'source.', { optional: true });
+      this.#array(problems, source, 'skipped', 'source.', (item, p) => {
+        const entry = this.#object(problems, item, p);
+        if (!entry) return;
+        this.#oneOf(problems, entry, 'reason', ModelValidator.SKIP_REASONS, p + '.');
+        this.#number(problems, entry, 'count', p + '.');
+        this.#strings(problems, entry, 'examples', p + '.');
+      }, { optional: true });
     }
     this.#array(problems, root, 'endpoints', '', (item, path) => this.#endpoint(problems, item, path));
     this.#array(problems, root, 'cookies', '', (item, path) => this.#cookie(problems, item, path));
@@ -91,6 +100,7 @@ export class ModelValidator {
       this.#number(problems, response, 'status', p + '.');
       this.#number(problems, response, 'count', p + '.');
       this.#strings(problems, response, 'headers', p + '.');
+      this.#strings(problems, response, 'redirectTo', p + '.', { optional: true });
       if (response.body !== undefined) this.#body(problems, response.body, p + '.body');
     });
     const auth = this.#object(problems, endpoint.auth, at + 'auth');
@@ -99,6 +109,10 @@ export class ModelValidator {
       this.#strings(problems, auth, 'headers', at + 'auth.');
       this.#boolean(problems, auth, 'bearer', at + 'auth.');
       this.#boolean(problems, auth, 'anonymous', at + 'auth.', { optional: true });
+      this.#strings(problems, auth, 'schemes', at + 'auth.', { optional: true });
+      this.#array(problems, auth, 'sets', at + 'auth.', (item, p) => {
+        if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || !Credentials.ENTRY.test(entry))) problems.push(`${p}: expected an array of credential entries such as cookie:<name>, header:<name> or http:<scheme>`);
+      }, { optional: true });
       this.#array(problems, auth, 'csrf', at + 'auth.', (item, p) => {
         const token = this.#object(problems, item, p);
         if (!token) return;
@@ -108,6 +122,7 @@ export class ModelValidator {
         this.#string(problems, token, 'sourceName', p + '.', { optional: true });
         this.#string(problems, token, 'sourceUrl', p + '.', { optional: true });
         this.#string(problems, token, 'sourceMethod', p + '.', { optional: true });
+        this.#strings(problems, token, 'sessionCookies', p + '.', { optional: true });
       });
     }
     if (endpoint.form !== undefined) {

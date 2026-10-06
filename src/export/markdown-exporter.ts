@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, ParamInfo } from '../model/index.js';
-import { Curl, EndpointIndex, Http, Json, Meta, Schema, Text } from '../shared/index.js';
+import { Credentials, Curl, EndpointIndex, Http, Json, Meta, Schema, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -17,6 +17,7 @@ export class MarkdownExporter extends BaseExporter {
   readonly mimeType = 'text/markdown';
   readonly description = 'Markdown documentation with endpoint tables, details and cookies';
   static readonly UNSAFE_PATTERN_NOTE = `A pattern marked (${Schema.UNSAFE_PATTERN}) can take a very long time to check. ${Helpers.UNSAFE_PATTERN_CLIENT}`;
+  static readonly FORM_PAGES = 3;
 
   readonly #md: MarkdownWriter;
   readonly #fields: SchemaFieldList;
@@ -43,6 +44,8 @@ export class MarkdownExporter extends BaseExporter {
       ...endpoints.map((endpoint) => this.#detail(model, endpoint, index, opts)),
       this.#md.heading(2, 'Cookies'),
       this.#cookies(model),
+      this.#md.heading(2, 'Forms'),
+      this.#forms(model, opts),
     ];
     if (model.websockets.length > 0) sections.push(this.#md.heading(2, 'WebSockets'), this.#websockets(model));
     return sections.join('\n\n') + '\n';
@@ -69,7 +72,7 @@ export class MarkdownExporter extends BaseExporter {
       ['Endpoints', md.text(`${endpoints.length}${endpoints.length === model.endpoints.length ? '' : ` of ${model.endpoints.length}`}${kinds.size > 0 ? ` (${[...kinds].map(([kind, count]) => `${kind} ${count}`).join(', ')})` : ''}`)],
       ['Exchanges', String(source.exchanges)],
       ['Cookies', String(model.cookies.length)],
-      ['Forms', String(model.forms.length)],
+      ['Forms', md.text(Helpers.formTotals(model.forms))],
       ['WebSockets', String(model.websockets.length)],
     ];
     return `${intro}\n\n${md.table(['Item', 'Value'], rows)}`;
@@ -102,9 +105,8 @@ export class MarkdownExporter extends BaseExporter {
 
   #auth(model: ApiModel, endpoint: Endpoint): string {
     const parts: string[] = [];
-    const cookies = Helpers.authCookies(model, endpoint);
-    if (cookies.length > 0) parts.push(`cookie ${cookies.join(', ')}`);
-    if (endpoint.auth.bearer) parts.push('bearer');
+    const credentials = Credentials.describe(endpoint, Credentials.roles(model));
+    if (credentials !== '') parts.push(credentials);
     if (endpoint.auth.csrf.length > 0) parts.push('csrf');
     return this.#md.text(parts.join('; '));
   }
@@ -121,7 +123,9 @@ export class MarkdownExporter extends BaseExporter {
       `- **Kind:** ${md.text(endpoint.kind)}${endpoint.operationName ? ` (operation ${md.code(endpoint.operationName)})` : ''}`,
       `- **Observed:** ${endpoint.count > 0 ? md.text(Text.plural(endpoint.count, 'time')) : 'no; inferred from an HTML form'}`,
     ];
-    if (endpoint.auth.cookies.length > 0) facts.push(`- **Cookies:** ${endpoint.auth.cookies.map((name) => md.code(name)).join(', ')}`);
+    const credentials = Credentials.describe(endpoint, Credentials.roles(model));
+    if (credentials !== '') facts.push(`- **Credentials:** ${md.text(credentials)}`);
+    if (endpoint.auth.cookies.length > 0) facts.push(`- **Cookies sent:** ${endpoint.auth.cookies.map((name) => md.code(name)).join(', ')}`);
     if (endpoint.auth.bearer) facts.push('- **Bearer:** Authorization: Bearer token');
     for (const token of endpoint.auth.csrf) {
       const source = Helpers.tokenSource(token, { text: (value) => md.text(value), code: (value) => md.code(value), url: (value) => md.code(Helpers.mapUrl(model, value, options)) });
@@ -226,6 +230,29 @@ export class MarkdownExporter extends BaseExporter {
         md.text(cookie.setBy.join(', ')),
         md.text(cookie.usedBy.join(', ')),
       ]),
+    );
+  }
+
+  #forms(model: ApiModel, options: ExportOptions): string {
+    const md = this.#md;
+    if (model.forms.length === 0) return 'No forms were found.';
+    return md.table(
+      ['Page', 'Selector', 'Method', 'Action', 'Encoding', 'Fields', 'Token fields', 'Seen'],
+      model.forms.map((form) => {
+        const pages = Helpers.formPages(form);
+        const shown = pages.slice(0, MarkdownExporter.FORM_PAGES).map((page) => md.code(Helpers.mapUrl(model, page, options), true));
+        const more = pages.length - shown.length;
+        return [
+          md.code(Helpers.mapUrl(model, form.pageUrl, options), true),
+          md.code(form.selector, true),
+          md.text(form.method),
+          md.code(Helpers.mapUrl(model, form.action, options), true),
+          md.text(form.enctype),
+          String(form.fields.length),
+          md.text(form.tokenFields.join(', ') || '-'),
+          `${md.text(Helpers.formSeen(form))}${pages.length > 1 ? `: ${shown.join(', ')}${more > 0 ? md.text(`, +${more} more`) : ''}` : ''}`,
+        ];
+      }),
     );
   }
 

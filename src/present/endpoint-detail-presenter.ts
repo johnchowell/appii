@@ -1,5 +1,6 @@
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
-import { Curl, EndpointIndex, Json, Samples, Schema, Text } from '../shared/index.js';
+import { Ansi, Credentials, Curl, EndpointIndex, Json, Samples, Schema, Text } from '../shared/index.js';
+import type { CookieRoles } from '../shared/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
@@ -22,6 +23,7 @@ export interface EndpointDetailPresenterDeps {
 }
 
 export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> {
+  static readonly JSON_LINES = ', JSON lines: one value per line';
   static readonly PARAM_COLUMNS: readonly TableColumn[] = [
     { header: 'NAME', flex: true, minWidth: 12 },
     { header: 'REQ' },
@@ -69,7 +71,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return new EndpointDetailPresenter(options, { formatter: new EndpointFormatter(BasePresenter.ansiFor(options)), tree: new SchemaTree(), shell: new ShellFolder() });
   }
 
-  static submitter(field: FormField): string {
+  static submitter(field: FormField, ansi: Ansi = Ansi.plain): string {
     const parts = [field.name === '' ? '(unnamed)' : `${field.name}=${field.value}`];
     if (field.label !== undefined && field.label !== '') parts.push(`"${field.label}"`);
     if (field.formAction !== undefined) parts.push(`formaction ${field.formAction}`);
@@ -77,7 +79,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     if (field.formEnctype !== undefined) parts.push(`formenctype ${field.formEnctype}`);
     if (field.formNoValidate === true) parts.push('novalidate');
     if (field.disabled) parts.push('disabled');
-    return TextLayout.clean(parts.join(' '));
+    return ansi.clean(parts.join(' '));
   }
 
   static exampleRequest(endpoint: Endpoint): Samples.RequestSample {
@@ -94,7 +96,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       this.#params('Header parameters', endpoint.headerParams),
       this.#requestBody(endpoint),
       this.#form(endpoint),
-      this.#auth(endpoint),
+      this.#auth(endpoint, Credentials.roles(input.model)),
       this.#responses(endpoint),
       this.#samples(endpoint),
       this.#curl(endpoint),
@@ -102,48 +104,51 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   }
 
   #title(endpoint: Endpoint, number: number): string[] {
-    const method = TextLayout.clean(endpoint.method);
-    const plain = `${method} ${TextLayout.clean(endpoint.origin)}${TextLayout.clean(endpoint.path)}${endpoint.operationName === undefined ? '' : '#' + TextLayout.clean(endpoint.operationName)}`;
+    const method = this.ansi.clean(endpoint.method);
+    const plain = `${method} ${this.ansi.clean(endpoint.origin)}${this.ansi.clean(endpoint.path)}${endpoint.operationName === undefined ? '' : '#' + this.ansi.clean(endpoint.operationName)}`;
     const head =
       plain.length <= this.width
         ? [`${this.#format.method(endpoint)} ${this.ansi.bold(this.#format.url(endpoint))}`]
         : EndpointDetailPresenter.#chunks(plain, this.width).map((line, i) => (i === 0 && line.startsWith(method + ' ') ? this.ansi.method(method, method) + line.slice(method.length) : line));
     const facts = [
       this.ansi.bold(`#${number}`),
-      `${this.ansi.dim('kind')} ${TextLayout.clean(endpoint.kind)}`,
+      `${this.ansi.dim('kind')} ${this.ansi.clean(endpoint.kind)}`,
       Text.plural(endpoint.count, 'hit'),
       endpoint.firstParty ? 'first-party' : 'third-party',
     ];
-    if (endpoint.resourceTypes.length > 0) facts.push(`${this.ansi.dim('seen as')} ${TextLayout.clean(endpoint.resourceTypes.join(', '))}`);
+    if (endpoint.resourceTypes.length > 0) facts.push(`${this.ansi.dim('seen as')} ${this.ansi.clean(endpoint.resourceTypes.join(', '))}`);
     const names: Definition[] = [
-      ['Name', TextLayout.clean(endpoint.name)],
-      ['Id', TextLayout.clean(endpoint.id)],
+      ['Name', this.ansi.clean(endpoint.name)],
+      ['Id', this.ansi.clean(endpoint.id)],
     ];
-    if (endpoint.operationName !== undefined) names.push(['Operation', TextLayout.clean(endpoint.operationName)]);
+    if (endpoint.operationName !== undefined) names.push(['Operation', this.ansi.clean(endpoint.operationName)]);
     return [...head, ...TextLayout.flow(facts, this.width), ...this.definitions(names)];
   }
 
   #params(title: string, params: readonly ParamInfo[]): PresenterBlock {
     if (params.length === 0) return undefined;
     const rows = params.map((param) => [
-      TextLayout.clean(param.name),
+      this.ansi.clean(param.name),
       param.required ? 'yes' : this.ansi.dim('no'),
-      TextLayout.clean(Schema.typeLabel(param.schema)),
-      TextLayout.clean(SchemaTree.constraints(param.schema).join(', ')),
-      TextLayout.clean(param.examples.slice(0, EndpointDetailPresenter.MAX_PARAM_EXAMPLES).join(', ')),
+      this.ansi.clean(Schema.typeLabel(param.schema)),
+      this.ansi.clean(SchemaTree.constraints(param.schema).join(', ')),
+      this.ansi.clean(param.examples.slice(0, EndpointDetailPresenter.MAX_PARAM_EXAMPLES).join(', ')),
     ]);
     return [this.heading(title), this.table().render(EndpointDetailPresenter.PARAM_COLUMNS, rows)];
   }
 
   #requestBody(endpoint: Endpoint): PresenterBlock {
-    const body = endpoint.requestBody;
-    if (!body) return undefined;
-    const lines = [this.heading('Request body'), ...this.definitions([['Type', EndpointDetailPresenter.#bodyType(body)]])];
-    if (body.kind === 'graphql') {
-      const query = EndpointDetailPresenter.#graphqlQuery(body);
-      if (query !== undefined) lines.push(...this.definitions([['Query', TextLayout.clean(query)]]));
-    }
-    return [...lines, ...this.#schema(body)];
+    const bodies = [...(endpoint.requestBody ? [endpoint.requestBody] : []), ...(endpoint.otherRequestBodies ?? [])];
+    if (bodies.length === 0) return undefined;
+    return bodies.flatMap((body, i) => {
+      const title = bodies.length === 1 ? 'Request body' : `Request body ${i + 1} of ${bodies.length}`;
+      const lines = [...(i > 0 ? [''] : []), this.heading(title), ...this.definitions([['Type', EndpointDetailPresenter.#bodyType(body, this.ansi)]])];
+      if (body.kind === 'graphql') {
+        const query = EndpointDetailPresenter.#graphqlQuery(body);
+        if (query !== undefined) lines.push(...this.definitions([['Query', this.ansi.clean(query)]]));
+      }
+      return [...lines, ...this.#schema(body)];
+    });
   }
 
   #form(endpoint: Endpoint): PresenterBlock {
@@ -151,35 +156,40 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     if (!form) return undefined;
     const names = [...new Set(form.fields.map((field) => field.name).filter((name) => name !== ''))];
     const entries: Definition[] = [
-      ['Page', TextLayout.clean(form.pageUrl)],
-      ['Selector', TextLayout.clean(form.selector)],
-      ['Enctype', TextLayout.clean(form.enctype)],
-      ['Fields', names.length > 0 ? TextLayout.clean(names.join(', ')) : 'none'],
-      ['Token fields', form.tokenFields.length > 0 ? TextLayout.clean(form.tokenFields.join(', ')) : 'none'],
+      ['Page', this.ansi.clean(form.pageUrl)],
+      ['Selector', this.ansi.clean(form.selector)],
+      ['Enctype', this.ansi.clean(form.enctype)],
+      ['Fields', names.length > 0 ? this.ansi.clean(names.join(', ')) : 'none'],
+      ['Token fields', form.tokenFields.length > 0 ? this.ansi.clean(form.tokenFields.join(', ')) : 'none'],
     ];
     if (form.submitters.length === 0) entries.push(['Submitters', 'none (implicit submission)']);
-    form.submitters.forEach((submitter, i) => entries.push([`Submitter ${i + 1}`, EndpointDetailPresenter.submitter(submitter)]));
+    form.submitters.forEach((submitter, i) => entries.push([`Submitter ${i + 1}`, EndpointDetailPresenter.submitter(submitter, this.ansi)]));
     return [this.heading('Form source'), ...this.definitions(entries)];
   }
 
-  #auth(endpoint: Endpoint): PresenterBlock {
+  #auth(endpoint: Endpoint, roles: CookieRoles): PresenterBlock {
     const auth = endpoint.auth;
+    const credentialCookies = new Set(Credentials.cookies(endpoint, roles));
+    const others = auth.cookies.filter((name) => !credentialCookies.has(name));
     const lines = [
       this.heading('Auth'),
       ...this.definitions([
-        ['Cookies', auth.cookies.length > 0 ? TextLayout.clean(auth.cookies.join(', ')) : 'none'],
+        ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles)) || 'none'],
+        ['Anonymous', auth.anonymous === true ? 'yes, a request without credentials succeeded' : 'no'],
+        ['Credential cookies', credentialCookies.size > 0 ? this.ansi.clean([...credentialCookies].join(', ')) : 'none'],
+        ['Other cookies', others.length > 0 ? this.ansi.clean(others.join(', ')) + ' (sent by the browser; not credentials)' : 'none'],
         ['Bearer', auth.bearer ? 'yes' : 'no'],
-        ['Headers', auth.headers.length > 0 ? TextLayout.clean(auth.headers.join(', ')) : 'none'],
+        ['Headers', auth.headers.length > 0 ? this.ansi.clean(auth.headers.join(', ')) : 'none'],
         ['CSRF', auth.csrf.length > 0 ? Text.plural(auth.csrf.length, 'token') : 'none'],
       ]),
     ];
     if (auth.csrf.length === 0) return lines;
     const rows = auth.csrf.map((token) => [
-      TextLayout.clean(token.location),
-      TextLayout.clean(token.name),
-      TextLayout.clean(token.source),
-      TextLayout.clean(token.sourceName ?? ''),
-      TextLayout.clean(token.sourceUrl ?? ''),
+      this.ansi.clean(token.location),
+      this.ansi.clean(token.name),
+      this.ansi.clean(token.source),
+      this.ansi.clean(token.sourceName ?? ''),
+      this.ansi.clean(token.sourceUrl ?? ''),
     ]);
     return [...lines, this.table().render(EndpointDetailPresenter.CSRF_COLUMNS, rows)];
   }
@@ -199,9 +209,10 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
 
   #response(response: EndpointResponse): string[] {
     const body = response.body;
-    const facts = [this.ansi.bold(this.ansi.status(response.status)), Text.plural(response.count, 'hit'), body ? EndpointDetailPresenter.#bodyType(body) : 'no body'];
+    const facts = [this.ansi.bold(this.ansi.status(response.status)), Text.plural(response.count, 'hit'), body ? EndpointDetailPresenter.#bodyType(body, this.ansi) : 'no body'];
     const lines = TextLayout.flow(facts, this.width);
-    if (response.headers.length > 0) lines.push(...this.definitions([['Headers', TextLayout.clean(response.headers.join(', '))]]));
+    if (response.headers.length > 0) lines.push(...this.definitions([['Headers', this.ansi.clean(response.headers.join(', '))]]));
+    if (response.redirectTo !== undefined && response.redirectTo.length > 0) lines.push(...this.definitions([['Redirects to', this.ansi.clean(response.redirectTo.join(', '))]]));
     if (body) lines.push(...this.#schema(body));
     return lines;
   }
@@ -216,19 +227,19 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
 
   #schemaRow(row: SchemaTreeRow): string[] {
     return [
-      TextLayout.clean(row.path),
-      TextLayout.clean(row.type),
+      this.ansi.clean(row.path),
+      this.ansi.clean(row.type),
       row.required ? 'yes' : row.requiredWhen ? EndpointDetailPresenter.CONDITIONAL : this.ansi.dim('no'),
-      TextLayout.clean(row.constraints),
+      this.ansi.clean(row.constraints),
     ];
   }
 
   #branch(branch: SchemaTreeBranch): string[] {
     const notes = [branch.label === undefined ? '' : ` ("${branch.label}")`, branch.noValidate ? `, ${EndpointDetailPresenter.NO_VALIDATION}` : ''].join('');
-    const title = TextLayout.wrap(TextLayout.clean(`When ${branch.condition}${notes}:`), this.width).map((line) => this.ansi.bold(line));
+    const title = TextLayout.wrap(this.ansi.clean(`When ${branch.condition}${notes}:`), this.width).map((line) => this.ansi.bold(line));
     const facts: Definition[] = [];
-    if (branch.requires.length > 0) facts.push(['Requires', TextLayout.clean(branch.requires.join(', '))]);
-    if (branch.excluded.length > 0) facts.push(['Not sent', TextLayout.clean(branch.excluded.join(', '))]);
+    if (branch.requires.length > 0) facts.push(['Requires', this.ansi.clean(branch.requires.join(', '))]);
+    if (branch.excluded.length > 0) facts.push(['Not sent', this.ansi.clean(branch.excluded.join(', '))]);
     const lines = ['', ...title, ...this.definitions(facts, EndpointDetailPresenter.BRANCH_INDENT)];
     if (branch.rows.length > 0) lines.push(this.table().render(EndpointDetailPresenter.SCHEMA_COLUMNS, branch.rows.map((row) => this.#schemaRow(row))));
     if (facts.length === 0 && branch.rows.length === 0) lines.push(' '.repeat(EndpointDetailPresenter.BRANCH_INDENT) + EndpointDetailPresenter.NO_OTHER_RULES);
@@ -239,8 +250,8 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     if (endpoint.samples.length === 0) return undefined;
     const rows = endpoint.samples.map((sample) => [
       sample.status === undefined ? this.ansi.dim('-') : this.ansi.status(sample.status),
-      TextLayout.clean(sample.url),
-      TextLayout.clean(sample.startedAt),
+      this.ansi.clean(sample.url),
+      this.ansi.clean(sample.startedAt),
     ]);
     return [this.heading('Samples'), this.table().render(EndpointDetailPresenter.SAMPLE_COLUMNS, rows)];
   }
@@ -254,9 +265,9 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return lines;
   }
 
-  static #bodyType(body: BodyShape): string {
-    const mime = TextLayout.clean(body.mimeType);
-    const kind = TextLayout.clean(body.kind);
+  static #bodyType(body: BodyShape, ansi: Ansi): string {
+    const mime = ansi.clean(body.mimeType);
+    const kind = ansi.clean(body.kind) + (body.jsonLines === true ? EndpointDetailPresenter.JSON_LINES : '');
     return mime === '' ? kind : `${mime} (${kind})`;
   }
 

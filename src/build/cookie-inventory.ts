@@ -1,8 +1,9 @@
-import type { Capture, Cookie, CookieInfo, Endpoint, Exchange } from '../model/index.js';
+import type { Capture, Cookie, CookieInfo, CookieRole, Endpoint, Exchange } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { Http, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
+import type { CredentialEvidence } from './credential-evidence.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { Helpers } from './helpers.js';
 import { Redactor } from './redactor.js';
@@ -28,6 +29,8 @@ interface Entry {
 }
 
 export class CookieInventory {
+  static readonly SECRET_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['session', 'auth', 'csrf']);
+
   readonly #classifier: CookieClassifier;
   readonly #parser: CookieParser;
   readonly #redactor: Redactor;
@@ -50,7 +53,7 @@ export class CookieInventory {
     return domainOk && CookieParser.pathMatches(url.pathname, cookie.path);
   }
 
-  build(capture: Capture, endpoints: Endpoint[], origins?: readonly string[]): CookieInfo[] {
+  build(capture: Capture, endpoints: Endpoint[], origins?: readonly string[], evidence?: CredentialEvidence): CookieInfo[] {
     const matcher = new EndpointMatcher(endpoints, { body: this.#body });
     const matched = new Map<Exchange, Endpoint | undefined>();
     const endpointOf = (exchange: Exchange): Endpoint | undefined => {
@@ -86,7 +89,7 @@ export class CookieInventory {
     return [...entries.values()]
       .filter((entry) => CookieInventory.#relevant(entry, hosts))
       .sort((a, b) => CookieInventory.#compare(a.cookie, b.cookie))
-      .map((entry) => this.#info(entry, order));
+      .map((entry) => this.#info(entry, order, evidence));
   }
 
   #observeSet(
@@ -170,9 +173,9 @@ export class CookieInventory {
     );
   }
 
-  #info(entry: Entry, order: ReadonlyMap<Endpoint, number>): CookieInfo {
+  #info(entry: Entry, order: ReadonlyMap<Endpoint, number>, evidence: CredentialEvidence | undefined): CookieInfo {
     const { cookie } = entry;
-    const role = this.#classifier.classify(cookie.name);
+    const role = evidence ? evidence.role(cookie.name) : this.#classifier.classify(cookie.name);
     const ids = (set: ReadonlySet<Endpoint>): string[] =>
       [...set].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)).map((endpoint) => endpoint.id);
     return {
@@ -188,7 +191,7 @@ export class CookieInventory {
       role,
       setBy: ids(entry.setBy),
       usedBy: ids(entry.usedBy),
-      valueExample: role === 'preference' || !this.#redactor.enabled ? cookie.value : Text.redact(cookie.value),
+      valueExample: role === 'preference' || !this.#redactor.enabled ? cookie.value : Text.redact(cookie.value, CookieInventory.SECRET_ROLES.has(role) || Redactor.looksSecret(cookie.value)),
     };
   }
 

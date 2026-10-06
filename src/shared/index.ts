@@ -23,5 +23,7 @@ export type { QuoteState, ShellChar } from './shell-script.js';
 export { Ansi, METHOD_COLORS } from './ansi.js';
 export type { AnsiStyle } from './ansi.js';
 export { EndpointIndex } from './endpoints.js';
+export { Credentials } from './credentials.js';
+export type { CookieRoles, Credential, CredentialKind } from './credentials.js';
 export { AppiiError, isAppiiError } from './errors.js';
 export type { AppiiErrorCode } from './errors.js';

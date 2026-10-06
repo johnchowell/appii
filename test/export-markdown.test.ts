@@ -40,16 +40,16 @@ describe('MarkdownExporter', () => {
     assert.match(markdown, /\n\| Endpoints \| 14 \(document 6, json 4, graphql 1, form 3\) \|\n/);
     assert.deepEqual(
       [...markdown.matchAll(/^## (.+)$/gm)].map((m) => m[1]),
-      ['Endpoints', 'Endpoint details', 'Cookies'],
+      ['Endpoints', 'Endpoint details', 'Cookies', 'Forms'],
     );
   });
 
   test('one endpoint table per origin with numbers, links and auth', () => {
     const table = section(markdown, `### ${model.primaryOrigin}`);
     assert.match(table, /\n\| \\# \| Method \| Path \| Name \| Kind \| Statuses \| Auth \| Hits \|\n\| ---: \| --- \| --- \| --- \| --- \| --- \| --- \| ---: \|\n/);
-    assert.match(table, /\n\| 5 \| GET \| `\/api\/items\/\{itemId\}` \| \[getItem\]\(#5-get-item\) \| json \| 200, 404 \| cookie auth, sid \| 4 \|\n/);
-    assert.match(table, /\n\| 10 \| POST \| `\/login` \| \[postLogin\]\(#10-post-login\) \| form \| 303 \| cookie sid; csrf \| 1 \|\n/);
-    assert.match(table, /\n\| 12 \| GET \| `\/search` \| \[getSearch\]\(#12-get-search\) \| form \| - \| cookie auth, sid \| 0 \|/);
+    assert.match(table, /\n\| 5 \| GET \| `\/api\/items\/\{itemId\}` \| \[getItem\]\(#5-get-item\) \| json \| 200, 404 \| cookie auth \| 4 \|\n/);
+    assert.match(table, /\n\| 10 \| POST \| `\/login` \| \[postLogin\]\(#10-post-login\) \| form \| 303 \| csrf \| 1 \|\n/);
+    assert.match(table, /\n\| 12 \| GET \| `\/search` \| \[getSearch\]\(#12-get-search\) \| form \| - \| cookie auth \(optional\) \| 0 \|/);
   });
 
   test('endpoint details: facts, parameters, bodies, responses and a curl example', () => {

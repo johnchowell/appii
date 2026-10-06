@@ -134,7 +134,7 @@ export class CliApp {
   #usage(ctx: CliContext, message: string): number {
     ctx.err(
       [
-        ErrorReporter.PREFIX + TextLayout.clean(message),
+        ErrorReporter.PREFIX + ctx.ansi.clean(message),
         `usage: ${Meta.APP_NAME} <command> [options]`,
         `Commands: ${this.#registry.names().join(', ')}`,
         `Run '${Meta.APP_NAME} help' for details.`,

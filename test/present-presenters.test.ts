@@ -203,8 +203,8 @@ describe('EndpointListPresenter', () => {
     assert.deepEqual(rows.get(4), ['4', 'POST', '/api/items', '', 'json: name, price', '201 400', 'cookie,csrf', '2']);
     assert.deepEqual(rows.get(5), ['5', 'GET', '/api/items/{itemId}', '', '', '200 404', 'cookie', '3']);
     assert.deepEqual(rows.get(7), ['7', 'POST', '/graphql#GetItem', '', 'graphql: $id', '200', 'cookie', '1']);
-    assert.deepEqual(rows.get(9), ['9', 'POST', '/login', '', 'form: csrf_token, email, password +2', '303', 'cookie,csrf', '1']);
-    assert.deepEqual(rows.get(12), ['12', 'POST', '/signup', 'draft', 'multipart: username, email, age +10', '-', 'cookie', '0']);
+    assert.deepEqual(rows.get(9), ['9', 'POST', '/login', '', 'form: csrf_token, email, password +2', '303', 'csrf', '1']);
+    assert.deepEqual(rows.get(12), ['12', 'POST', '/signup', 'draft', 'multipart: username, email, age +10', '-', 'cookie?', '0']);
     const index = EndpointIndex.of(FIXTURE);
     for (const [number, row] of rows) assert.equal(index.get(number)?.path, row[2]?.replace(/#.*$/, ''));
     assert.doesNotMatch(out, /Columns hidden/);
@@ -444,9 +444,12 @@ describe('EndpointDetailPresenter', () => {
 
   test('auth section with the CSRF token table', () => {
     const auth = section(detail(4), 'Auth');
-    assert.ok(auth.includes('Cookies: auth, csrf, sid, theme'));
-    assert.ok(auth.includes('Bearer:  no'));
-    assert.ok(auth.includes('CSRF:    1 token'));
+    assert.ok(auth.includes('Credentials:        cookie auth'));
+    assert.ok(auth.includes('Anonymous:          no'));
+    assert.ok(auth.includes('Credential cookies: auth'));
+    assert.ok(auth.includes('Other cookies:      csrf, sid, theme (sent by the browser; not credentials)'));
+    assert.ok(auth.includes('Bearer:             no'));
+    assert.ok(auth.includes('CSRF:               1 token'));
     assert.deepEqual(tableRows(auth.join('\n')), [
       ['LOCATION', 'NAME', 'SOURCE', 'SOURCE NAME', 'SOURCE URL'],
       ['header', 'x-csrf-token', 'cookie', 'csrf', ''],
@@ -454,9 +457,11 @@ describe('EndpointDetailPresenter', () => {
     const login = tableRows(section(detail(9), 'Auth').join('\n'));
     assert.deepEqual(login[1], ['body', 'csrf_token', 'hidden-field', 'csrf_token', 'https://shop.example.com/login']);
     const bearer = section(detail('createOrder', { width: 100 }, MIXED), 'Auth');
-    assert.ok(bearer.includes('Bearer:  yes'));
-    assert.ok(bearer.includes('Headers: authorization'));
-    assert.ok(section(detail(1), 'Auth').includes('CSRF:    none'));
+    assert.ok(bearer.includes('Credentials:        bearer'));
+    assert.ok(bearer.includes('Bearer:             yes'));
+    assert.ok(bearer.includes('Headers:            authorization'));
+    assert.ok(section(detail(1), 'Auth').includes('CSRF:               none'));
+    assert.ok(section(detail(1), 'Auth').includes('Anonymous:          yes, a request without credentials succeeded'));
   });
 
   test('responses per status with counts, MIME types, headers and schema rows', () => {
@@ -466,7 +471,7 @@ describe('EndpointDetailPresenter', () => {
     assert.ok(responses.includes('Headers: content-type'));
     assert.ok(tableRows(responses.join('\n')).some((row) => row[0] === 'errors.price' && row[1] === 'array<string>'));
     const login = section(detail(9), 'Responses');
-    assert.deepEqual(login, ['303  1 hit  no body', 'Headers: location, set-cookie: auth']);
+    assert.deepEqual(login, ['303  1 hit  no body', 'Headers: location, set-cookie: auth', 'Redirects to: https://shop.example.com/account']);
     assert.deepEqual(section(detail(12), 'Responses'), ['No responses observed; this endpoint is known from a form.']);
     const deleted = section(detail('delete-api-v1-users-userid', {}, MIXED), 'Responses');
     assert.equal(deleted[0], '204  1 hit  no body');
@@ -497,11 +502,11 @@ describe('EndpointDetailPresenter', () => {
       "curl -sS -X POST 'https://shop.example.com/api/items' \\",
       '  -H "x-csrf-token: ${APPII_CSRF}" \\',
       "  -H 'Content-Type: application/json' \\",
-      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF}; sid=${APPII_SID}; theme=${APPII_THEME}" \\',
+      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF}" \\',
       `  --data-raw '{"name":"Thing","price":5}' \\`,
       '  --compressed',
     ]);
-    assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF APPII_SID APPII_THEME');
+    assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF');
     const argv = (script: string) =>
       execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_SID: 's', APPII_THEME: 't' } }).toString();
     for (const ref of [4, 9, 12]) {
@@ -531,7 +536,7 @@ describe('EndpointDetailPresenter', () => {
     const endpoint = EndpointIndex.of(FIXTURE).require(4);
     const sample = EndpointDetailPresenter.exampleRequest(endpoint);
     assert.deepEqual(sample, Samples.requestSample(endpoint));
-    assert.equal(String(sample.cookie), 'auth={{auth}}; csrf={{csrf}}; sid={{sid}}; theme={{theme}}');
+    assert.equal(String(sample.cookie), 'auth={{auth}}; csrf={{csrf}}');
     assert.equal(String(sample.headers.find((header) => header.name === 'x-csrf-token')?.value), '{{csrf}}');
     const bodyToken = {
       ...endpoint,
@@ -570,9 +575,9 @@ describe('CookieListPresenter', () => {
     assert.equal(lines(out)[0], 'shop.example.com: 4 cookies');
     assert.deepEqual(rows[0], ['NAME', 'DOMAIN', 'PATH', 'ROLE', 'FLAGS', 'EXPIRES', 'SET BY', 'USED BY', 'VALUE']);
     assert.deepEqual(rows.slice(1), [
-      ['auth', 'shop.example.com', '/', 'auth', 'HttpOnly SameSite=Lax', 'session', '9', '2-7,10-12', 'feed...'],
-      ['csrf', 'shop.example.com', '/', 'csrf', 'SameSite=Strict', 'session', '6', '3-5,7,10-12', '0123...'],
-      ['sid', 'shop.example.com', '/', 'session', 'HttpOnly SameSite=Lax', 'session', '1', '2-12', 'a1b2...'],
+      ['auth', 'shop.example.com', '/', 'auth', 'HttpOnly SameSite=Lax', 'session', '9', '2-7,10-12', '<redacted> (32 characters)'],
+      ['csrf', 'shop.example.com', '/', 'csrf', 'SameSite=Strict', 'session', '6', '3-5,7,10-12', '<redacted> (32 characters)'],
+      ['sid', 'shop.example.com', '/', 'session', 'HttpOnly SameSite=Lax', 'session', '1', '2-12', '<redacted> (24 characters)'],
       ['theme', 'shop.example.com', '/', 'preference', 'SameSite=Lax', '2026-01-01T01:00:00Z', '1', '2-12', 'dark'],
     ]);
     assert.match(out, /SET BY and USED BY list endpoint numbers from the endpoint list\./);

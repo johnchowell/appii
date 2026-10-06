@@ -176,12 +176,13 @@ describe('OpenApiExporter on a real browser capture of the fixture site', () => 
     assert.deepEqual(create['x-appii-csrf'], [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }]);
     assert.ok(!params(create).some((p) => String(p.name).toLowerCase() === 'x-csrf-token'));
     const security = create.security as Record<string, unknown>[];
-    assert.deepEqual(security, [{ authCookie: [], xCsrfTokenHeader: [] }, { sidCookie: [], xCsrfTokenHeader: [] }]);
+    assert.deepEqual(security, [{ authCookie: [], xCsrfTokenHeader: [] }]);
     const schemes = obj(obj(doc.components).securitySchemes);
     assert.deepEqual(obj(schemes.xCsrfTokenHeader).in, 'header');
     assert.equal(obj(schemes.xCsrfTokenHeader).name, 'x-csrf-token');
     assert.deepEqual({ ...obj(schemes.authCookie), description: '' }, { type: 'apiKey', in: 'cookie', name: 'auth', description: '' });
-    assert.match(String(obj(schemes.sidCookie).description), /Session cookie sid \(HttpOnly, SameSite=Lax\)/);
+    assert.match(String(obj(schemes.authCookie).description), /^Authentication cookie auth \(HttpOnly/);
+    assert.equal(schemes.sidCookie, undefined);
   });
 
   test('urlencoded login form with constraints, token field, redirect response and form origin', () => {
@@ -198,12 +199,12 @@ describe('OpenApiExporter on a real browser capture of the fixture site', () => 
     assert.equal(obj(props.password)['x-html-minlength'], 8);
     assert.deepEqual(schema.required, ['email', 'password', 'action']);
     assert.deepEqual(login['x-appii-form'], { pageUrl: `${fixture.site.origin}/login`, selector: 'form#login', enctype: 'application/x-www-form-urlencoded' });
-    assert.deepEqual(login['x-appii-csrf'], [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${fixture.site.origin}/login` }]);
+    assert.deepEqual(login['x-appii-csrf'], [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${fixture.site.origin}/login`, sessionCookies: ['sid'] }]);
     const redirect = obj(obj(login.responses)['303']);
     assert.equal(redirect.description, 'See Other');
     assert.deepEqual(Object.keys(obj(redirect.headers)), ['Location', 'Set-Cookie']);
     assert.match(String(obj(obj(redirect.headers)['Set-Cookie']).description), /auth/);
-    assert.deepEqual(login.security, [{ sidCookie: [] }]);
+    assert.deepEqual(login.security, []);
   });
 
   test('multipart signup form with file and array encodings and the formaction query parameter', () => {

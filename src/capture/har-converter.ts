@@ -540,10 +540,11 @@ export class HarConverter {
   }
 
   static #postData(body: BodyData, headers: Header[]): HarPostData {
+    const text = body.encoding === 'base64' && !Http.isContentEncoded(Http.getHeader(headers, 'content-encoding')) ? Http.utf8Text(Http.bodyBytes(body)) : undefined;
     return {
       mimeType: body.mimeType || Http.getHeader(headers, 'content-type') || '',
-      text: body.data,
-      ...(body.encoding === 'base64' ? { _appiiEncoding: 'base64' as const } : {}),
+      text: text ?? body.data,
+      ...(body.encoding === 'base64' && text === undefined ? { _appiiEncoding: 'base64' as const } : {}),
       ...(body.truncated ? { _appiiTruncated: true } : {}),
     };
   }

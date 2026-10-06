@@ -154,6 +154,26 @@ export class FormLinker {
     };
   }
 
+  secretFields(capture: Capture): Set<string> {
+    return FormLinker.secretNames(this.#collector.collect(capture));
+  }
+
+  passwordFields(capture: Capture): Set<string> {
+    const names = new Set<string>();
+    for (const form of this.#collector.collect(capture)) for (const field of form.fields) if (FormLinker.SECRET_TYPES.has(field.type) && field.name !== '') names.add(field.name);
+    return names;
+  }
+
+  loginPages(capture: Capture): Set<string> {
+    const pages = new Set<string>();
+    for (const form of this.#collector.collect(capture)) {
+      if (!form.fields.some((field) => FormLinker.SECRET_TYPES.has(field.type))) continue;
+      const url = Helpers.httpUrl(form.pageUrl);
+      if (url) pages.add(url.origin + url.pathname);
+    }
+    return pages;
+  }
+
   submitted(capture: Capture): (exchange: Exchange) => boolean {
     const exchanges = new Set<string>();
     for (const submission of this.#submissions(this.#collector.collect(capture), this.#observedIn(capture))) {

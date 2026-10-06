@@ -1,6 +1,6 @@
 import type { BodyData, CapturedRequest, Exchange, FormEnctype, Header } from '../model/index.js';
 import { BodyParser, MultipartParser, Redactor } from '../build/index.js';
-import type { MultipartPart, PlainTextMode } from '../build/index.js';
+import type { MultipartPart, PlainTextMode, SecretValues } from '../build/index.js';
 import { HtmlTagScanner, TokenDetector } from '../forms/index.js';
 import type { ScannedTag } from '../forms/index.js';
 import { CharsetEncoder, Http, Json, Samples, Text } from '../shared/index.js';
@@ -82,6 +82,10 @@ export class ExchangeSanitizer {
   static bytesBody(body: BodyData, bytes: Uint8Array): BodyData {
     const out = Http.toBodyData(bytes, body.mimeType);
     return { ...out, size: body.truncated ? body.size : bytes.byteLength, ...(body.truncated ? { truncated: true } : {}) };
+  }
+
+  useValues(values: SecretValues): void {
+    this.#redactor.useValues(values);
   }
 
   sanitize(exchange: Exchange, context: SanitizeContext = {}): Exchange {
@@ -230,7 +234,7 @@ export class ExchangeSanitizer {
 
   #htmlBody(body: BodyData): BodyData {
     const text = ExchangeSanitizer.byteText(body);
-    const out = this.html(text, body.truncated === true);
+    const out = this.#redactor.scrub(this.html(text, body.truncated === true));
     return out === text ? body : ExchangeSanitizer.bytesBody(body, new Uint8Array(Buffer.from(out, 'latin1')));
   }
 

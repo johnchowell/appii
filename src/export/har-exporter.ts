@@ -1,6 +1,6 @@
 import type { ApiModel, Endpoint, Exchange, FormDescriptor } from '../model/index.js';
 import { HarConverter } from '../capture/index.js';
-import { FormLinker } from '../build/index.js';
+import { FormLinker, SecretCollector } from '../build/index.js';
 import type { Har } from '../capture/index.js';
 import { AppiiError, Json } from '../shared/index.js';
 import { ExchangeSanitizer } from './exchange-sanitizer.js';
@@ -13,6 +13,7 @@ export interface HarExporterDeps {
   har?: HarConverter;
   sanitizer?: (redact: boolean) => ExchangeSanitizer;
   postData?: HarPostDataWriter;
+  secrets?: (redact: boolean) => SecretCollector;
 }
 
 export interface OwnedExchange {
@@ -29,9 +30,15 @@ export class HarExporter extends BaseExporter {
   readonly #har: HarConverter;
   readonly #sanitizer: (redact: boolean) => ExchangeSanitizer;
   readonly #postData: HarPostDataWriter;
+  readonly #secrets: (redact: boolean) => SecretCollector;
 
   static create(): HarExporter {
-    return new HarExporter({ har: HarConverter.create(), sanitizer: (redact: boolean) => ExchangeSanitizer.create({ redact }), postData: HarPostDataWriter.create() });
+    return new HarExporter({
+      har: HarConverter.create(),
+      sanitizer: (redact: boolean) => ExchangeSanitizer.create({ redact }),
+      postData: HarPostDataWriter.create(),
+      secrets: (redact: boolean) => SecretCollector.create({ redact }),
+    });
   }
 
   constructor(deps: HarExporterDeps = {}) {
@@ -39,6 +46,7 @@ export class HarExporter extends BaseExporter {
     this.#har = deps.har ?? new HarConverter();
     this.#sanitizer = deps.sanitizer ?? ((redact: boolean) => ExchangeSanitizer.create({ redact }));
     this.#postData = deps.postData ?? HarPostDataWriter.create();
+    this.#secrets = deps.secrets ?? ((redact: boolean) => SecretCollector.create({ redact }));
   }
 
   exchanges(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Exchange[] {
@@ -52,7 +60,9 @@ export class HarExporter extends BaseExporter {
     }
     const owners = new Map<string, Endpoint>();
     for (const endpoint of endpoints) for (const sample of endpoint.samples) if (!owners.has(sample.exchangeId)) owners.set(sample.exchangeId, endpoint);
-    const sanitizer = this.#sanitizer(options.redact ?? true);
+    const redact = options.redact ?? true;
+    const sanitizer = this.#sanitizer(redact);
+    sanitizer.useValues(this.#secrets(redact).collect(capture, FormLinker.secretNames(forms)));
     const contexts = new Map<Endpoint, SanitizeContext>();
     const context = (endpoint: Endpoint): SanitizeContext => {
       let found = contexts.get(endpoint);
@@ -69,7 +79,7 @@ export class HarExporter extends BaseExporter {
   }
 
   archive(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Har {
-    const owned = this.owned(endpoints, options, forms).map((item) => ({ exchange: this.#postData.textExchange(item.exchange), endpoint: item.endpoint }));
+    const owned = this.owned(endpoints, options, forms);
     const har = this.#har.toHar(owned.map((item) => item.exchange));
     const byId = new Map(owned.map((item) => [item.exchange.id, item]));
     for (const entry of har.log.entries) {

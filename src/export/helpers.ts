@@ -1,5 +1,4 @@
-import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
-import type { ApiModel, BodyKind, BodyShape, CookieRole, CsrfToken, Endpoint, JsonSchema } from '../model/index.js';
+import type { ApiModel, BodyKind, BodyShape, CsrfToken, Endpoint, FormDescriptor, JsonSchema } from '../model/index.js';
 import { AppiiError, EndpointIndex, Http, Json, Samples, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 
@@ -23,7 +22,6 @@ export interface PathSegment {
 export class Helpers {
   static readonly GROUP_PREFIXES: RegExp = /^(?:api|apis|rest|rpc|json|ajax|public|v[0-9]+(?:\.[0-9]+)*)$/i;
   static readonly ROOT_GROUP = 'root';
-  static readonly AUTH_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
   static readonly BASE_URL_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
   static readonly UNSAFE_PATTERN_CLIENT = 'The generated TypeScript client does not check it unless the unsafePatterns option is true.';
   static readonly JSON_LINES_LABEL = 'JSON lines';
@@ -182,18 +180,23 @@ export class Helpers {
     return out;
   }
 
-  static cookieRoles(model: ApiModel): Map<string, Set<CookieRole>> {
-    const roles = new Map<string, Set<CookieRole>>();
-    for (const cookie of model.cookies) {
-      const set = roles.get(cookie.name) ?? new Set<CookieRole>();
-      set.add(cookie.role);
-      roles.set(cookie.name, set);
-    }
-    return roles;
+  static formInstances(form: FormDescriptor): number {
+    return form.instances ?? 1;
   }
 
-  static authCookies(model: ApiModel, endpoint: Endpoint, roles: ReadonlyMap<string, ReadonlySet<CookieRole>> = Helpers.cookieRoles(model)): string[] {
-    return endpoint.auth.cookies.filter((name) => [...(roles.get(name) ?? [])].some((role) => Helpers.AUTH_ROLES.has(role)));
+  static formPages(form: FormDescriptor): string[] {
+    return form.pages !== undefined && form.pages.length > 0 ? [...form.pages] : [form.pageUrl];
+  }
+
+  static formSeen(form: FormDescriptor): string {
+    const instances = Helpers.formInstances(form);
+    const pages = Helpers.formPages(form).length;
+    return `${Text.plural(instances, 'time')} on ${Text.plural(pages, 'page')}`;
+  }
+
+  static formTotals(forms: readonly FormDescriptor[]): string {
+    const instances = forms.reduce((sum, form) => sum + Helpers.formInstances(form), 0);
+    return instances > forms.length ? `${forms.length} distinct, ${instances} on pages` : String(forms.length);
   }
 
   static origins(model: ApiModel, endpoints: readonly Endpoint[]): string[] {

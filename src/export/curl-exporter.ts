@@ -32,7 +32,6 @@ export class CurlExporter extends BaseExporter {
   static readonly VALUE_LOCAL = 'appii_value';
   static readonly DEFAULT_PREFIX = 'appii_default_';
   static readonly FUNCTION_SUFFIX = 'Endpoint';
-  static readonly REDACTED_VALUE: RegExp = /^(?:<redacted>|[\s\S]{4}\.\.\.)$/;
   static readonly RESERVED_FUNCTIONS: ReadonlySet<string> = new Set([
     'list', 'usage', 'main', 'help', 'appii_cookie', 'appii_pct', 'appii_json', 'curl', 'cat', 'printf', 'od', 'bash', 'sh', 'alias', 'bg',
     'bind', 'break', 'builtin', 'caller', 'case', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'coproc', 'declare',
@@ -84,7 +83,7 @@ export class CurlExporter extends BaseExporter {
     const pairs = new Map<string, string>();
     for (const cookie of EndpointIndex.subset(model, endpoints).cookies) {
       if (pairs.has(cookie.name) || cookie.name === '') continue;
-      if (CurlExporter.REDACTED_VALUE.test(cookie.valueExample) || Samples.isRedacted(cookie.valueExample)) continue;
+      if (Text.isMasked(cookie.valueExample) || Samples.isRedacted(cookie.valueExample)) continue;
       pairs.set(cookie.name, cookie.valueExample);
     }
     return [...pairs].map(([name, value]) => `${name}=${value}`).join('; ');

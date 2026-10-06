@@ -2,7 +2,6 @@ import type { Capture, ResourceType } from '../model/index.js';
 import { Http, Text } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
 import { SummaryPresenter } from './summary-presenter.js';
-import { TextLayout } from './text-layout.js';
 import type { Definition } from './text-layout.js';
 
 export interface CaptureSummaryInput {
@@ -34,7 +33,7 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
     return this.compose([
       this.heading(title),
       this.definitions(this.#facts(input.capture)),
-      input.next === undefined ? undefined : this.definitions([['Next', TextLayout.clean(input.next)]]),
+      input.next === undefined ? undefined : this.definitions([['Next', this.ansi.clean(input.next)]]),
     ]);
   }
 
@@ -52,9 +51,9 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
     const breakdown = [Text.plural(documents, 'page'), `${api} fetch/XHR`, `${exchanges.length - documents - api} other`];
     if (failed > 0) breakdown.push(`${failed} failed`);
     const facts: Definition[] = [];
-    if (capture.startUrl !== undefined) facts.push(['Start URL', TextLayout.clean(capture.startUrl)]);
+    if (capture.startUrl !== undefined) facts.push(['Start URL', this.ansi.clean(capture.startUrl)]);
     facts.push(
-      ['Recorded', SummaryPresenter.span(capture.startedAt, capture.endedAt)],
+      ['Recorded', SummaryPresenter.span(capture.startedAt, capture.endedAt, this.ansi)],
       ['Requests', exchanges.length === 0 ? '0' : `${exchanges.length} (${breakdown.join(', ')}) to ${Text.plural(origins, 'origin')}`],
       ['Pages', capture.pages.length === 0 ? '0 snapshots' : `${Text.plural(capture.pages.length, 'snapshot')} of ${Text.plural(pageUrls, 'URL')}`],
       ['Cookies', capture.cookies.length === 0 ? '0' : `${capture.cookies.length} (${httpOnly} HttpOnly)`],

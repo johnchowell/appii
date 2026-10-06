@@ -31,6 +31,7 @@ export const MULTIPART_FILE_FLAG = '-F';
 export const RAW_FLAG = '--data-raw';
 export const BINARY_FLAG = '--data-binary';
 export const HEAD_FLAG = '--head';
+export const USER_FLAG = '-u';
 export const COMPRESSED_FLAG = '--compressed';
 export const VARIABLES_LABEL = 'Variables:';
 export const HEAD_METHOD = 'HEAD';
@@ -155,6 +156,7 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   const raw = rawBody(sample.body);
   for (const header of sample.headers) groups.push(['-H', arg(SampleText.concat(`${header.name}: `, header.value))]);
   if (raw?.contentType !== undefined) groups.push(['-H', arg(`Content-Type: ${raw.contentType}`)]);
+  if (sample.user) groups.push([USER_FLAG, arg(sample.user)]);
   const cookie = opts.cookie ?? sample.cookie;
   if (cookie) groups.push(['-b', arg(cookie)]);
   if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);

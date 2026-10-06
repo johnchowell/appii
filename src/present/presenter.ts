@@ -11,6 +11,7 @@ export interface PresenterOptions {
   filter?: ListFilter;
   file?: string;
   hints?: boolean;
+  unicode?: boolean;
 }
 
 export interface Presenter<T> {
@@ -39,12 +40,12 @@ export abstract class BasePresenter<T> implements Presenter<T> {
   }
 
   static ansiFor(options: PresenterOptions = {}): Ansi {
-    return options.color === true ? Ansi.color : Ansi.plain;
+    return Ansi.of(options.color === true, options.unicode === true);
   }
 
-  static fileArgument(file: string | undefined): string {
+  static fileArgument(file: string | undefined, ansi: Ansi = Ansi.plain): string {
     if (file === undefined || file === '') return BasePresenter.FILE_PLACEHOLDER;
-    const clean = TextLayout.clean(file);
+    const clean = ansi.clean(file);
     return BasePresenter.SAFE_SHELL_WORD.test(clean) ? clean : Text.shellQuote(clean);
   }
 
@@ -55,7 +56,7 @@ export abstract class BasePresenter<T> implements Presenter<T> {
   }
 
   protected heading(text: string): string {
-    const title = TextLayout.fit(TextLayout.clean(text), this.width);
+    const title = TextLayout.fit(this.ansi.clean(text), this.width);
     return this.ansi.bold(title) + '\n' + this.ansi.dim('-'.repeat(Ansi.width(title)));
   }
 

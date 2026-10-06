@@ -100,7 +100,8 @@ export class TypeScriptExporter extends BaseExporter {
     const client = Text.uniqueName(TypeScriptExporter.clientName(model), taken);
     const members = new Set<string>(TsClientRuntime.CLIENT_MEMBERS);
     const methods = new Map(endpoints.map((endpoint) => [endpoint.id, this.#endpoints.methodName(endpoint, members)]));
-    const ctx: TsEndpointContext = { model, taken, methods, endpoints, sources: this.#endpoints.tokenSources(endpoints) };
+    const responseTypes = this.#endpoints.responseTypeNames(endpoints, taken);
+    const ctx: TsEndpointContext = { model, taken, methods, endpoints, sources: this.#endpoints.tokenSources(endpoints), responseTypes };
     const codes = endpoints.map((endpoint) => this.#endpoints.write(endpoint, ctx));
     const primary = model.primaryOrigin || endpoints[0]?.origin || '';
     const base = primary === '' ? (opts.baseUrl ?? '') : Helpers.originBase(model, primary, opts);

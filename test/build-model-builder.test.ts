@@ -64,7 +64,13 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
     assert.equal(model.generatedAt, NOW.toISOString());
     assert.equal(model.primaryOrigin, ORIGIN);
     assert.deepEqual(model.origins, ['https://cdn.example.com', ORIGIN]);
-    assert.deepEqual(model.source, { startUrl: `${ORIGIN}/`, exchanges: capture.exchanges.length, capturedFrom: capture.startedAt, capturedTo: capture.endedAt });
+    assert.deepEqual(model.source, {
+      startUrl: `${ORIGIN}/`,
+      exchanges: capture.exchanges.length,
+      capturedFrom: capture.startedAt,
+      capturedTo: capture.endedAt,
+      skipped: [{ reason: 'other-origin', count: 1, examples: ['https://www.google-analytics.com'] }],
+    });
   });
 
   test('endpoints are sorted by origin, path and method with stable ids and names', () => {
@@ -96,7 +102,7 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
   test('auth, csrf and forms are combined on the endpoints', () => {
     assert.deepEqual(endpoint(model, 'createItem').auth.csrf, [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }]);
     const login = endpoint(model, 'postLogin');
-    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${ORIGIN}/login` }]);
+    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${ORIGIN}/login`, sessionCookies: ['sid'] }]);
     assert.equal(prop(login.requestBody?.schema, 'password')['x-html-minlength'], 8);
     const signup = endpoint(model, 'postSignup');
     assert.deepEqual(signup.auth.cookies, ['auth', 'csrf', 'sid', 'theme']);
@@ -402,7 +408,7 @@ describe('ModelBuilder integration with a real browser capture', () => {
     const login = endpoint(model, 'postLogin');
     assert.equal(login.kind, 'form');
     assert.equal(login.count, 1);
-    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${site.origin}/login` }]);
+    assert.deepEqual(login.auth.csrf, [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token', sourceUrl: `${site.origin}/login`, sessionCookies: ['sid'] }]);
     assert.equal(login.form?.selector, 'form#login');
     const schema = login.requestBody?.schema;
     assert.deepEqual(schema?.required, ['email', 'password', 'action']);

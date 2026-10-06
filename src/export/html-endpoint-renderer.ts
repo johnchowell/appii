@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse, ParamInfo } from '../model/index.js';
-import { Curl, EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
+import { Credentials, Curl, EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { SchemaFieldList } from './schema-field-list.js';
@@ -56,7 +56,8 @@ export class HtmlEndpointRenderer {
       .map((status) => `<span class="badge status-${HtmlEndpointRenderer.statusClass(status)}" title="${esc(Http.reasonPhrase(status))}">${status}</span>`)
       .join(' ');
     const badges = [`<span class="badge">${esc(endpoint.kind)}</span>`, statuses];
-    if (Helpers.authCookies(ctx.model, endpoint).length > 0 || endpoint.auth.bearer || endpoint.auth.headers.length > 0) badges.push('<span class="badge auth">auth</span>');
+    const roles = Credentials.roles(ctx.model);
+    if (Credentials.sets(endpoint, roles).length > 0) badges.push(Credentials.optional(endpoint) ? '<span class="badge auth" title="credentials are optional">auth?</span>' : '<span class="badge auth">auth</span>');
     if (endpoint.auth.csrf.length > 0) badges.push('<span class="badge csrf">csrf</span>');
     if (endpoint.form) badges.push('<span class="badge">html form</span>');
     const summary = [
@@ -84,7 +85,9 @@ export class HtmlEndpointRenderer {
       ['Kind', `${esc(endpoint.kind)}${endpoint.operationName ? ` (operation <code>${esc(endpoint.operationName)}</code>)` : ''}${endpoint.firstParty ? '' : ', third party'}`],
       ['Observed', endpoint.count > 0 ? esc(`${Text.plural(endpoint.count, 'time')}${endpoint.resourceTypes.length > 0 ? ` via ${endpoint.resourceTypes.join(', ')}` : ''}`) : 'not observed; inferred from an HTML form'],
     ];
-    if (endpoint.auth.cookies.length > 0) meta.push(['Cookies', endpoint.auth.cookies.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
+    const credentials = Credentials.describe(endpoint, Credentials.roles(ctx.model));
+    if (credentials !== '') meta.push(['Credentials', esc(credentials)]);
+    if (endpoint.auth.cookies.length > 0) meta.push(['Cookies sent', endpoint.auth.cookies.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     if (endpoint.auth.bearer) meta.push(['Bearer', 'Authorization: Bearer token']);
     if (endpoint.auth.headers.length > 0) meta.push(['Auth headers', endpoint.auth.headers.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     for (const token of endpoint.auth.csrf) {

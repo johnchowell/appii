@@ -1,4 +1,4 @@
-import type { Endpoint, EndpointKind, EndpointResponse, EndpointSample, Exchange, Header, ResourceType } from '../model/index.js';
+import type { Endpoint, EndpointKind, EndpointResponse, EndpointSample, Exchange, Header, ResourceType, SkipReason } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { TokenDetector } from '../forms/index.js';
 import { Http, Text } from '../shared/index.js';
@@ -43,6 +43,7 @@ export interface EndpointGrouperDeps {
 export interface GroupContext {
   forms?: ReadonlyMap<string, PathEvidence>;
   encoding?: (exchange: Exchange) => string | undefined;
+  submitted?: (exchange: Exchange) => boolean;
 }
 
 interface Member {
@@ -82,6 +83,7 @@ export class EndpointGrouper {
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
   static readonly KIND_PRIORITY: readonly EndpointKind[] = ['graphql', 'form', 'json', 'document', 'other'];
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
+  static readonly MAX_REDIRECT_TARGETS = 3;
 
   readonly #body: BodyParser;
   readonly #paths: PathTemplater;
@@ -124,7 +126,9 @@ export class EndpointGrouper {
   }
 
   static extension(pathname: string): string {
-    const last = pathname.slice(pathname.lastIndexOf('/') + 1);
+    const decoded = Http.decodeComponent(pathname.slice(pathname.lastIndexOf('/') + 1));
+    const cut = decoded.search(/[?#]/);
+    const last = cut < 0 ? decoded : decoded.slice(0, cut);
     const dot = last.lastIndexOf('.');
     return dot <= 0 ? '' : last.slice(dot + 1).toLowerCase();
   }
@@ -155,7 +159,7 @@ export class EndpointGrouper {
     const members: Member[] = [];
     const scripted = this.#headers.scriptHeaders(exchanges);
     for (const exchange of exchanges) {
-      if (!this.#include(exchange)) continue;
+      if (!this.#include(exchange, context)) continue;
       const encoding = context.encoding?.(exchange);
       const signature = this.#signatures.of(exchange, encoding);
       if (signature) members.push({ exchange, signature, encoding, scripted: scripted.get(exchange), response: this.#parseResponse(exchange) });
@@ -175,11 +179,18 @@ export class EndpointGrouper {
   }
 
 
-  #include(e: Exchange): boolean {
-    if (!Helpers.httpUrl(e.request.url) || Http.isWorkerResponse(e)) return false;
-    if (EndpointGrouper.SKIPPED_TYPES.has(e.resourceType) || this.isPreflight(e)) return false;
-    if (!this.#options.includeStatic && this.isStaticAsset(e)) return false;
-    return this.#options.includeDocuments || !this.isDocument(e);
+  #include(e: Exchange, context: GroupContext): boolean {
+    return this.skipReason(e, context) === undefined;
+  }
+
+  skipReason(e: Exchange, context: GroupContext = {}): SkipReason | undefined {
+    if (!Helpers.httpUrl(e.request.url)) return 'not-http';
+    if (Http.isWorkerResponse(e)) return 'service-worker';
+    if (EndpointGrouper.SKIPPED_TYPES.has(e.resourceType)) return 'websocket';
+    if (this.isPreflight(e)) return 'preflight';
+    if (!this.#options.includeStatic && this.isStaticAsset(e)) return 'static';
+    if (!this.#options.includeDocuments && this.isDocument(e) && context.submitted?.(e) !== true) return 'document';
+    return undefined;
   }
 
   #templates(members: readonly Member[], forms: ReadonlyMap<string, PathEvidence>): Map<string, Map<string, PathTemplate>> {
@@ -250,26 +261,39 @@ export class EndpointGrouper {
   }
 
   #responses(members: readonly Member[], parsed: readonly (ParsedBody | undefined)[]): EndpointResponse[] {
-    const byStatus = new Map<number, { count: number; bodies: ParsedBody[]; headers: Set<string> }>();
+    const byStatus = new Map<number, { count: number; bodies: ParsedBody[]; headers: Set<string>; targets: Set<string> }>();
     members.forEach(({ exchange }, i) => {
       const response = exchange.response;
       const body = parsed[i];
       if (!response || !body) return;
       let entry = byStatus.get(response.status);
       if (!entry) {
-        entry = { count: 0, bodies: [], headers: new Set() };
+        entry = { count: 0, bodies: [], headers: new Set(), targets: new Set() };
         byStatus.set(response.status, entry);
       }
       if (Http.reachedServer(exchange)) entry.count++;
       entry.bodies.push(body);
       for (const name of this.#notableHeaders(response.headers)) entry.headers.add(name);
+      const target = this.#redirectTarget(exchange);
+      if (target !== undefined) entry.targets.add(target);
     });
     return [...byStatus]
       .sort(([a], [b]) => a - b)
       .map(([status, entry]) => {
         const body = this.#shaper.shape(entry.bodies, true);
-        return { status, count: entry.count, ...(body ? { body } : {}), headers: [...entry.headers].sort(Text.compare) };
+        const targets = [...entry.targets].sort(Text.compare).slice(0, EndpointGrouper.MAX_REDIRECT_TARGETS);
+        return { status, count: entry.count, ...(body ? { body } : {}), headers: [...entry.headers].sort(Text.compare), ...(targets.length > 0 ? { redirectTo: targets } : {}) };
       });
+  }
+
+  #redirectTarget(exchange: Exchange): string | undefined {
+    const response = exchange.response;
+    if (!response || !EndpointGrouper.REDIRECT_STATUSES.has(response.status)) return undefined;
+    const location = Http.getHeader(response.headers, 'location');
+    const target = location === undefined ? undefined : Http.parseUrl(location.trim(), exchange.request.url);
+    if (!target || !Helpers.httpUrl(target.href)) return undefined;
+    target.hash = '';
+    return this.#redactor.url(target.href);
   }
 
   #notableHeaders(headers: readonly Header[]): string[] {

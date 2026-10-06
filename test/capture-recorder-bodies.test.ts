@@ -182,6 +182,26 @@ describe('TrafficRecorder request bodies that hold a Blob or File', () => {
     assert.equal(Http.bodyText(only(exchanges, 'POST', '/up-utf8').request.body), 'caf\u00e9');
   });
 
+  test('keeps a FormData body with a Blob part when the page navigates away before the response is read', async () => {
+    const exchanges = await record({}, async (context, recorder) => {
+      const page = await context.newPage();
+      await recorder.prepare(page);
+      await page.goto(server.url('/'));
+      await page.evaluate(`(async () => {
+        const form = new FormData();
+        form.append('title', 't');
+        form.append('upload', new Blob(['hello blob'], { type: 'text/plain' }), 'a.txt');
+        await fetch('/up-multipart', { method: 'POST', body: form });
+      })()`);
+      await page.goto(server.url('/blob-page'));
+    });
+    const body = only(exchanges, 'POST', '/up-multipart').request.body;
+    assert.ok(body, 'the request body is recorded');
+    assert.equal(body.truncated, undefined, 'the body is complete');
+    assert.equal(Buffer.from(Http.bodyBytes(body)).toString('hex'), received('/up-multipart').toString('hex'));
+    assert.match(Http.bodyText(body), /name="upload"; filename="a\.txt"\r\nContent-Type: text\/plain\r\n\r\nhello blob\r\n/);
+  });
+
   test('keeps the text fields of a native multipart form submit and marks the body incomplete when the browser omits file contents', async () => {
     const file = join(dir, 'photo.bin');
     await writeFile(file, Buffer.from('PHOTO-BYTES'));
