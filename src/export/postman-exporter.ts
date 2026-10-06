@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { EndpointIndex, Json, Meta, Samples, Text } from '../shared/index.js';
+import { EndpointIndex, Json, Meta, RequestBodies, Samples, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -70,7 +70,7 @@ export class PostmanExporter extends BaseExporter {
     const folders = new Map<string, PostmanObject[]>();
     const placeholders = new Set<string>();
     for (const endpoint of endpoints) {
-      for (const each of [endpoint, ...Helpers.bodyVariants(endpoint).map((variant) => variant.endpoint)]) {
+      for (const each of [endpoint, ...RequestBodies.variants(endpoint).map((variant) => variant.endpoint)]) {
         for (const name of Samples.placeholderNames(Helpers.sample(model, each, opts, { cookie: false }))) placeholders.add(name);
       }
     }

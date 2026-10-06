@@ -1,6 +1,6 @@
 import { dirname, relative, sep } from 'node:path';
 import { CaptureStore } from '../../capture/index.js';
-import { Fs, Meta } from '../../shared/index.js';
+import { Meta } from '../../shared/index.js';
 import { BuildOptionGroup } from '../build-option-group.js';
 import { BuildStep } from '../build-step.js';
 import type { CliContext } from '../cli-context.js';
@@ -10,6 +10,7 @@ import { ExitCode } from '../exit-code.js';
 import { Helpers } from '../helpers.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
+import { OutputTarget } from '../output-target.js';
 import { UsageError } from '../usage-error.js';
 
 export interface BuildCommandDeps extends CommandDeps {
@@ -38,7 +39,7 @@ export class BuildCommand extends Command {
       usage: `${app} build <capture.json|file.har> [options]`,
       options: { out: { type: 'string', short: 'o' }, ...this.#build.options },
       allowPositionals: true,
-      docs: { out: { value: 'file', description: `Where to save the API model (default: ${BuildCommand.DEFAULT_OUT})` }, ...this.#build.docs },
+      docs: { out: { value: 'file', description: `Where to save the API model, or - for stdout (default: ${BuildCommand.DEFAULT_OUT})` }, ...this.#build.docs },
       examples: [`${app} build capture.json`, `${app} build session.har -o shop.json --name shop --origin https://api.example.com`],
     };
   }
@@ -57,10 +58,10 @@ export class BuildCommand extends Command {
     this.expectArguments(positionals, 1);
     const input = ctx.resolve(file);
     const explicit = OptionReader.string(values, 'out');
-    const out = await Helpers.outputFile(ctx, explicit, BuildCommand.DEFAULT_OUT);
+    const out = await OutputTarget.of(ctx, explicit, BuildCommand.DEFAULT_OUT);
     const capture = await this.#store.load(input);
-    if (await Fs.sameFile(out, input)) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
-    await this.#step.run(capture, { out, source: BuildCommand.source(out, input), options }, ctx);
+    if (await out.overwrites(input)) throw new UsageError(Helpers.overwriteMessage(explicit, BuildCommand.DEFAULT_OUT));
+    await this.#step.run(capture, { out, source: BuildCommand.source(out.path ?? ctx.resolve(BuildCommand.DEFAULT_OUT), input), options }, ctx);
     return ExitCode.OK;
   }
 }

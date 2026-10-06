@@ -1,6 +1,6 @@
 import { CaptureStore } from '../../capture/index.js';
 import { BasePresenter, PresenterFactory } from '../../present/index.js';
-import { Fs, Meta } from '../../shared/index.js';
+import { Meta } from '../../shared/index.js';
 import type { Capture } from '../../model/index.js';
 import { CaptureOptionGroup } from '../capture-option-group.js';
 import { CaptureRunner } from '../capture-runner.js';
@@ -12,6 +12,7 @@ import { ExitCode } from '../exit-code.js';
 import { Helpers } from '../helpers.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
+import { OutputTarget } from '../output-target.js';
 import { UsageError } from '../usage-error.js';
 
 export interface CaptureCommandDeps extends CommandDeps {
@@ -44,7 +45,7 @@ export class CaptureCommand extends Command {
       options: { out: { type: 'string', short: 'o' }, 'from-har': { type: 'string' }, ...this.#capture.options },
       allowPositionals: true,
       docs: {
-        out: { value: 'file', description: `Where to save the capture (default: ${CaptureCommand.DEFAULT_OUT})` },
+        out: { value: 'file', description: `Where to save the capture, or - for stdout (default: ${CaptureCommand.DEFAULT_OUT})` },
         'from-har': { value: 'file', description: 'Convert a HAR file exported from browser DevTools instead of recording' },
         ...this.#capture.docs,
       },
@@ -62,7 +63,8 @@ export class CaptureCommand extends Command {
   }
 
   protected async execute(values: OptionValues, positionals: string[], ctx: CliContext): Promise<number> {
-    const out = await Helpers.outputFile(ctx, OptionReader.string(values, 'out'), CaptureCommand.DEFAULT_OUT);
+    const explicit = OptionReader.string(values, 'out');
+    const out = await OutputTarget.of(ctx, explicit, CaptureCommand.DEFAULT_OUT);
     const har = OptionReader.string(values, 'from-har');
     let capture: Capture;
     if (har !== undefined) {
@@ -71,20 +73,20 @@ export class CaptureCommand extends Command {
       if (recording !== undefined) throw new UsageError(`--${recording} applies to recording and cannot be combined with --from-har`);
       const input = ctx.resolve(har);
       capture = await this.#store.load(input);
-      if (await Fs.sameFile(input, out)) throw new UsageError(Helpers.overwriteMessage(OptionReader.string(values, 'out'), CaptureCommand.DEFAULT_OUT, 'HAR file'));
+      if (await out.overwrites(input)) throw new UsageError(Helpers.overwriteMessage(explicit, CaptureCommand.DEFAULT_OUT, 'HAR file'));
     } else {
       const options = this.#capture.read(values, ctx);
       const url = this.argument(positionals, 0, '<url>');
       this.expectArguments(positionals, 1);
       await this.#saver.preflight([out]);
       capture = await this.#runner.record({ ...options, url }, ctx).catch(async (err: unknown) => {
-        throw await this.#saver.keepPartial(err, out, ctx.display(out));
+        throw await this.#saver.keepPartial(err, out);
       });
     }
     await this.#saver.save(out, capture);
-    const file = ctx.display(out);
-    const next = `${Meta.APP_NAME} build ${BasePresenter.fileArgument(file)}`;
-    ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file, next }));
+    const summary = new PresenterFactory(ctx.presenterOptions()).captureSummary();
+    const next = `${Meta.APP_NAME} build ${BasePresenter.fileArgument(out.label)}`;
+    out.report(out.stdout ? summary.render({ capture, written: out.label }) : summary.render({ capture, file: out.label, next }));
     return ExitCode.OK;
   }
 }

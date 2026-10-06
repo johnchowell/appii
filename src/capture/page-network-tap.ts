@@ -235,6 +235,22 @@ export class PageNetworkTap {
   }
 
   claim(query: TapQuery): TapRecord | undefined {
+    const chosen = this.#choose(query);
+    if (!chosen) return undefined;
+    chosen.claimed = true;
+    const index = this.#kept.indexOf(chosen);
+    if (index >= 0) this.#kept.splice(index, 1);
+    return chosen;
+  }
+
+  prefetch(query: TapQuery): void {
+    if (this.#closed || this.#options.bodies === false) return;
+    const record = this.#choose(query);
+    if (!record || record.body !== undefined || record.state === 'failed' || record.state === 'redirected') return;
+    record.body = this.#read(record);
+  }
+
+  #choose(query: TapQuery): TapRecord | undefined {
     const all = [...this.#kept, ...[...this.#live.values()].map((live) => live.record)];
     let candidates = all.filter((r) => PageNetworkTap.#matches(query, r));
     if (query.timing !== undefined) {
@@ -243,11 +259,7 @@ export class PageNetworkTap {
       if (exact.length > 0) candidates = exact;
     }
     if (candidates.length === 0) return undefined;
-    const chosen = candidates.reduce((best, r) => (PageNetworkTap.#closer(r, best, query.startTime) ? r : best));
-    chosen.claimed = true;
-    const index = this.#kept.indexOf(chosen);
-    if (index >= 0) this.#kept.splice(index, 1);
-    return chosen;
+    return candidates.reduce((best, r) => (PageNetworkTap.#closer(r, best, query.startTime) ? r : best));
   }
 
   async claimWhenSeen(query: TapQuery, timeoutMs: number): Promise<TapRecord | undefined> {
@@ -276,6 +288,8 @@ export class PageNetworkTap {
   }
 
   async responseBody(record: TapRecord): Promise<TapBody | undefined> {
+    const prefetched = record.body === undefined ? undefined : await record.body;
+    if (prefetched) return prefetched;
     if (record.state === 'loading' && !record.responded) {
       const caughtUp = await Helpers.settle(record.ended.then(() => true), PageNetworkTap.SESSION_LAG_MS);
       if (caughtUp !== true) return this.#closed ? undefined : this.#workerScript(record);
@@ -468,7 +482,7 @@ export class PageNetworkTap {
     const { key, live } = found;
     this.#live.delete(key);
     live.record.state = state;
-    if (state === 'finished' && this.#wantsBody(live.record)) live.record.body = this.#read(live.record);
+    if (state === 'finished' && this.#wantsBody(live.record)) live.record.body = this.#readOnce(live.record);
     live.end();
     if (live.record.claimed) return;
     this.#kept.push(live.record);
@@ -504,6 +518,11 @@ export class PageNetworkTap {
       unsubscribe();
       await channel.send('Debugger.disable').catch(() => undefined);
     }
+  }
+
+  #readOnce(record: TapRecord): Promise<TapBody | undefined> {
+    const early = record.body;
+    return early === undefined ? this.#read(record) : early.then((body) => body ?? this.#read(record));
   }
 
   #read(record: TapRecord): Promise<TapBody | undefined> {

@@ -188,6 +188,14 @@ class SourceTree {
 
 class BodyFingerprint {
   static readonly MIN_TOKENS = 8;
+  static readonly SELF = '$self';
+  static readonly NAMESPACE_EXPORT: RegExp = /export \* as (\w+) from/g;
+  static readonly namespaces: ReadonlySet<string> = BodyFingerprint.#namespaces();
+
+  static #namespaces(): Set<string> {
+    const text = readFileSync(join(SourceTree.ROOT, SourceTree.SHARED, 'index.ts'), 'utf8');
+    return new Set([...text.matchAll(BodyFingerprint.NAMESPACE_EXPORT)].map((match) => match[1] ?? ''));
+  }
 
   static of(node: FunctionLike): string | undefined {
     if (node.body === undefined) return undefined;
@@ -195,7 +203,29 @@ class BodyFingerprint {
     for (const parameter of node.parameters) BodyFingerprint.#bind(parameter.name, names);
     const tokens: string[] = [];
     BodyFingerprint.#tokens(BodyFingerprint.#expression(node.body), names, tokens);
-    return tokens.length >= BodyFingerprint.MIN_TOKENS ? tokens.join(' ') : undefined;
+    const normalized = BodyFingerprint.#receivers(tokens, BodyFingerprint.#owner(node));
+    return normalized.length >= BodyFingerprint.MIN_TOKENS ? normalized.join(' ') : undefined;
+  }
+
+  static #owner(node: Node): string | undefined {
+    for (let current: Node | undefined = node.parent; current !== undefined; current = current.parent) {
+      if (isClassDeclaration(current)) return current.name?.text;
+    }
+    return undefined;
+  }
+
+  static #receivers(tokens: readonly string[], owner: string | undefined): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i] ?? '';
+      const member = tokens[i + 1] === '.' && tokens[i - 1] !== '.';
+      if (member && BodyFingerprint.namespaces.has(token)) {
+        i++;
+        continue;
+      }
+      out.push(member && token === owner ? BodyFingerprint.SELF : token);
+    }
+    return out;
   }
 
   static #expression(body: Node): Node {
@@ -238,6 +268,7 @@ describe('architecture', () => {
       ['sorted unique response statuses', /new Set\(\s*\w+\.responses\.map\(/],
       ['in-band {{placeholder}} parsing', /\\\{\\\{\[a-z0-9_\]\+\\\}\\\}|hasPlaceholder/],
       ['digit-run word splitting (Text.letterWords)', /\.split\(\/\[0-9\]\+\/\)|\bstatic\s+#words\s*\(/],
+      ['the request body media type table (Shared.RequestBodies)', /\b(?:MEDIA_RANGE|DEFAULT_MEDIA)\s*[:=]/],
     ];
     const found: string[] = [];
     for (const file of SourceTree.domainFiles()) {
@@ -246,7 +277,7 @@ describe('architecture', () => {
     assert.deepEqual(found, []);
   });
 
-  test('no function body in a domain namespace repeats a public Shared function, whatever the names', () => {
+  test('no function body in a domain namespace repeats a public Shared function, whatever the names, its own class name or a Shared namespace prefix', () => {
     const shared: SharedBody[] = [];
     const sources = SourceTree.sources();
     for (const file of sources.filter((source) => SourceTree.domainOf(SourceTree.path(source)) === SourceTree.SHARED)) {

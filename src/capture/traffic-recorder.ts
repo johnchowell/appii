@@ -89,6 +89,7 @@ export class TrafficRecorder {
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
   static readonly CHUNKED = Helpers.CHUNKED;
   static readonly PASS_THROUGH_SOURCES: ReadonlySet<string> = new Set(['network', 'http-cache']);
+  static readonly SESSION_BODY_TYPES: ReadonlySet<string> = new Set(['document', 'stylesheet', 'image', 'media', 'font', 'script', 'texttrack', 'xhr', 'fetch', 'manifest']);
 
   readonly exchanges: Exchange[] = [];
   readonly websockets: WebSocketCapture[] = [];
@@ -110,6 +111,7 @@ export class TrafficRecorder {
   readonly #listeners = new Set<(e: Exchange) => void>();
   readonly #workerSetups = new Set<WorkerSetup>();
   readonly #pages = new Map<Page, TrackedPage>();
+  readonly #opened = new Map<Page, PageNetworkTap>();
   readonly #downloads = new Map<string, Download[]>();
   readonly #downloadWaiters = new Map<string, ((download: Download) => void)[]>();
   #context: BrowserContext | undefined;
@@ -192,6 +194,7 @@ export class TrafficRecorder {
     this.#workers.finish();
     const taps = [...this.#pages.values()].map((tracked) => tracked.tap);
     this.#pages.clear();
+    this.#opened.clear();
     this.#downloads.clear();
     this.#closeTaps(taps, this.#watcher);
     this.#watcher = Promise.resolve(undefined);
@@ -277,8 +280,17 @@ export class TrafficRecorder {
   };
 
   readonly #onFinished = (request: Request): void => {
+    this.#prefetch(request);
     this.#complete(request, { kind: 'finished' });
   };
+
+  #prefetch(request: Request): void {
+    const status = this.#pending.get(request)?.response?.status();
+    if (!this.#captureBodies || status === undefined || request.method().toUpperCase() === 'HEAD') return;
+    if (TrafficRecorder.REDIRECT_STATUSES.has(status) || TrafficRecorder.NO_BODY_STATUSES.has(status)) return;
+    const page = TrafficRecorder.#pageOf(request);
+    if (page) this.#opened.get(page)?.prefetch(TrafficRecorder.#query(request));
+  }
 
   readonly #onFailed = (request: Request): void => {
     const entry = this.#pending.get(request);
@@ -306,6 +318,9 @@ export class TrafficRecorder {
       tap: this.#tapFor(context, page).catch(() => undefined),
     };
     this.#pages.set(page, tracked);
+    void tracked.tap.then((opened) => {
+      if (opened && this.#pages.get(page) === tracked) this.#opened.set(page, opened);
+    });
     page.on('websocket', tracked.onWebSocket);
     page.on('download', tracked.onDownload);
     page.once('close', () => {
@@ -313,6 +328,7 @@ export class TrafficRecorder {
       page.off('download', tracked.onDownload);
       if (this.#pages.get(page) !== tracked) return;
       this.#pages.delete(page);
+      this.#opened.delete(page);
       this.#closeTaps([tracked.tap]);
     });
   };
@@ -463,8 +479,23 @@ export class TrafficRecorder {
     if (outcome.kind === 'downloaded') return outcome.body ? { bytes: outcome.body.bytes, text: false } : undefined;
     if (!response || outcome.kind !== 'finished' || !this.#captureBodies) return undefined;
     if (request.method().toUpperCase() === 'HEAD' || TrafficRecorder.REDIRECT_STATUSES.has(response.status())) return undefined;
-    if (!tapped) return this.#documentBytes(request);
+    if (!tapped) return (await this.#documentBytes(request)) ?? this.#sessionBody(request, response);
     return Helpers.settle(tapped.tap.responseBody(tapped.record), this.#readTimeoutMs);
+  }
+
+  async #sessionBody(request: Request, response: Response): Promise<TapBody | undefined> {
+    const headers = Http.recordToHeaders(response.headers());
+    if (!TrafficRecorder.#readableWithoutRefetch(request, response, headers)) return undefined;
+    const bytes = await Helpers.settle(response.body(), this.#readTimeoutMs);
+    if (!bytes || bytes.length === 0) return undefined;
+    const declared = Helpers.contentLength(headers);
+    return { bytes, text: declared !== undefined && bytes.length !== declared };
+  }
+
+  static #readableWithoutRefetch(request: Request, response: Response, headers: Header[]): boolean {
+    if (!TrafficRecorder.SESSION_BODY_TYPES.has(request.resourceType()) || response.fromServiceWorker()) return false;
+    const declared = Helpers.contentLength(headers);
+    return declared === undefined || declared === 0 || !Http.isContentEncoded(Http.getHeader(headers, 'content-encoding'));
   }
 
   #responseBody(request: Request, response: Response, headers: Header[], read: TapBody | undefined, tapped: Tapped | undefined, outcome: Outcome): BodyData | undefined {

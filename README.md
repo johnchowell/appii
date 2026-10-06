@@ -42,7 +42,16 @@ cannot be saved after the recording, appii writes the recording to a file in
 the temporary directory and the error message gives its path. If the browser
 closes before the recording ends, for example because it crashed, appii saves
 the requests recorded until then and exits with an error that says so. Pages
-that the site opens in new tabs or windows are recorded too.
+that the site opens in new tabs or windows are recorded too. appii asks for a
+response body as soon as the browser reports the request finished, before a
+script that waits for the page load can start the next navigation (Chromium
+discards the bodies of a page once it navigates away). The first requests of a
+new tab can start before appii's own browser session is attached to it; their
+bodies are then read from the browser session that opened the tab, unless that
+could make the browser send the request again (a compressed response with a
+`Content-Length`), in which case the body is marked as not read. `-o -` writes the
+capture to stdout and the summary to stderr, so `appii capture ... -o - | jq`
+works.
 
 ### build: infer the API
 
@@ -64,7 +73,12 @@ endpoint and why: requests to other origins, static assets, CORS preflights,
 WebSocket handshakes, service worker responses, answers from the browser cache
 and, with `--no-documents`, page loads. A navigation that an HTML form produced
 (a GET search form, for example) is a form submission, not a page load, so
-`--no-documents` keeps it.
+`--no-documents` keeps it. A GET form that was never submitted becomes an
+endpoint (with 0 hits) only when it names an `action` that the capture did not
+load as a page; a form without an `action`, such as a banner that page script
+intercepts, and a form that targets a page that was loaded never do, with or
+without `--no-documents`. `-o -` writes the model to stdout and the report to
+stderr.
 
 #### Credentials
 
@@ -76,8 +90,18 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
 - `auth.sets` lists the credentials that each successful request carried
   together, such as `["cookie:sid", "http:bearer"]`. Credentials in one set
   are all needed (AND); different sets are alternatives (OR). `auth.anonymous`
-  is true when a request without any credential succeeded, so the credentials
-  are optional; `list` then shows them with a `?` (`cookie?`).
+  is true when a request without any credential succeeded (2xx), so the
+  credentials are optional; `list` then shows them with a `?` (`cookie?`).
+  `list --show` says `Anonymous: unknown` when no credential was seen and no
+  request without one got a 2xx answer (only a redirect or a 429, for
+  example), and `no` only when credentials were needed or refused.
+- An endpoint that answered only 401 or 403 to requests without credentials,
+  while no credential was captured, needs a credential that appii did not
+  see. It is never documented as public: the `AUTH` column shows `401?`,
+  `--show` and the reports say `required, not captured (answered 401 without
+  credentials)`, the example request and the `curl` function carry a note,
+  and the OpenAPI operation has no `security` (instead of `security: []`) and
+  `x-appii-auth: required-unobserved`.
 - A session or auth cookie (by name) is a credential when the value that was
   sent came from a login: a response to a request with a password field, an
   `Authorization` header or an OAuth callback code set it, or a response to a
@@ -103,12 +127,18 @@ comes from).
 
 appii redacts secrets by name (passwords, tokens, API keys, `Cookie` and
 `Authorization` values, secret query parameters) and by value: it collects
-every secret value of the capture (cookie values except preferences,
-credentials, API keys, secret query, body and path values, and the password of
-Basic credentials) and replaces that value, and its URL-, form-, JSON- and
-HTML-encoded forms, wherever it appears in `api.json` and in every export,
-also when the server echoes it in a response under another name. Values
-shorter than 6 characters are not replaced by value. `cookies[].valueExample`
+every secret value of the capture (the values of session, auth and CSRF
+cookies, by evidence, and of other cookies with a secret name or a
+token-shaped value; credentials, API keys, secret query, body and path values,
+and the password of Basic credentials) and replaces that value, and its URL-,
+form-, JSON- and HTML-encoded forms, wherever it appears in `api.json` and in
+every export, also when the server echoes it in a response under another name.
+Word-like values, and values that are not token-shaped and appear as ordinary
+content in two or more unrelated places, are not replaced, so a cookie that
+remembers a choice such as `view_mode=detailed` keeps the form options intact.
+Values shorter than 6 characters are not replaced by value. CORS headers
+(`Access-Control-Allow-Credentials: true`) and the messages under `errors`,
+`error` and similar objects (`{"errors":{"token":["is missing"]}}`) are kept. `cookies[].valueExample`
 shows only the length of a session, auth or CSRF cookie
 (`<redacted> (24 characters)`), and at most the first 4 characters of a long
 value of another cookie. `--no-redact` keeps every value.
@@ -138,6 +168,15 @@ before it:
   or is not listed while its siblings are, stays literal: `/api/articles/feed`
   next to `/api/articles/{slug}`. Action words such as `login`, `new` or
   `settings` and paths whose forms send different fields also stay literal.
+- A sibling that answered only 404 or 410 joins the parameter as an unknown id
+  (a stale link or a typo). A sibling that answered 401 or 403 to the same
+  anonymous client that read its siblings stays literal; one that was refused
+  only because the request lacked the credentials its siblings were read with
+  joins.
+- Under a singular word, JSON values with the same structure become a
+  parameter only with identifier evidence: three or more values, an id-like
+  value, or an echo or a listing of each value. So `/search/title` and
+  `/search/page` stay two endpoints. HTML pages keep the rule above.
 - A number inside a file name becomes an in-segment parameter
   (`/catalogue/page-{page}.html`) once two numbers are seen.
 
@@ -145,6 +184,11 @@ A parameter takes the name of the response field that holds its value
 (`{slug}`, `{username}`). Otherwise it is named after the segment before it: an
 id under a plural collection gets `Id` (`{itemId}`), a value under a singular
 word or a unit takes the word itself (`{page}`, `{status}`, `{bytes}`).
+
+An endpoint name follows from its own path, not from the other endpoints that
+were captured. A page load with path parameters ends with `By` and the
+parameters: `getTagPageByTag`, `getCataloguePageByPage`,
+`getCatalogueCategoryBookPageByBookAndPage`.
 
 ### list: look at the endpoints
 
@@ -189,8 +233,9 @@ always accepts compressed responses. The Markdown and HTML exports show the
 same command.
 
 `--show` lists every request body that the endpoint received (one block per
-media type), marks a JSON lines body, says where a redirect leads, and splits
-the cookies the endpoint needs from the other cookies the browser sent. A form
+media type) with one example curl command per media type, marks a JSON lines
+body, says where a redirect leads, and splits the cookies the endpoint needs
+from the other cookies the browser sent. A form
 field whose `<select>` options change with the page state shows
 `options vary by page state` with the options seen.
 
@@ -206,7 +251,10 @@ keep their columns aligned for wide characters.
 appii export api.json --format openapi
 ```
 
-Use `-o <file>` to choose the output file or `-o -` for stdout. If the file is
+Use `-o <file>` to choose the output file or `-o -` for stdout; `capture` and
+`build` take `-o -` the same way and then print their report on stderr. `run`
+writes two files and refuses `--out-dir -`. To write a file that is really
+named `-`, use `-o ./-`. If the file is
 a symbolic link, appii writes the file that the link points to; a FIFO or a
 character device such as `/dev/null` is written in place, and an existing file
 keeps its permissions (a file with secrets, such as an export without
@@ -229,17 +277,25 @@ list the formats:
 
 The `curl` script has one function for each endpoint. Run it without arguments
 to list the endpoints. The `ARGUMENTS` column shows the path parameters of an
-endpoint and its query parameters as `[name=]`. Give path values after the
-endpoint name or number, for example `bash endpoints.sh getItem 2`, and query
-values as `name=value` arguments, for example `bash endpoints.sh listItems
-page=3`. If you do not give a value, the script uses the function's
+endpoint, and its query parameters and the fields of its form, multipart or
+top-level JSON body as `[name=]`; a query parameter and a body field with the
+same name are `[query.name=]` and `[body.name=]`. Give path values after the
+endpoint name or number, for example `bash endpoints.sh getItem 2`, and the
+other values as `name=value` arguments, for example `bash endpoints.sh
+listItems page=3`. If you do not give a value, the script uses the function's
 `APPII_<NAME>` variable or the captured example; a query parameter that the
 captured request did not send is sent only when you give it a value. The
-script encodes each value for its position in the URL or JSON body. Arguments
-that start with `-` go to curl; any other argument that no parameter takes
-stops the script with an error before it sends a request. Every request uses
-`--compressed`. `APPII_BASE_URL` sets the base URL and `APPII_COOKIE` sets the
-Cookie header.
+default body of a form is the submission that the site received for the chosen
+submit button. The script encodes each value for its position in the URL, form
+or JSON body. Arguments that start with `-` go to curl. A bare `--`, the curl
+options `--url`, `--next` and `-:`, and any other argument that no parameter
+takes stop the script with an error before it sends a request. Every request
+uses `--compressed`. `APPII_BASE_URL` sets the base URL and `APPII_COOKIE` sets
+the Cookie header. An endpoint that received more than one body type has one
+function per type (`postPost`, `postPostJson`, `postPostMultipart`), listed
+below it. A multipart file part reads the file in `APPII_<FIELD>_FILE`
+(default: the captured file name in the current directory). Sourcing the
+script defines the functions without changing the options of your shell.
 
 The `typescript` client fills CSRF tokens from the pages and responses that
 the site uses. It keeps a page while the cookies for that page stay the same.
@@ -260,9 +316,16 @@ client returns the redirect itself. Method comments say which credential
 cookies, bearer token or Basic credentials an endpoint needs.
 
 The Markdown and HTML reports list the distinct forms with how many times and
-on which pages each one appears. The `har` export keeps textual request bodies,
-multipart bodies included, as plain text with their parameters, and uses
-base64 only for bytes that are not text.
+on which pages each one appears. Their constraint cells list every enum value
+and observed option in full, and the Markdown export adds a collapsed JSON
+Schema block for each request body. Postman turns a parameter inside a path
+segment into a collection variable (`page-{{page}}.html`). The `har` export
+keeps textual request bodies, multipart bodies included, as plain text with
+their parameters, and uses base64 only for bytes that are not text. It
+replaces each distinct cookie value with its own placeholder (`<redacted>1`,
+`<redacted>2`, ... per cookie name, the same in `Cookie` and `Set-Cookie`), so
+`capture --from-har` of the export keeps which session each request carried
+and builds the same credentials.
 
 For a subset of the endpoints, the `json` export keeps only the cookies and
 forms of the selected endpoints, and `setBy` and `usedBy` name only selected

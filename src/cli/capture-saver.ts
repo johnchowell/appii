@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { CaptureStore } from '../capture/index.js';
 import { AppiiError, Fs, Json, Text, isAppiiError } from '../shared/index.js';
 import type { Capture } from '../model/index.js';
+import type { OutputTarget } from './output-target.js';
 
 export interface CaptureSaverDeps {
   store?: CaptureStore;
@@ -34,8 +35,8 @@ export class CaptureSaver {
     return new CaptureSaver({ store: CaptureStore.create(), probe: Fs.assertWritable, fallbackDir: tmpdir, now: () => new Date() });
   }
 
-  async preflight(paths: readonly string[]): Promise<void> {
-    for (const path of paths) await this.#probe(path);
+  async preflight(targets: readonly OutputTarget[]): Promise<void> {
+    for (const target of targets) if (target.path !== undefined) await this.#probe(target.path);
   }
 
   fallbackPath(): string {
@@ -44,21 +45,22 @@ export class CaptureSaver {
     return join(this.#fallbackDir(), `${CaptureSaver.FALLBACK_PREFIX}${stamp}-${unique}${CaptureSaver.FALLBACK_SUFFIX}`);
   }
 
-  async save(path: string, capture: Capture): Promise<void> {
+  async save(target: OutputTarget, capture: Capture): Promise<void> {
     try {
-      await this.#store.save(path, capture);
+      if (target.path === undefined) await this.#store.write(capture, (data) => target.write(data), target.label);
+      else await this.#store.save(target.path, capture);
     } catch (err) {
       throw await this.#rescue(err, capture);
     }
   }
 
-  async keepPartial(err: unknown, path: string, shown: string): Promise<unknown> {
+  async keepPartial(err: unknown, target: OutputTarget): Promise<unknown> {
     const partial = CaptureSaver.partial(err);
     if (!partial || !isAppiiError(err)) return err;
-    await this.save(path, partial);
+    await this.save(target, partial);
     const count = partial.exchanges.length;
     const kept = `${Text.plural(count, 'request')} recorded until then ${count === 1 ? 'was' : 'were'}`;
-    return new AppiiError(err.code, `${err.message}. The ${kept} saved to ${shown}`, { cause: err });
+    return new AppiiError(err.code, `${err.message}. The ${kept} ${target.saved}`, { cause: err });
   }
 
   static partial(err: unknown): Capture | undefined {

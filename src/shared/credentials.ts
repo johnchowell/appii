@@ -1,5 +1,6 @@
 import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
 import type { ApiModel, CookieRole, Endpoint } from '../model/index.js';
+import { EndpointIndex } from './endpoints.js';
 
 export type CredentialKind = 'cookie' | 'header' | 'http';
 
@@ -22,6 +23,8 @@ export class Credentials {
   static readonly ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
   static readonly KINDS: ReadonlySet<string> = new Set<CredentialKind>(['cookie', 'header', 'http']);
   static readonly OPTIONAL_MARK = '?';
+  static readonly UNKNOWN_MARK = '?';
+  static readonly REFUSAL_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
   static entry(kind: CredentialKind, name: string): string {
     return `${kind}:${kind === Credentials.COOKIE ? name : name.toLowerCase()}`;
@@ -102,6 +105,16 @@ export class Credentials {
     return Credentials.sets(endpoint, roles).length > 0 && !Credentials.optional(endpoint);
   }
 
+  static refusals(endpoint: Endpoint, roles?: CookieRoles): number[] {
+    if (endpoint.count === 0 || endpoint.auth.anonymous === true || Credentials.sets(endpoint, roles).length > 0) return [];
+    return EndpointIndex.statuses(endpoint).filter((status) => Credentials.REFUSAL_STATUSES.has(status));
+  }
+
+  static refusalNote(endpoint: Endpoint, roles?: CookieRoles): string {
+    const statuses = Credentials.refusals(endpoint, roles);
+    return statuses.length === 0 ? '' : `required, not captured (answered ${statuses.join(' and ')} without credentials)`;
+  }
+
   static label(credential: Credential): string {
     if (credential.kind === Credentials.HTTP) return credential.name;
     return `${credential.kind} ${credential.name}`;
@@ -113,6 +126,10 @@ export class Credentials {
     if (credentials.some((credential) => credential.kind === Credentials.COOKIE)) out.push(Credentials.COOKIE);
     for (const credential of credentials) if (credential.kind === Credentials.HTTP && !out.includes(credential.name)) out.push(credential.name);
     if (credentials.some((credential) => credential.kind === Credentials.HEADER)) out.push(Credentials.HEADER);
+    if (out.length === 0) {
+      const refusals = Credentials.refusals(endpoint, roles);
+      return refusals.length === 0 ? [] : [refusals.join('/') + Credentials.UNKNOWN_MARK];
+    }
     const marker = Credentials.optional(endpoint) ? Credentials.OPTIONAL_MARK : '';
     return out.map((kind) => kind + marker);
   }
@@ -125,7 +142,7 @@ export class Credentials {
         .map((credential) => Credentials.label(credential))
         .join(' + '),
     );
-    if (sets.length === 0) return '';
+    if (sets.length === 0) return Credentials.refusalNote(endpoint, roles);
     const text = sets.join(' or ');
     return Credentials.optional(endpoint) ? `${text} (optional)` : text;
   }

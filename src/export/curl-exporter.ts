@@ -1,5 +1,5 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { CharsetEncoder, Curl, EndpointIndex, Meta, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, Curl, EndpointIndex, Meta, RequestBodies, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -26,10 +26,17 @@ export interface CurlBodyArgument {
   readonly raw: boolean;
 }
 
+export interface CurlFileArgument {
+  readonly name: string;
+  readonly variable: string;
+  readonly fallback: string;
+}
+
 export interface CurlArguments {
   readonly path: readonly CurlPathArgument[];
   readonly query: readonly CurlQueryArgument[];
   readonly body: readonly CurlBodyArgument[];
+  readonly files: readonly CurlFileArgument[];
 }
 
 export interface CurlBodyField {
@@ -39,6 +46,12 @@ export interface CurlBodyField {
 }
 
 export type CurlValueArgument = CurlQueryArgument | CurlBodyArgument;
+
+export interface CurlTarget {
+  readonly endpoint: Endpoint;
+  readonly source: Endpoint;
+  readonly mediaType?: string;
+}
 
 export class CurlExporter extends BaseExporter {
   static readonly BASE_NAME = 'base_url';
@@ -50,10 +63,13 @@ export class CurlExporter extends BaseExporter {
   static readonly VALUE_LOCAL = 'appii_value';
   static readonly DEFAULT_PREFIX = 'appii_default_';
   static readonly FUNCTION_SUFFIX = 'Endpoint';
+  static readonly VARIANT_SUFFIX = 'Body';
   static readonly QUERY_WORD_PREFIX = 'query.';
   static readonly BODY_WORD_PREFIX = 'body.';
   static readonly ARGUMENT_BODY_KINDS: ReadonlySet<string> = new Set(['form', 'multipart']);
   static readonly JSON_BODY_KIND = 'json';
+  static readonly MULTIPART_KIND = 'multipart';
+  static readonly FILE_SUFFIX = ' file';
   static readonly RESERVED_FUNCTIONS: ReadonlySet<string> = new Set([
     'list', 'usage', 'main', 'help', 'appii_cookie', 'appii_pct', 'appii_json', 'appii_form', 'appii_curl_args', 'curl', 'cat', 'printf', 'od', 'bash', 'sh', 'alias', 'bg',
     'bind', 'break', 'builtin', 'caller', 'case', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'coproc', 'declare',
@@ -70,8 +86,30 @@ export class CurlExporter extends BaseExporter {
   readonly mimeType = 'application/x-sh';
   readonly description = 'Bash script with one curl function per endpoint, a list command and a dispatcher';
 
+  static targets(endpoints: readonly Endpoint[]): CurlTarget[] {
+    return endpoints.flatMap((endpoint): CurlTarget[] => [
+      { endpoint, source: endpoint },
+      ...RequestBodies.variants(endpoint).map((variant) => ({ endpoint: variant.endpoint, source: endpoint, mediaType: variant.mediaType })),
+    ]);
+  }
+
   functionNames(endpoints: readonly Endpoint[]): Map<Endpoint, string> {
+    return CurlExporter.#functionNames(endpoints, new Set<string>(CurlExporter.RESERVED_FUNCTIONS));
+  }
+
+  targetNames(targets: readonly CurlTarget[]): Map<CurlTarget, string> {
     const taken = new Set<string>(CurlExporter.RESERVED_FUNCTIONS);
+    const primary = CurlExporter.#functionNames(targets.filter((target) => target.mediaType === undefined).map((target) => target.endpoint), taken);
+    return new Map(
+      targets.map((target): [CurlTarget, string] => {
+        const base = primary.get(target.source) ?? target.source.name;
+        if (target.mediaType === undefined) return [target, base];
+        return [target, Text.uniqueName(base + (Text.pascalCase(target.endpoint.requestBody?.kind ?? '') || CurlExporter.VARIANT_SUFFIX), taken, '_')];
+      }),
+    );
+  }
+
+  static #functionNames(endpoints: readonly Endpoint[], taken: Set<string>): Map<Endpoint, string> {
     const out = new Map<Endpoint, string>();
     for (const endpoint of endpoints) {
       let base = endpoint.name.replace(/[^A-Za-z0-9_]/g, '_');
@@ -199,12 +237,51 @@ export class CurlExporter extends BaseExporter {
     const path = this.pathArguments(sample, rename);
     const query = this.queryArguments(endpoint, sample, rename, path);
     const body = this.bodyArguments(sample, rename, [...path, ...query].map((arg) => arg.variable));
+    const files = this.fileArguments(sample, rename, [...path, ...query, ...body].map((arg) => arg.variable));
     const shared = new Set(query.filter((arg) => body.some((field) => field.name === arg.name)).map((arg) => arg.name));
     return {
       path,
       query: query.map((arg) => (shared.has(arg.name) ? { ...arg, word: CurlExporter.QUERY_WORD_PREFIX + arg.name } : arg)),
       body: body.map((arg) => (shared.has(arg.name) ? { ...arg, word: CurlExporter.BODY_WORD_PREFIX + arg.name } : arg)),
+      files,
     };
+  }
+
+  static #uploads(body: Samples.SampleBody | undefined): boolean {
+    return body !== undefined && body.kind === CurlExporter.MULTIPART_KIND && Samples.isRecord(body.value) && Curl.rawBody(body) === undefined;
+  }
+
+  static #upload(value: Samples.SampleValue): value is Samples.SampleRecord & { readonly filename: SampleText } {
+    return Samples.isFileValue(value) && value.filename.isLiteral && value.filename.toString() !== '';
+  }
+
+  fileArguments(sample: Samples.RequestSample, rename: (name: string) => string, taken: Iterable<string> = []): CurlFileArgument[] {
+    const body = sample.body;
+    if (!CurlExporter.#uploads(body) || !Samples.isRecord(body?.value)) return [];
+    const used = new Set<string>(taken);
+    for (const name of Samples.placeholderNames(sample)) used.add(Curl.variableName(name));
+    const out: CurlFileArgument[] = [];
+    for (const [name, item] of Object.entries(body.value)) {
+      for (const each of Array.isArray(item) ? (item as readonly Samples.SampleValue[]) : [item]) {
+        if (!CurlExporter.#upload(each)) continue;
+        const variable = Text.uniqueName(Curl.variableName(rename(SampleText.placeholderName(`${name}${CurlExporter.FILE_SUFFIX}`))), used, '_');
+        out.push({ name, variable, fallback: Curl.uploadName(each.filename.toString()) });
+      }
+    }
+    return out;
+  }
+
+  static withFiles(sample: Samples.RequestSample, files: readonly CurlFileArgument[]): Samples.RequestSample {
+    const body = sample.body;
+    if (files.length === 0 || !CurlExporter.#uploads(body) || !body || !Samples.isRecord(body.value)) return sample;
+    let next = 0;
+    const swap = (item: Samples.SampleValue): Samples.SampleValue => {
+      if (!CurlExporter.#upload(item)) return item;
+      const file = files[next++];
+      return file === undefined ? item : { ...item, filename: SampleText.placeholder(file.variable.slice(Curl.VARIABLE_PREFIX.length).toLowerCase()) };
+    };
+    const value = Object.fromEntries(Object.entries(body.value).map(([name, item]) => [name, Array.isArray(item) ? (item as readonly Samples.SampleValue[]).map(swap) : swap(item)]));
+    return { ...sample, body: { ...body, value } };
   }
 
   script(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
@@ -213,20 +290,22 @@ export class CurlExporter extends BaseExporter {
     const origins = this.originVariables(model, endpoints);
     const reserved = new Set<string>([...origins.values(), CurlExporter.COOKIE_NAME, CurlExporter.QUERY_NAME]);
     const rename = CurlExporter.#renamer(reserved);
-    const names = this.functionNames(endpoints);
+    const targets = CurlExporter.targets(endpoints);
+    const names = this.targetNames(targets);
     const functions: string[] = [];
     const globals = new Set<string>();
-    const argumentsOf = new Map<Endpoint, CurlArguments>();
-    for (const endpoint of endpoints) {
+    const argumentsOf = new Map<CurlTarget, CurlArguments>();
+    for (const target of targets) {
+      const endpoint = target.endpoint;
       const base = this.sample(endpoint, origins.get(endpoint.origin) ?? CurlExporter.BASE_NAME, rename);
       const args = this.arguments(endpoint, base, rename);
-      const sample = CurlExporter.withBody(base, args.body);
-      argumentsOf.set(endpoint, args);
-      const locals = new Set([...args.path, ...args.query, ...args.body].map((arg) => arg.variable));
+      const sample = CurlExporter.withFiles(CurlExporter.withBody(base, args.body), args.files);
+      argumentsOf.set(target, args);
+      const locals = new Set([...args.path, ...args.query, ...args.body, ...args.files].map((arg) => arg.variable));
       for (const variable of Curl.placeholderNames(sample, CurlExporter.#fallbacks(args))) {
         if (!locals.has(variable) && ![...reserved].some((name) => Curl.variableName(name) === variable)) globals.add(variable);
       }
-      functions.push(this.#function(endpoint, names.get(endpoint) ?? endpoint.name, sample, args, rename));
+      functions.push(this.#function(endpoint, names.get(target) ?? endpoint.name, sample, args, rename));
     }
     const lines: string[] = [
       '#!/usr/bin/env bash',
@@ -246,9 +325,9 @@ export class CurlExporter extends BaseExporter {
     for (const variable of [...globals].sort()) lines.push(`: "\${${variable}:=}"`);
     lines.push('', ...CurlExporter.#cookieHelper(), '', ...Curl.HELPER_FUNCTIONS, '');
     for (const fn of functions) lines.push(fn, '');
-    lines.push(...this.#list(model, endpoints, index, names, argumentsOf), '');
+    lines.push(...this.#list(model, targets, index, names, argumentsOf), '');
     lines.push(...CurlExporter.#usage(), '');
-    lines.push(...this.#main(endpoints, index, names), '');
+    lines.push(...this.#main(targets, index, names), '');
     lines.push('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then', '  set -euo pipefail', '  main "$@"', 'fi');
     return lines.join('\n') + '\n';
   }
@@ -279,9 +358,11 @@ export class CurlExporter extends BaseExporter {
     const variable = (placeholder: string): string => (placeholder === CurlExporter.QUERY_NAME ? CurlExporter.QUERY_LOCAL : Curl.variableName(placeholder));
     const values: CurlValueArgument[] = [...args.query, ...args.body];
     const assignable = values.filter((arg) => CurlExporter.ASSIGNABLE_NAME.test(arg.word));
-    const patterns = assignable.map((arg) => `${CurlExporter.#pattern(arg.word)}=*`);
-    const lines = [`${name}() {`];
-    if (args.path.length > 0 || values.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
+    const patterns = assignable.map((arg) => `${Curl.shellWord(arg.word)}=*`);
+    const refusals = Credentials.refusals(endpoint);
+    const lines = refusals.length === 0 ? [] : [`# ${name}: without credentials the server answered ${refusals.join(' and ')}; the credential it expects was not captured. Add it as a curl argument (-H or -b).`];
+    lines.push(`${name}() {`);
+    if (args.path.length > 0 || args.files.length > 0 || values.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
     for (const arg of args.path) {
       lines.push(`  ${value}=${Text.shellQuote(arg.fallback)}`);
       lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
@@ -310,6 +391,11 @@ export class CurlExporter extends BaseExporter {
       lines.push(`  ${value}=${Curl.shellArg(arg.fallback, 'shell', variable)}`);
       lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
       lines.push(`  local ${arg.variable}="$${value}"`);
+    }
+    for (const file of args.files) {
+      lines.push(`  ${value}=${Text.shellQuote(file.fallback)}`);
+      lines.push(`  [[ -z "\${${file.variable}:-}" ]] || ${value}="$${file.variable}"`);
+      lines.push(`  local ${file.variable}="$${value}"`);
     }
     if (assignable.length > 0) {
       lines.push('  while [[ $# -gt 0 ]]; do', '    case "$1" in');
@@ -345,10 +431,6 @@ export class CurlExporter extends BaseExporter {
     return [...args.query, ...args.body].flatMap((arg) => (arg.fallback === undefined ? [] : [arg.fallback]));
   }
 
-  static #pattern(name: string): string {
-    return Curl.SAFE_WORD.test(name) ? name : Text.shellQuote(name);
-  }
-
   static #hint(args: CurlArguments): string {
     const words = CurlExporter.#argumentWords(args);
     const takes = words.length === 0 ? 'It takes no arguments' : `Arguments: ${words.join(' ')}`;
@@ -360,14 +442,18 @@ export class CurlExporter extends BaseExporter {
     return [...args.path.map((arg) => `[${arg.name}]`), ...[...args.query, ...args.body].map((arg) => `[${Text.printable(arg.word)}=]`)];
   }
 
-  #list(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex, names: ReadonlyMap<Endpoint, string>, args: ReadonlyMap<Endpoint, CurlArguments>): string[] {
-    const rows = endpoints.map((endpoint) => [
-      String(index.numberOf(endpoint)),
-      endpoint.method,
-      Text.printable(endpoint.origin === model.primaryOrigin ? endpoint.path : endpoint.origin + endpoint.path),
-      names.get(endpoint) ?? endpoint.name,
-      CurlExporter.#argumentWords(args.get(endpoint)).join(' '),
-    ]);
+  #list(model: ApiModel, targets: readonly CurlTarget[], index: EndpointIndex, names: ReadonlyMap<CurlTarget, string>, args: ReadonlyMap<CurlTarget, CurlArguments>): string[] {
+    const rows = targets.map((target) => {
+      const endpoint = target.source;
+      const path = Text.printable(endpoint.origin === model.primaryOrigin ? endpoint.path : endpoint.origin + endpoint.path);
+      return [
+        target.mediaType === undefined ? String(index.numberOf(endpoint)) : '',
+        endpoint.method,
+        target.mediaType === undefined ? path : `${path} (${Text.printable(target.mediaType)})`,
+        names.get(target) ?? endpoint.name,
+        CurlExporter.#argumentWords(args.get(target)).join(' '),
+      ];
+    });
     const header = ['#', 'METHOD', 'PATH', 'FUNCTION', 'ARGUMENTS'];
     const widths = header.map((title, i) => Math.max(title.length, ...rows.map((row) => (row[i] ?? '').length)));
     const format = (row: string[]): string =>
@@ -378,7 +464,7 @@ export class CurlExporter extends BaseExporter {
     return ['list() {', "  cat <<'APPII_LIST'", format(header), ...rows.map(format), 'APPII_LIST', '}'];
   }
 
-  #main(endpoints: readonly Endpoint[], index: EndpointIndex, names: ReadonlyMap<Endpoint, string>): string[] {
+  #main(targets: readonly CurlTarget[], index: EndpointIndex, names: ReadonlyMap<CurlTarget, string>): string[] {
     const lines = [
       'main() {',
       '  if [[ $# -eq 0 ]]; then',
@@ -391,9 +477,9 @@ export class CurlExporter extends BaseExporter {
       '    -h|--help|help) usage ;;',
       '    -l|--list|list) list ;;',
     ];
-    for (const endpoint of endpoints) {
-      const name = names.get(endpoint) ?? endpoint.name;
-      lines.push(`    ${name}|${index.numberOf(endpoint)}) ${name} "$@" ;;`);
+    for (const target of targets) {
+      const name = names.get(target) ?? target.endpoint.name;
+      lines.push(target.mediaType === undefined ? `    ${name}|${index.numberOf(target.source)}) ${name} "$@" ;;` : `    ${name}) ${name} "$@" ;;`);
     }
     lines.push(
       "    *)",
@@ -451,6 +537,11 @@ export class CurlExporter extends BaseExporter {
       "-v or -o FILE). The script stops with an error and sends no request for any",
       "other argument, for a bare '--' and for the curl options --url and --next,",
       'which would make curl send another request.',
+      '',
+      'A file part of a multipart body is read from the path in the',
+      'APPII_<FIELD>_FILE variable (default: the captured file name in the',
+      'current directory). An endpoint that the site accepted with more than',
+      'one body type has one function per type, for example postItemJson.',
       '',
       'Environment:',
       `  ${Curl.variableName(CurlExporter.BASE_NAME)}   base URL of the API (default: the captured origin)`,

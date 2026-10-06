@@ -27,6 +27,8 @@ export { CaptureProgress } from './capture-progress.js';
 export type { CaptureProgressOptions } from './capture-progress.js';
 export { CaptureRunner } from './capture-runner.js';
 export { CaptureSaver } from './capture-saver.js';
+export { OutputTarget } from './output-target.js';
+export type { OutputData, OutputWriteOptions } from './output-target.js';
 export type { CaptureSaverDeps } from './capture-saver.js';
 export type { CaptureRunnerDeps, RecordingSession, RecordingSessionFactory } from './capture-runner.js';
 export { BuildStep } from './build-step.js';

@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse, ParamInfo } from '../model/index.js';
-import { Credentials, Curl, EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
+import { Credentials, Curl, EndpointIndex, Http, Json, RequestBodies, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
 import { SchemaFieldList } from './schema-field-list.js';
@@ -57,7 +57,9 @@ export class HtmlEndpointRenderer {
       .join(' ');
     const badges = [`<span class="badge">${esc(endpoint.kind)}</span>`, statuses];
     const roles = Credentials.roles(ctx.model);
+    const refusals = Credentials.refusals(endpoint, roles);
     if (Credentials.sets(endpoint, roles).length > 0) badges.push(Credentials.optional(endpoint) ? '<span class="badge auth" title="credentials are optional">auth?</span>' : '<span class="badge auth">auth</span>');
+    else if (refusals.length > 0) badges.push(`<span class="badge auth" title="answered ${refusals.join(' and ')} without credentials; the credential was not captured">${refusals.join('/')}${Credentials.UNKNOWN_MARK}</span>`);
     if (endpoint.auth.csrf.length > 0) badges.push('<span class="badge csrf">csrf</span>');
     if (endpoint.form) badges.push('<span class="badge">html form</span>');
     const summary = [
@@ -106,13 +108,13 @@ export class HtmlEndpointRenderer {
     out.push(`<dl class="meta">${meta.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${value}</dd>`).join('')}</dl>`);
     const params = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams];
     if (params.length > 0) out.push('<h3>Parameters</h3>', this.params(params));
-    Helpers.requestBodies(endpoint).forEach((shape, i) => out.push(`<h3>Request body</h3>`, this.body(shape, i === 0 ? `request-${number}` : `request-${number}-${i}`)));
+    RequestBodies.shapes(endpoint).forEach((shape, i) => out.push(`<h3>Request body</h3>`, this.body(shape, i === 0 ? `request-${number}` : `request-${number}-${i}`)));
     if (endpoint.responses.length > 0) {
       out.push('<h3>Responses</h3>');
       endpoint.responses.forEach((response, i) => out.push(this.response(response, `response-${number}-${i}`)));
     }
     out.push('<h3>Example request</h3>', this.example(endpoint, ctx, `curl-${number}`));
-    Helpers.bodyVariants(endpoint).forEach((variant, i) => {
+    RequestBodies.variants(endpoint).forEach((variant, i) => {
       out.push(`<h3>Example request (<code>${esc(variant.mediaType)}</code>)</h3>`, this.example(variant.endpoint, ctx, `curl-${number}-${i + 1}`));
     });
     return out.join('');
@@ -131,7 +133,7 @@ export class HtmlEndpointRenderer {
     const esc = HtmlEndpointRenderer.esc;
     const rows = params.map((param) => {
       const examples = param.examples.map((example) => `<code>${esc(example)}</code>`).join(' ');
-      return `<tr><td><code>${esc(param.name)}</code></td><td>${esc(param.in)}</td><td>${param.required ? 'yes' : 'no'}</td><td>${esc(Schema.typeLabel(param.schema))}</td><td>${esc(Schema.constraintSummary(param.schema).join('; '))}</td><td>${examples}</td></tr>`;
+      return `<tr><td><code>${esc(param.name)}</code></td><td>${esc(param.in)}</td><td>${param.required ? 'yes' : 'no'}</td><td>${esc(Schema.typeLabel(param.schema))}</td><td>${esc(Schema.constraintSummary(param.schema, Schema.FULL_SUMMARY).join('; '))}</td><td>${examples}</td></tr>`;
     });
     return `<div class="scroll"><table><thead><tr><th>Name</th><th>In</th><th>Required</th><th>Type</th><th>Constraints</th><th>Examples</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
   }

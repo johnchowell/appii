@@ -26,6 +26,7 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   static readonly TOP_HITS = 10;
   static readonly EXPORT_FORMAT = 'openapi';
   static readonly OPTIONAL_HINT = `a label ending in ${Credentials.OPTIONAL_MARK} means the endpoint also answered a request without those credentials`;
+  static readonly REFUSED_HINT = `a status such as 401${Credentials.UNKNOWN_MARK} means the endpoint refused a request without credentials and the credential it expects was not captured`;
 
   readonly #format: EndpointFormatter;
 
@@ -74,8 +75,11 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     if (endpoints.length === 0) {
       return this.compose([header.join('\n'), total === 0 ? 'No endpoints in this model.' : 'No endpoints match the filter.']);
     }
-    const optional = endpoints.some((endpoint) => Credentials.optional(endpoint) && Credentials.sets(endpoint, Credentials.roles(model)).length > 0);
-    return this.compose([header.join('\n'), ...this.#tables(model, groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#hints(optional)]);
+    const roles = Credentials.roles(model);
+    const notes: string[] = [];
+    if (endpoints.some((endpoint) => Credentials.optional(endpoint) && Credentials.sets(endpoint, roles).length > 0)) notes.push(EndpointListPresenter.OPTIONAL_HINT);
+    if (endpoints.some((endpoint) => Credentials.refusals(endpoint, roles).length > 0)) notes.push(EndpointListPresenter.REFUSED_HINT);
+    return this.compose([header.join('\n'), ...this.#tables(model, groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#hints(notes)]);
   }
 
   #tables(model: ApiModel, groups: ReadonlyMap<string, readonly Endpoint[]>, index: EndpointIndex): PresenterBlock[] {
@@ -138,10 +142,10 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     return TextLayout.flow(items, this.width, { prefix: this.ansi.bold('Statuses:') + ' ' });
   }
 
-  #hints(optional: boolean): string[] {
+  #hints(notes: readonly string[]): string[] {
     if (!this.hints) return [];
     const file = BasePresenter.fileArgument(this.file, this.ansi);
-    const entries: [string, string][] = optional ? [['Auth', EndpointListPresenter.OPTIONAL_HINT]] : [];
+    const entries: [string, string][] = notes.length > 0 ? [['Auth', notes.join('; ')]] : [];
     entries.push(['Details', this.command(`list ${file} --show <#>`)], ['Export', this.command(`export ${file} --format ${EndpointListPresenter.EXPORT_FORMAT}`)]);
     return this.definitions(entries);
   }

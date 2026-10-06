@@ -80,14 +80,18 @@ export class CaptureStore {
   }
 
   async save(path: string, capture: Capture): Promise<void> {
+    await this.write(capture, (data) => Fs.writeFileAtomic(path, data, { mode: CaptureStore.FILE_MODE }), path);
+  }
+
+  async write(capture: Capture, sink: (data: Iterable<string>) => Promise<void>, name: string): Promise<void> {
     const problems = this.#validator.validate(capture);
     if (problems.length > 0) {
       throw new AppiiError('BAD_INPUT', `Refusing to save an invalid capture: ${Text.summarize(problems, CaptureStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
     try {
-      await Fs.writeFileAtomic(path, CaptureStore.#lines(capture), { mode: CaptureStore.FILE_MODE });
+      await sink(CaptureStore.#lines(capture));
     } catch (err) {
-      const message = err instanceof AppiiError ? err.message : `Cannot write ${path}: ${Text.errorMessage(err)}`;
+      const message = err instanceof AppiiError ? err.message : `Cannot write ${name}: ${Text.errorMessage(err)}`;
       throw new AppiiError('IO', message, { cause: err, details: { capture } });
     }
   }

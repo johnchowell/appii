@@ -13,6 +13,7 @@ export interface SchemaField {
 export interface SchemaFieldListOptions {
   maxDepth?: number;
   maxRows?: number;
+  limits?: Schema.SummaryLimits;
 }
 
 export class SchemaFieldList {
@@ -22,10 +23,12 @@ export class SchemaFieldList {
 
   readonly #maxDepth: number;
   readonly #maxRows: number;
+  readonly #limits: Schema.SummaryLimits;
 
   constructor(options: SchemaFieldListOptions = {}) {
     this.#maxDepth = options.maxDepth ?? SchemaFieldList.DEFAULT_MAX_DEPTH;
     this.#maxRows = options.maxRows ?? SchemaFieldList.DEFAULT_MAX_ROWS;
+    this.#limits = options.limits ?? Schema.FULL_SUMMARY;
   }
 
   rows(schema: JsonSchema | undefined): SchemaField[] {
@@ -34,7 +37,7 @@ export class SchemaFieldList {
     const properties = Object.keys(Schema.properties(schema));
     const items = Schema.items(schema);
     if (properties.length === 0 && !(items && Object.keys(Schema.properties(items)).length > 0)) {
-      out.push(SchemaFieldList.#field(SchemaFieldList.ROOT, schema, true));
+      out.push(this.#field(SchemaFieldList.ROOT, schema, true));
       return out;
     }
     this.#walk(schema, '', 0, out);
@@ -59,14 +62,14 @@ export class SchemaFieldList {
     for (const [name, child] of Object.entries(Schema.properties(container))) {
       if (out.length >= this.#maxRows) return;
       const path = base === '' ? name : `${base}.${name}`;
-      out.push(SchemaFieldList.#field(path, child, required.has(name)));
+      out.push(this.#field(path, child, required.has(name)));
       const nested = Schema.primaryType(child) === 'array' ? Schema.items(child) : child;
       if (nested && Object.keys(Schema.properties(nested)).length > 0) this.#walk(child, path, depth + 1, out);
     }
   }
 
-  static #field(path: string, schema: JsonSchema, required: boolean): SchemaField {
-    const field: SchemaField = { path, type: Schema.typeLabel(schema), required, constraints: Schema.constraintSummary(schema) };
+  #field(path: string, schema: JsonSchema, required: boolean): SchemaField {
+    const field: SchemaField = { path, type: Schema.typeLabel(schema), required, constraints: Schema.constraintSummary(schema, this.#limits) };
     const description = typeof schema.title === 'string' ? schema.title : typeof schema.description === 'string' ? schema.description : undefined;
     if (description !== undefined && description !== '') field.description = description;
     return field;

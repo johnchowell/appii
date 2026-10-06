@@ -1,6 +1,6 @@
 import type { BodyData, CapturedRequest, Exchange, FormEnctype, Header } from '../model/index.js';
 import { BodyParser, MultipartParser, Redactor } from '../build/index.js';
-import type { MultipartPart, PlainTextMode, SecretValues } from '../build/index.js';
+import type { CookieAlias, MultipartPart, PlainTextMode, SecretValues } from '../build/index.js';
 import { HtmlTagScanner, TokenDetector } from '../forms/index.js';
 import type { ScannedTag } from '../forms/index.js';
 import { CharsetEncoder, Http, Json, Samples, Text } from '../shared/index.js';
@@ -48,7 +48,7 @@ export class ExchangeSanitizer {
   readonly #multipart: MultipartParser;
   readonly #scanner: HtmlTagScanner;
   readonly #cookieAliases = new Map<string, Map<string, string>>();
-  readonly #cookieAlias = (name: string, value: string): string => this.cookieAlias(name, value);
+  readonly #cookieAlias: CookieAlias = (name, value) => this.cookieAlias(name, value);
 
   static create(options: ExchangeSanitizerOptions = {}): ExchangeSanitizer {
     return new ExchangeSanitizer({

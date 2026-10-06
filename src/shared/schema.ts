@@ -148,15 +148,22 @@ export const DYNAMIC_OPTIONS = 'x-appii-dynamic-options';
 export const DYNAMIC_OPTIONS_LABEL = 'options vary by page state';
 export const DYNAMIC_OPTIONS_SHOWN = 5;
 
-export function dynamicOptions(schema: JsonSchema): string {
+export interface SummaryLimits {
+  readonly maxValue?: number;
+  readonly maxShown?: number;
+}
+
+export const FULL_SUMMARY: SummaryLimits = Object.freeze({ maxValue: Number.POSITIVE_INFINITY, maxShown: Number.POSITIVE_INFINITY });
+
+export function dynamicOptions(schema: JsonSchema, limits: SummaryLimits = {}): string {
   const seen = Array.isArray(schema.examples) ? schema.examples : [];
   if (seen.length === 0) return DYNAMIC_OPTIONS_LABEL;
-  const shown = seen.slice(0, DYNAMIC_OPTIONS_SHOWN).map((value) => displayValue(value, ENUM_VALUE));
+  const shown = seen.slice(0, limits.maxShown ?? DYNAMIC_OPTIONS_SHOWN).map((value) => displayValue(value, limits.maxValue ?? ENUM_VALUE));
   const more = seen.length - shown.length;
   return `${DYNAMIC_OPTIONS_LABEL} (observed: ${shown.join('|')}${more > 0 ? ` +${more} more` : ''})`;
 }
 
-export function constraintSummary(schema: JsonSchema | undefined): string[] {
+export function constraintSummary(schema: JsonSchema | undefined, limits: SummaryLimits = {}): string[] {
   if (!schema) return [];
   const out: string[] = [];
   const htmlType = str(schema['x-html-type']);
@@ -172,10 +179,10 @@ export function constraintSummary(schema: JsonSchema | undefined): string[] {
   if (min !== undefined || max !== undefined) out.push(`range ${min ?? ''}..${max ?? ''}`);
   const step = str(schema['x-html-step']) ?? str(schema.multipleOf);
   if (step !== undefined) out.push(`step ${step}`);
-  if (Array.isArray(schema.enum)) out.push(`one of ${schema.enum.map((v) => displayValue(v, ENUM_VALUE)).join('|')}`);
-  if ('const' in schema) out.push(`always ${displayValue(schema.const)}`);
+  if (Array.isArray(schema.enum)) out.push(`one of ${schema.enum.map((v) => displayValue(v, limits.maxValue ?? ENUM_VALUE)).join('|')}`);
+  if ('const' in schema) out.push(`always ${displayValue(schema.const, limits.maxValue)}`);
   if (schema.minItems !== undefined || schema.maxItems !== undefined) out.push(`items ${str(schema.minItems) ?? '0'}..${str(schema.maxItems) ?? ''}`);
-  if (schema[DYNAMIC_OPTIONS] === true) out.push(dynamicOptions(schema));
+  if (schema[DYNAMIC_OPTIONS] === true) out.push(dynamicOptions(schema, limits));
   if (schema['x-appii-token'] === true) out.push('token');
   if (schema.readOnly === true && schema['x-appii-token'] !== true) out.push('read-only');
   return out;

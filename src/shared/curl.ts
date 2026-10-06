@@ -245,7 +245,8 @@ function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) =
   return [[RAW_FLAG, arg(body.value instanceof SampleText ? body.value : jsonText(body.value))]];
 }
 
-function fileField(entry: FormEntry): string {
+function fileField(entry: FormEntry): SampleTextInput {
+  if (!entry.value.isLiteral) return SampleText.concat(`${entry.name}=@`, entry.value);
   const filename = entry.value.toString();
   if (filename !== '') return `${entry.name}=@${uploadPath(filename)}`;
   const type = entry.contentType?.isLiteral === true && entry.contentType.toString() !== '' ? entry.contentType.toString() : BINARY_MIME;

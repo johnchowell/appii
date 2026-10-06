@@ -207,7 +207,7 @@ export class FormLinker {
         contributing.add(submission.form);
         continue;
       }
-      if (!FormLinker.#carries(submission) || !FormLinker.#native(submission, observed)) continue;
+      if (!FormLinker.#carries(submission) || !FormLinker.#native(submission, observed) || FormLinker.#pageOnly(submission, observed)) continue;
       const path = submission.url.pathname;
       const template = this.#paths.template([path]).get(path) ?? { template: path, params: [] };
       const key = EndpointFactory.key(submission.target.method, submission.url.origin, template.template);
@@ -319,6 +319,11 @@ export class FormLinker {
     return forms.filter((form) =>
       submissions.every((submission) => submission.form !== form || (submission.observed.length === 0 && !SubmissionRules.explicitTarget(form, submission.submitter))),
     );
+  }
+
+  static #pageOnly(submission: Submission, observed: ObservedSubmissions): boolean {
+    if (submission.target.method !== FormLinker.QUERY_METHOD || submission.observed.length > 0) return false;
+    return !SubmissionRules.explicitTarget(submission.form, submission.submitter) || observed.loadedPage(submission.url);
   }
 
   static #native(submission: Submission, observed: ObservedSubmissions): boolean {

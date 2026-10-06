@@ -1,5 +1,5 @@
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
-import { Ansi, Credentials, Curl, EndpointIndex, Json, Samples, Schema, Text } from '../shared/index.js';
+import { Ansi, Credentials, Curl, EndpointIndex, Json, RequestBodies, Samples, Schema, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
@@ -167,6 +167,19 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return [this.heading('Form source'), ...this.definitions(entries)];
   }
 
+  static refusedExample(refusals: readonly number[]): string {
+    return `Without credentials the server answered ${refusals.join(' and ')}. The credential it expects was not captured: add it with -H or -b.`;
+  }
+
+  static anonymous(endpoint: Endpoint, roles?: CookieRoles): string {
+    if (endpoint.auth.anonymous === true) return 'yes, a request without credentials succeeded';
+    const refusals = Credentials.refusals(endpoint, roles);
+    if (refusals.length > 0) return `no, a request without credentials was refused (${refusals.join(', ')})`;
+    if (Credentials.sets(endpoint, roles).length > 0) return 'no';
+    if (endpoint.count === 0) return 'unknown, no request was observed';
+    return 'unknown, no request without credentials got a 2xx response';
+  }
+
   #auth(endpoint: Endpoint, roles: CookieRoles): PresenterBlock {
     const auth = endpoint.auth;
     const credentialCookies = new Set(Credentials.cookies(endpoint, roles));
@@ -175,7 +188,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       this.heading('Auth'),
       ...this.definitions([
         ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles)) || 'none'],
-        ['Anonymous', auth.anonymous === true ? 'yes, a request without credentials succeeded' : 'no'],
+        ['Anonymous', EndpointDetailPresenter.anonymous(endpoint, roles)],
         ['Credential cookies', credentialCookies.size > 0 ? this.ansi.clean([...credentialCookies].join(', ')) : 'none'],
         ['Other cookies', others.length > 0 ? this.ansi.clean(others.join(', ')) + ' (sent by the browser; not credentials)' : 'none'],
         ['Bearer', auth.bearer ? 'yes' : 'no'],
@@ -257,10 +270,21 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   }
 
   #curl(endpoint: Endpoint): PresenterBlock {
+    const variants = RequestBodies.variants(endpoint);
+    const primary = variants.length > 0 && endpoint.requestBody ? RequestBodies.mediaType(endpoint.requestBody) : undefined;
+    const lines = this.#example(endpoint, primary);
+    for (const variant of variants) lines.push('', ...this.#example(variant.endpoint, variant.mediaType));
+    const refusals = Credentials.refusals(endpoint);
+    if (refusals.length > 0) lines.push('', ...TextLayout.wrap(EndpointDetailPresenter.refusedExample(refusals), this.width));
+    return lines;
+  }
+
+  #example(endpoint: Endpoint, mediaType: string | undefined): string[] {
     const sample = EndpointDetailPresenter.exampleRequest(endpoint);
     const command = Curl.curlCommand(sample, { variables: 'shell' });
     const names = Curl.placeholderNames(sample);
-    const lines = [this.heading('Example request (curl)'), ...this.#shell.fold(command, this.width)];
+    const title = mediaType === undefined ? 'Example request (curl)' : `Example request (curl, ${this.ansi.clean(mediaType)})`;
+    const lines = [this.heading(title), ...this.#shell.fold(command, this.width)];
     if (names.length > 0) lines.push('', ...TextLayout.flow(names, this.width, { prefix: this.ansi.dim('Variables:') + ' ', separator: ' ' }));
     return lines;
   }

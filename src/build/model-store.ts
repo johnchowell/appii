@@ -50,10 +50,18 @@ export class ModelStore {
   }
 
   async save(path: string, model: ApiModel, options: ModelSaveOptions = {}): Promise<void> {
+    await Fs.writeFileAtomic(path, this.text(model), { mode: ModelStore.mode(options) });
+  }
+
+  text(model: ApiModel): string {
     const problems = this.#validator.validate(model);
     if (problems.length > 0) {
       throw new AppiiError('INTERNAL', `Refusing to save an invalid API model: ${Text.summarize(problems, ModelStore.SUMMARY_PROBLEMS)}`, { details: { problems } });
     }
-    await Fs.writeFileAtomic(path, ModelStore.serialize(model), { mode: options.private === true ? ModelStore.PRIVATE_MODE : ModelStore.SHARED_MODE });
+    return ModelStore.serialize(model);
+  }
+
+  static mode(options: ModelSaveOptions = {}): number {
+    return options.private === true ? ModelStore.PRIVATE_MODE : ModelStore.SHARED_MODE;
   }
 }

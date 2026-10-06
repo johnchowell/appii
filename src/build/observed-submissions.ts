@@ -27,6 +27,7 @@ export class ObservedSubmissions {
   readonly #navigations = new Map<string, Exchange[]>();
   readonly #scripts = new Map<string, Exchange[]>();
   readonly #documents = new Set<string>();
+  readonly #pages = new Set<string>();
   readonly #parsed = new Map<string, ReadonlyMap<string, readonly string[]> | undefined>();
 
   constructor(capture: Capture, deps: ObservedSubmissionsDeps) {
@@ -36,6 +37,7 @@ export class ObservedSubmissions {
       if (!url) continue;
       if (exchange.resourceType === ObservedSubmissions.NAVIGATION) {
         this.#documents.add(HtmlPages.documentKey(exchange.request.url));
+        if (exchange.request.method.toUpperCase() === ObservedSubmissions.QUERY_METHOD) this.#pages.add(url.origin + url.pathname);
         if (exchange.pageUrl === undefined || exchange.redirectedFrom !== undefined) continue;
         ObservedSubmissions.#push(this.#navigations, ObservedSubmissions.key(exchange.pageUrl, exchange.request.method, url), exchange);
       } else if (ObservedSubmissions.SCRIPT_TYPES.has(exchange.resourceType) && exchange.pageUrl !== undefined) {
@@ -53,6 +55,10 @@ export class ObservedSubmissions {
     target.hash = '';
     if (method.toUpperCase() === ObservedSubmissions.QUERY_METHOD) target.search = '';
     return JSON.stringify([HtmlPages.documentKey(pageUrl), method.toUpperCase(), target.href]);
+  }
+
+  loadedPage(url: URL): boolean {
+    return this.#pages.has(url.origin + url.pathname);
   }
 
   serverDocument(pageUrl: string): boolean {

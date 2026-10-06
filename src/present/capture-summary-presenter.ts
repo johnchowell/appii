@@ -7,6 +7,7 @@ import type { Definition } from './text-layout.js';
 export interface CaptureSummaryInput {
   capture: Capture;
   file?: string;
+  written?: string;
   next?: string;
 }
 
@@ -29,7 +30,7 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
   }
 
   render(input: CaptureSummaryInput): string {
-    const title = input.file === undefined ? 'Capture' : `Capture saved to ${input.file}`;
+    const title = input.file !== undefined ? `Capture saved to ${input.file}` : input.written !== undefined ? `Capture written to ${input.written}` : 'Capture';
     return this.compose([
       this.heading(title),
       this.definitions(this.#facts(input.capture)),

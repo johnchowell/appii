@@ -27,6 +27,10 @@ export class OpenApiSecurity {
     this.#roles = Credentials.roles(model);
   }
 
+  get roles(): CookieRoles {
+    return this.#roles;
+  }
+
   requirements(endpoint: Endpoint): SecurityRequirement[] {
     const csrf = endpoint.auth.csrf.filter((token) => token.location === 'header').map((token) => this.#csrfHeader(token));
     const alternatives: string[][] = [];

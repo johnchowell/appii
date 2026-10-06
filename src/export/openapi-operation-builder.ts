@@ -1,6 +1,7 @@
 import { BodyParser } from '../build/index.js';
 import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, JsonSchema } from '../model/index.js';
-import { EndpointIndex, Http, Json, Schema, Text } from '../shared/index.js';
+import { Credentials, EndpointIndex, Http, Json, RequestBodies, Schema, Text } from '../shared/index.js';
+import type { CookieRoles } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 import type { TokenSourceMarkup } from './helpers.js';
 import { OpenApiComponents } from './openapi-components.js';
@@ -32,6 +33,8 @@ export class OpenApiOperationBuilder {
   static readonly COMPLEX_TYPES: ReadonlySet<string> = new Set(['object', 'array']);
   static readonly JSON_LINES_KEY = 'x-appii-json-lines';
   static readonly JSON_LINES_NOTE = 'The body is JSON lines: one JSON value per line. The schema describes the list of these values.';
+  static readonly AUTH_KEY = 'x-appii-auth';
+  static readonly UNOBSERVED_AUTH = 'required-unobserved';
   static readonly FILE_EXAMPLE_NOTE = 'A file part shows the name of the file that was sent; its media type is in the encoding of the part.';
 
   readonly #schemas: OpenApiSchemaAdapter;
@@ -48,7 +51,7 @@ export class OpenApiOperationBuilder {
     const operation: OpenApiObject = {
       operationId: ctx.operationId,
       summary: Helpers.summary(endpoint),
-      description: this.description(endpoint),
+      description: this.description(endpoint, ctx.security.roles),
       tags: [Helpers.group(endpoint)],
     };
     const parameters = this.parameters(endpoint, ctx);
@@ -56,7 +59,9 @@ export class OpenApiOperationBuilder {
     const body = this.requestBody(endpoint, ctx);
     if (body) operation.requestBody = body;
     operation.responses = this.responses(endpoint, ctx);
-    operation.security = ctx.security.requirements(endpoint);
+    const requirements = ctx.security.requirements(endpoint);
+    if (requirements.length > 0 || Credentials.refusals(endpoint, ctx.security.roles).length === 0) operation.security = requirements;
+    else operation[OpenApiOperationBuilder.AUTH_KEY] = OpenApiOperationBuilder.UNOBSERVED_AUTH;
     if (endpoint.auth.csrf.length > 0) operation['x-appii-csrf'] = Json.clone(endpoint.auth.csrf);
     if (endpoint.form) operation['x-appii-form'] = { pageUrl: endpoint.form.pageUrl, selector: endpoint.form.selector, enctype: endpoint.form.enctype };
     if (endpoint.kind === 'graphql' && endpoint.operationName !== undefined) operation['x-appii-graphql-operations'] = [endpoint.operationName];
@@ -64,13 +69,15 @@ export class OpenApiOperationBuilder {
     return operation;
   }
 
-  description(endpoint: Endpoint): string {
+  description(endpoint: Endpoint, roles?: CookieRoles): string {
     const lines: string[] = [];
     lines.push(
       endpoint.count > 0
         ? `Observed ${Text.plural(endpoint.count, 'time')} in the captured traffic (${endpoint.kind}).`
         : `Not observed in the captured traffic; inferred from an HTML form (${endpoint.kind}).`,
     );
+    const refusals = Credentials.refusals(endpoint, roles);
+    if (refusals.length > 0) lines.push(`Answered ${refusals.join(' and ')} to requests without credentials; the credential this endpoint expects was not captured.`);
     if (endpoint.form) lines.push(`Submitted by the form \`${endpoint.form.selector}\` on ${endpoint.form.pageUrl} (${endpoint.form.enctype}).`);
     for (const token of endpoint.auth.csrf) {
       lines.push(`CSRF token \`${token.name}\` (${token.location}) comes from ${Helpers.tokenSource(token, OpenApiOperationBuilder.MARKUP)}.`);
@@ -110,10 +117,10 @@ export class OpenApiOperationBuilder {
   }
 
   requestBody(endpoint: Endpoint, ctx: OperationContext): OpenApiObject | undefined {
-    const shapes = Helpers.requestBodies(endpoint);
+    const shapes = RequestBodies.shapes(endpoint);
     if (shapes.length === 0) return undefined;
     const content: OpenApiObject = {};
-    shapes.forEach((shape, i) => Json.setOwn(content, Helpers.mediaType(shape), this.#requestMedia(endpoint, shape, i === 0 ? 'request' : `request ${shape.kind}`, ctx)));
+    shapes.forEach((shape, i) => Json.setOwn(content, RequestBodies.mediaType(shape), this.#requestMedia(endpoint, shape, i === 0 ? 'request' : `request ${shape.kind}`, ctx)));
     const out: OpenApiObject = { required: true, content };
     if (shapes.some((shape) => shape.jsonLines === true)) out.description = OpenApiOperationBuilder.JSON_LINES_NOTE;
     return out;
@@ -171,7 +178,7 @@ export class OpenApiOperationBuilder {
       const types = accept
         .split(',')
         .map((token) => token.trim().toLowerCase())
-        .filter((token) => Helpers.MEDIA_RANGE.test(token));
+        .filter((token) => RequestBodies.MEDIA_RANGE.test(token));
       if (types.length > 0) return [...new Set(types)].join(', ');
     }
     return typeof schema.contentMediaType === 'string' ? schema.contentMediaType : undefined;
@@ -190,7 +197,7 @@ export class OpenApiOperationBuilder {
       const examples = this.#examples(body, undefined);
       if (examples) media.examples = examples;
       if (body.jsonLines === true) media[OpenApiOperationBuilder.JSON_LINES_KEY] = true;
-      out.content = { [Helpers.mediaType(body)]: media };
+      out.content = { [RequestBodies.mediaType(body)]: media };
     }
     return out;
   }

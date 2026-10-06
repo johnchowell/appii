@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, EndpointResponse } from '../model/index.js';
-import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, SampleText, Samples, Schema, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, Samples, SampleText, Schema, Text } from '../shared/index.js';
 import type { SampleRenderer } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -27,7 +27,7 @@ export class PostmanRequestBuilder {
   });
 
   items(endpoint: Endpoint, ctx: PostmanItemContext): PostmanObject[] {
-    return [this.item(endpoint, ctx), ...Helpers.bodyVariants(endpoint).map((variant) => this.item(variant.endpoint, ctx, ` (${variant.mediaType})`))];
+    return [this.item(endpoint, ctx), ...RequestBodies.variants(endpoint).map((variant) => this.item(variant.endpoint, ctx, ` (${variant.mediaType})`))];
   }
 
   item(endpoint: Endpoint, ctx: PostmanItemContext, suffix = ''): PostmanObject {

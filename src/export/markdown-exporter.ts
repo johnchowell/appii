@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, Endpoint, ParamInfo } from '../model/index.js';
-import { Credentials, Curl, EndpointIndex, Http, Json, Meta, Schema, Text } from '../shared/index.js';
+import { Credentials, Curl, EndpointIndex, Http, Json, Meta, RequestBodies, Schema, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -139,7 +139,7 @@ export class MarkdownExporter extends BaseExporter {
     out.push(facts.join('\n'));
     const params = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams];
     if (params.length > 0) out.push('**Parameters**', this.#params(params));
-    for (const shape of Helpers.requestBodies(endpoint)) out.push(`**Request body** (${md.code(Helpers.bodyLabel(shape))})`, ...this.#body(shape));
+    for (const shape of RequestBodies.shapes(endpoint)) out.push(`**Request body** (${md.code(Helpers.bodyLabel(shape))})`, ...this.#body(shape));
     if (endpoint.responses.length > 0) {
       out.push(
         '**Responses**',
@@ -161,7 +161,7 @@ export class MarkdownExporter extends BaseExporter {
     }
     if (MarkdownExporter.#unsafePatterns(endpoint)) out.push(md.text(MarkdownExporter.UNSAFE_PATTERN_NOTE));
     out.push('**Example request**', ...this.#example(model, endpoint, options));
-    for (const variant of Helpers.bodyVariants(endpoint)) out.push(`**Example request** (${md.code(variant.mediaType)})`, ...this.#example(model, variant.endpoint, options));
+    for (const variant of RequestBodies.variants(endpoint)) out.push(`**Example request** (${md.code(variant.mediaType)})`, ...this.#example(model, variant.endpoint, options));
     return out.join('\n\n');
   }
 
@@ -176,7 +176,7 @@ export class MarkdownExporter extends BaseExporter {
 
   static #unsafePatterns(endpoint: Endpoint): boolean {
     const schemas = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams].map((param) => param.schema);
-    for (const shape of Helpers.requestBodies(endpoint)) if (shape.schema) schemas.push(shape.schema);
+    for (const shape of RequestBodies.shapes(endpoint)) if (shape.schema) schemas.push(shape.schema);
     return schemas.some((schema) => Schema.unsafePatterns(schema).length > 0);
   }
 
@@ -189,7 +189,7 @@ export class MarkdownExporter extends BaseExporter {
         param.in,
         param.required ? 'yes' : 'no',
         md.text(Schema.typeLabel(param.schema)),
-        md.text(Schema.constraintSummary(param.schema).join('; ')),
+        md.text(Schema.constraintSummary(param.schema, Schema.FULL_SUMMARY).join('; ')),
         param.examples.map((example) => md.code(example, true)).join(', '),
       ]),
     );

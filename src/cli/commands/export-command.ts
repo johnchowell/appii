@@ -1,7 +1,7 @@
 import { ModelStore } from '../../build/index.js';
 import { ExporterRegistry } from '../../export/index.js';
 import type { ExportOptions } from '../../export/index.js';
-import { AppiiError, EndpointIndex, Fs, Meta, Text } from '../../shared/index.js';
+import { AppiiError, EndpointIndex, Meta, Text } from '../../shared/index.js';
 import type { ApiModel, Capture } from '../../model/index.js';
 import type { CliContext } from '../cli-context.js';
 import { Command } from '../command.js';
@@ -12,6 +12,7 @@ import { Helpers } from '../helpers.js';
 import { InputLoader } from '../input-loader.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
+import { OutputTarget } from '../output-target.js';
 import { UsageError } from '../usage-error.js';
 
 export interface ExportCommandDeps extends CommandDeps {
@@ -20,7 +21,6 @@ export interface ExportCommandDeps extends CommandDeps {
 }
 
 export class ExportCommand extends Command {
-  static readonly STDOUT = '-';
   static readonly HAR_FORMAT = 'har';
 
   readonly spec: CommandSpec;
@@ -103,14 +103,10 @@ export class ExportCommand extends Command {
     if (exporter.format === ExportCommand.HAR_FORMAT && capture !== undefined && !ExportCommand.matchesCapture(loaded.model, options.endpoints, capture)) {
       ctx.err(ctx.ansi.clean(`warning: ${captureFile ?? file} holds none of the sample requests of the exported endpoints; was ${file} built from it?`));
     }
-    if (out === ExportCommand.STDOUT) {
-      ctx.write(result.content);
-      return ExitCode.OK;
-    }
-    const target = await Helpers.outputFile(ctx, out, result.filename);
-    if (await Fs.sameFile(target, input)) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
-    await Fs.writeFileAtomic(target, result.content, redact ? {} : { mode: ModelStore.PRIVATE_MODE });
-    ctx.out(ctx.ansi.clean(`Wrote ${ctx.display(target)} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
+    const target = await OutputTarget.of(ctx, out, result.filename);
+    if (await target.overwrites(input)) throw new UsageError(Helpers.overwriteMessage(out, result.filename));
+    await target.write(result.content, redact ? {} : { mode: ModelStore.PRIVATE_MODE });
+    if (!target.stdout) ctx.out(ctx.ansi.clean(`Wrote ${target.label} (${result.format}, ${Text.plural(result.endpointCount, 'endpoint')})`));
     return ExitCode.OK;
   }
 

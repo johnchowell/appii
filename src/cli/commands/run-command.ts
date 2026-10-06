@@ -14,6 +14,7 @@ import { ExitCode } from '../exit-code.js';
 import { Helpers } from '../helpers.js';
 import { OptionReader } from '../option-reader.js';
 import type { OptionValues } from '../option-reader.js';
+import { OutputTarget } from '../output-target.js';
 import { UsageError } from '../usage-error.js';
 
 export interface RunCommandDeps extends CommandDeps {
@@ -78,21 +79,23 @@ export class RunCommand extends Command {
     const buildOptions = this.#build.read(values, ctx);
     const url = this.argument(positionals, 0, '<url>');
     this.expectArguments(positionals, 1);
-    const dir = ctx.resolve(OptionReader.string(values, 'out-dir') ?? RunCommand.DEFAULT_OUT_DIR);
+    const outDir = OptionReader.string(values, 'out-dir');
+    OutputTarget.refuseStdout('--out-dir', outDir, `run writes ${RunCommand.CAPTURE_FILE} and ${RunCommand.MODEL_FILE} into a directory; use --out-dir <dir>, or capture and build -o - for stdout`);
+    const dir = ctx.resolve(outDir ?? RunCommand.DEFAULT_OUT_DIR);
     if ((await Fs.exists(dir)) && !(await Helpers.isDirectory(dir))) throw new UsageError(`--out-dir ${ctx.display(dir)} is a file, not a directory`);
     await Fs.ensureDir(dir);
-    const captureFile = join(dir, RunCommand.CAPTURE_FILE);
-    const modelFile = join(dir, RunCommand.MODEL_FILE);
+    const captureFile = OutputTarget.file(ctx, join(dir, RunCommand.CAPTURE_FILE));
+    const modelFile = OutputTarget.file(ctx, join(dir, RunCommand.MODEL_FILE));
     await this.#saver.preflight([captureFile, modelFile]);
     const capture = await this.#runner.record({ ...captureOptions, url }, ctx).catch(async (err: unknown) => {
-      throw await this.#saver.keepPartial(err, captureFile, ctx.display(captureFile));
+      throw await this.#saver.keepPartial(err, captureFile);
     });
     await this.#saver.save(captureFile, capture);
-    ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: ctx.display(captureFile) }));
+    ctx.out(new PresenterFactory(ctx.presenterOptions()).captureSummary().render({ capture, file: captureFile.label }));
     ctx.out('');
     await this.#step.run(capture, { out: modelFile, source: RunCommand.CAPTURE_FILE, options: buildOptions, hints: false }, ctx);
     const formats = this.#registry.list().map((exporter) => exporter.format).join(', ');
-    const model = BasePresenter.fileArgument(ctx.display(modelFile));
+    const model = BasePresenter.fileArgument(modelFile.label);
     ctx.out('');
     ctx.out(TextLayout.wrap(`Next: ${Meta.APP_NAME} export ${model} --format <format>, where <format> is one of ${formats}`, ctx.width).join('\n'));
     return ExitCode.OK;

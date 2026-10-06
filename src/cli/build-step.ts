@@ -4,9 +4,10 @@ import { PresenterFactory } from '../present/index.js';
 import { Text } from '../shared/index.js';
 import type { ApiModel, Capture } from '../model/index.js';
 import type { CliContext } from './cli-context.js';
+import type { OutputTarget } from './output-target.js';
 
 export interface BuildRequest {
-  out: string;
+  out: OutputTarget;
   source?: string;
   options: BuildOptions;
   hints?: boolean;
@@ -37,15 +38,15 @@ export class BuildStep {
 
   async run(capture: Capture, request: BuildRequest, ctx: CliContext): Promise<ApiModel> {
     const model = this.build(capture, request.options, request.source);
-    await this.#models.save(request.out, model, { private: request.options.redact === false });
-    ctx.out(this.report(model, request.out, ctx, request.hints ?? true));
+    await request.out.write(this.#models.text(model), { mode: ModelStore.mode({ private: request.options.redact === false }) });
+    request.out.report(this.report(model, request.out, ctx, request.hints ?? true));
     return model;
   }
 
-  report(model: ApiModel, out: string, ctx: CliContext, hints = true): string {
-    const file = ctx.display(out);
-    const presenters = new PresenterFactory(ctx.presenterOptions({ file, hints }));
-    const wrote = ctx.ansi.clean(`Wrote ${file} (${Text.plural(model.endpoints.length, 'endpoint')})`);
+  report(model: ApiModel, out: OutputTarget, ctx: CliContext, hints = true): string {
+    const presenters = new PresenterFactory(ctx.presenterOptions({ file: out.label, hints: hints && !out.stdout }));
+    const endpoints = Text.plural(model.endpoints.length, 'endpoint');
+    const wrote = ctx.ansi.clean(out.stdout ? `Wrote the API model to ${out.label} (${endpoints})` : `Wrote ${out.label} (${endpoints})`);
     return [wrote, presenters.summary().render(model), presenters.list().render(model)].join('\n\n');
   }
 }

@@ -1,5 +1,5 @@
 import type { ApiModel, BodyShape, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
-import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
+import { CharsetEncoder, Credentials, EndpointIndex, Http, Json, RequestBodies, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
@@ -134,14 +134,14 @@ export class TsEndpointWriter {
     declarations.push(`export interface ${headerType} ${headers.body}`);
     const shared: RequestMember[] = [...members, { name: 'headers', type: headerType, required: headers.required }];
     if (endpoint.auth.bearer) shared.push({ name: 'accessToken', type: 'string', required: false });
-    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : Helpers.bodyVariants(endpoint);
+    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : RequestBodies.variants(endpoint);
     const body = this.#body(endpoint);
     let bodyType: string | undefined;
     const requestMembers = [...shared];
     if (body) {
       bodyType = name('Body');
       declarations.push(body.schema ? this.#types.declaration(bodyType, body.schema) : `export type ${bodyType} = ${body.type};`);
-      if (variants.length > 0 && endpoint.requestBody) requestMembers.unshift({ name: 'contentType', type: Text.jsString(Helpers.mediaType(endpoint.requestBody)), required: false });
+      if (variants.length > 0 && endpoint.requestBody) requestMembers.unshift({ name: 'contentType', type: Text.jsString(RequestBodies.mediaType(endpoint.requestBody)), required: false });
       requestMembers.push({ name: 'body', type: bodyType, required: body.required });
     }
     const requestType = name('Request');
@@ -206,6 +206,8 @@ export class TsEndpointWriter {
           : `Needs the credential cookie ${names}: log in through this client first (its cookie jar keeps the cookie) or pass it in the cookies option.`,
       );
     }
+    const refusals = Credentials.refusals(endpoint, roles);
+    if (refusals.length > 0) lines.push(`The server answered ${refusals.join(' and ')} to a request without credentials; the credential it expects was not captured. Pass it in the headers or cookies option.`);
     if (Samples.basicAuth(endpoint)) lines.push("Needs HTTP Basic credentials: set the authorization header to 'Basic ' followed by the base64 of user:password.");
     if (endpoint.auth.bearer) {
       lines.push(
@@ -246,7 +248,7 @@ export class TsEndpointWriter {
       if (defaults && Object.keys(defaults).length > 0) body.defaults = defaults;
       spec.body = body;
     }
-    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : Helpers.bodyVariants(endpoint);
+    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : RequestBodies.variants(endpoint);
     if (variants.length > 0 && shape) spec.bodies = [shape, ...variants.map((variant) => variant.shape)].map((each) => TsEndpointWriter.#bodySpec(each));
     if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === true ? 'optional' : 'required';
     const lines = endpoint.responses.filter((response) => response.body?.jsonLines === true).map((response) => response.status);
@@ -257,7 +259,7 @@ export class TsEndpointWriter {
   }
 
   static #bodySpec(shape: BodyShape): Record<string, unknown> {
-    const out: Record<string, unknown> = { kind: shape.kind, mimeType: shape.mimeType, contentType: Helpers.mediaType(shape) };
+    const out: Record<string, unknown> = { kind: shape.kind, mimeType: shape.mimeType, contentType: RequestBodies.mediaType(shape) };
     if (shape.jsonLines === true) out.jsonLines = true;
     return out;
   }

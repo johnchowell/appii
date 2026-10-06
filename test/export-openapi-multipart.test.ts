@@ -83,6 +83,8 @@ describe('OpenAPI multipart examples match the schema of their file parts (NEW-3
     const items = (postman.item as Json[]).flatMap((folder) => folder.item as Json[]);
     const formdata = items.map((item) => item.request.body?.formdata as Json[] | undefined).find((entries) => entries?.some((entry) => entry.key === 'upload'));
     assert.deepEqual(formdata?.find((entry) => entry.key === 'upload'), { key: 'upload', type: 'file', src: 'notes.txt' });
-    assert.match(new CurlExporter().export(built).content, /-F 'upload=@notes\.txt'/);
+    const script = new CurlExporter().export(built).content;
+    assert.match(script, /appii_value='notes\.txt'\n {2}\[\[ -z "\$\{APPII_UPLOAD_FILE:-\}" \]\] \|\| appii_value="\$APPII_UPLOAD_FILE"\n {2}local APPII_UPLOAD_FILE="\$appii_value"/);
+    assert.match(script, /-F "upload=@\$\{APPII_UPLOAD_FILE\}"/);
   });
 });
