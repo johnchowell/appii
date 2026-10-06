@@ -20,8 +20,8 @@ describe('OpenAPI security requirements', () => {
   });
 
   test('cookies of a model without credential sets are sent together, and endpoints that were never observed can also be called without credentials', () => {
-    const cookies = ExportModel.endpoint({ method: 'GET', path: '/api/items', auth: { cookies: ['auth', 'sid'], headers: [], bearer: false, csrf: [] } });
-    const predicted = ExportModel.endpoint({ method: 'GET', path: '/search', count: 0, auth: { cookies: ['sid'], headers: [], bearer: false, csrf: [] } });
+    const cookies = ExportModel.endpoint({ method: 'GET', path: '/api/items', auth: { cookies: ['auth', 'sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [] } });
+    const predicted = ExportModel.endpoint({ method: 'GET', path: '/search', count: 0, auth: { cookies: ['sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [] } });
     const open = ExportModel.endpoint({ method: 'GET', path: '/', count: 0 });
     const model = ExportModel.model([cookies, predicted, open], {
       cookies: ['auth', 'sid'].map((name) => ({

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { load } from 'cheerio';
 import { AppiiError, Http, Json, Meta, Text } from '../shared/index.js';
 import { CACHE_KINDS } from '../model/index.js';
@@ -52,6 +52,9 @@ interface ImportedExchange {
 
 export class HarConverter {
   static readonly VERSION = '1.2';
+  static readonly ENTRY_ID_PREFIX = 'har-';
+  static readonly ENTRY_ID_HASH = 'sha256';
+  static readonly ENTRY_ID_LENGTH = 32;
   static readonly HTML_MIMES: ReadonlySet<string> = new Set(['text/html', 'application/xhtml+xml']);
   static readonly REDIRECT_STATUSES: ReadonlySet<number> = Helpers.REDIRECT_STATUSES;
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
@@ -395,7 +398,7 @@ export class HarConverter {
     const served = HarConverter.#servedBy(raw, res, response !== undefined);
     if (served && response) delete response.remoteAddress;
     const exchange: Exchange = {
-      id: typeof raw._appiiId === 'string' && raw._appiiId ? raw._appiiId : Http.newId(),
+      id: HarConverter.#entryId(raw, index),
       source: 'har',
       resourceType: resourceType ?? 'other',
       ...(typeof raw._appiiPageUrl === 'string' && raw._appiiPageUrl ? { pageUrl: raw._appiiPageUrl } : {}),
@@ -408,6 +411,12 @@ export class HarConverter {
       ...(served ?? {}),
     };
     return { exchange, typed: resourceType !== undefined };
+  }
+
+  static #entryId(raw: Record<string, unknown>, index: number): string {
+    if (typeof raw._appiiId === 'string' && raw._appiiId) return raw._appiiId;
+    const digest = createHash(HarConverter.ENTRY_ID_HASH).update(JSON.stringify([index, raw])).digest('hex');
+    return HarConverter.ENTRY_ID_PREFIX + digest.slice(0, HarConverter.ENTRY_ID_LENGTH);
   }
 
   static #inheritTypes(exchanges: readonly Exchange[], untyped: ReadonlySet<Exchange>): void {
@@ -455,7 +464,7 @@ export class HarConverter {
     const error = typeof raw._appiiError === 'string' ? raw._appiiError : typeof res._error === 'string' && res._error ? res._error : undefined;
     const closedAt = typeof raw._appiiClosedAt === 'string' && !Number.isNaN(Date.parse(raw._appiiClosedAt)) ? raw._appiiClosedAt : undefined;
     return {
-      id: typeof raw._appiiId === 'string' && raw._appiiId ? raw._appiiId : Http.newId(),
+      id: HarConverter.#entryId(raw, index),
       url: HarConverter.#socketUrl(req.url as string),
       ...(typeof raw._appiiPageUrl === 'string' && raw._appiiPageUrl ? { pageUrl: raw._appiiPageUrl } : {}),
       openedAt,

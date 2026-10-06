@@ -26,6 +26,7 @@ export { CliBrowserLauncher } from './cli-browser-launcher.js';
 export { CaptureProgress } from './capture-progress.js';
 export type { CaptureProgressOptions } from './capture-progress.js';
 export { CaptureRunner } from './capture-runner.js';
+export { LoginReport } from './login-report.js';
 export { CaptureSaver } from './capture-saver.js';
 export { OutputTarget } from './output-target.js';
 export type { OutputData, OutputWriteOptions } from './output-target.js';

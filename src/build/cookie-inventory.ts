@@ -26,10 +26,12 @@ interface Entry {
   live: boolean;
   readonly setBy: Set<Endpoint>;
   readonly usedBy: Set<Endpoint>;
+  readonly revokedBy: Set<Endpoint>;
 }
 
 export class CookieInventory {
   static readonly SECRET_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['session', 'auth', 'csrf']);
+  static readonly LOGOUT_ROLE = 'logout';
 
   readonly #classifier: CookieClassifier;
   readonly #parser: CookieParser;
@@ -70,10 +72,10 @@ export class CookieInventory {
       return entry;
     };
     for (const cookie of capture.cookies) {
-      add(CookieParser.key(cookie), { cookie, final: true, stub: false, live: true, setBy: new Set(), usedBy: new Set() });
+      add(CookieParser.key(cookie), { cookie, final: true, stub: false, live: true, setBy: new Set(), usedBy: new Set(), revokedBy: new Set() });
     }
     const served = capture.exchanges.filter((exchange) => Http.reachedServer(exchange));
-    for (const exchange of served) this.#observeSet(exchange, entries, add, endpointOf);
+    for (const exchange of served) this.#observeSet(exchange, entries, add, endpointOf, evidence);
     for (const exchange of served) CookieInventory.#observeSent(exchange, byName, add, endpointOf);
     for (const endpoint of endpoints) {
       if (endpoint.count > 0) continue;
@@ -97,6 +99,7 @@ export class CookieInventory {
     entries: Map<string, Entry>,
     add: (key: string, entry: Entry) => Entry,
     endpointOf: (exchange: Exchange) => Endpoint | undefined,
+    evidence: CredentialEvidence | undefined,
   ): void {
     const response = exchange.response;
     if (!response) return;
@@ -113,7 +116,7 @@ export class CookieInventory {
       const key = CookieParser.key(parsed);
       const live = survivors.get(key);
       let entry = entries.get(key);
-      if (!entry) entry = add(key, { cookie: live ?? parsed, final: false, stub: false, live: live !== undefined, setBy: new Set(), usedBy: new Set() });
+      if (!entry) entry = add(key, { cookie: live ?? parsed, final: false, stub: false, live: live !== undefined, setBy: new Set(), usedBy: new Set(), revokedBy: new Set() });
       else if (!entry.final) {
         if (live) {
           entry.cookie = live;
@@ -123,6 +126,9 @@ export class CookieInventory {
         }
       }
       if (endpoint) entry.setBy.add(endpoint);
+      if (endpoint?.role === CookieInventory.LOGOUT_ROLE && evidence?.isCredentialRole(parsed.name) === true) {
+        if (live === undefined || parsed.value === '' || evidence.issued(parsed.name, parsed.value, exchange) === 'anonymous') entry.revokedBy.add(endpoint);
+      }
     }
   }
 
@@ -151,7 +157,7 @@ export class CookieInventory {
           sameSite: null,
           hostOnly: true,
         };
-        known.push(add(CookieParser.key(cookie), { cookie, final: false, stub: true, live: true, setBy: new Set(), usedBy: new Set() }));
+        known.push(add(CookieParser.key(cookie), { cookie, final: false, stub: true, live: true, setBy: new Set(), usedBy: new Set(), revokedBy: new Set() }));
       }
       if (endpoint) for (const entry of known) entry.usedBy.add(endpoint);
     }
@@ -178,6 +184,8 @@ export class CookieInventory {
     const role = evidence ? evidence.role(cookie.name) : this.#classifier.classify(cookie.name);
     const ids = (set: ReadonlySet<Endpoint>): string[] =>
       [...set].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)).map((endpoint) => endpoint.id);
+    const issuedBy = ids(new Set([...entry.setBy].filter((endpoint) => endpoint.login?.issues.cookies.includes(cookie.name) === true)));
+    const revokedBy = ids(entry.revokedBy);
     return {
       name: cookie.name,
       domain: cookie.hostOnly ? cookie.domain : `.${cookie.domain}`,
@@ -191,6 +199,8 @@ export class CookieInventory {
       role,
       setBy: ids(entry.setBy),
       usedBy: ids(entry.usedBy),
+      ...(issuedBy.length > 0 ? { issuedBy } : {}),
+      ...(revokedBy.length > 0 ? { revokedBy } : {}),
       valueExample: role === 'preference' || !this.#redactor.enabled ? cookie.value : Text.redact(cookie.value, CookieInventory.SECRET_ROLES.has(role) || Redactor.looksSecret(cookie.value)),
     };
   }

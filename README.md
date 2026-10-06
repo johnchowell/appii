@@ -53,6 +53,67 @@ could make the browser send the request again (a compressed response with a
 capture to stdout and the summary to stderr, so `appii capture ... -o - | jq`
 works.
 
+#### Several URLs and logging in
+
+```sh
+appii capture https://example.com/ https://example.com/pricing https://example.com/docs --headless
+```
+
+opens the URLs in order in the same tab and waits until the network is idle
+after each one. With a window, appii opens them in order and then leaves the
+window to you.
+
+To log in during the capture, name the fields of the login form with
+`--login`, once per field:
+
+```sh
+export APPII_LOGIN_USERNAME='me@example.com'
+export APPII_LOGIN_PASSWORD='...'
+appii capture https://example.com/login https://example.com/account --headless \
+  --login username --login password -o authed.json
+```
+
+After the first URL has loaded and the network is idle, appii looks for the
+form whose controls include every given name. The controls of a form are the
+ones the HTML standard gives it (a control outside the `<form>` element that
+names it with the `form` attribute counts), open shadow roots are searched, and
+a form that a script renders late is waited for, up to `--read-timeout`. When
+two forms match, the visible one is used. appii then fills the form the way a
+person would: it types into text fields so that the page sees `input` events
+(a submit button that a script enables once the fields are filled works),
+checks the checkbox or radio button with the given value and picks the option
+of a select. It submits the form by clicking its default button, which is the
+first submit button in tree order, or, when the form has no visible submit
+button, by pressing Enter in the last text field it filled (implicit
+submission; as in a browser, Enter does not submit a form that has no submit
+button and more than one text field). `--login go=second`, with the name of a
+submit button, clicks that button instead. appii waits until the page has
+loaded and the network is idle, and then opens the other URLs.
+
+`--login name` without a value reads the value from the environment variable
+`APPII_LOGIN_<NAME>`: the name in upper case, with every character that is not
+a letter or a digit turned into `_` (`--login user[email]` reads
+`APPII_LOGIN_USER_EMAIL_`). It is an error when the variable is not set.
+`--login name=value` gives the value on the command line, where other users of
+the machine can see it, so prefer the variables for secrets. appii never
+prints the values: the progress line, the summary, the warnings and the error
+messages hide them. The capture file is the raw recording and holds the login
+request as the browser sent it; appii writes it readable by you only. The
+model built from it does not hold the password or the credentials.
+
+The summary says that the form was submitted and where it went:
+
+```
+Login: submitted the form on https://example.com/login (username, password) by clicking its submit button;
+       POST https://example.com/login answered 302; now on https://example.com/
+```
+
+appii prints a warning, and keeps the capture, when the submission answered
+with a 4xx status or the login form is still on the page with an empty
+password (the credentials were probably wrong), and when submitting sent no
+request at all. When no form has all the names, the capture stops with an
+error that lists the forms of the page and the names of their controls.
+
 ### build: infer the API
 
 ```sh
@@ -80,6 +141,38 @@ intercepts, and a form that targets a page that was loaded never do, with or
 without `--no-documents`. `-o -` writes the model to stdout and the report to
 stderr.
 
+#### Several captures: update the model after logging in
+
+```sh
+appii capture https://example.com/login --headless -o anon.json
+appii capture https://example.com/login https://example.com/account --headless \
+  --login username --login password -o authed.json
+appii build anon.json authed.json
+```
+
+A capture made without an account already gives the login endpoint: the login
+form becomes an endpoint known from the form, with its fields and its CSRF
+token, even though nobody submitted it. `appii build` with several captures or
+HAR files builds one model from all of them, so the second build updates the
+model with what logging in found (the login request, the credential it issued,
+the endpoints that need it or only appear once logged in, the logout) and keeps
+everything the anonymous capture found.
+
+The inputs are merged before the build: the requests of all inputs (a request
+that is in two inputs, for example when the same file is given twice, counts
+once; requests read from a HAR file get ids derived from the entry, so this
+holds for HAR files too), their page snapshots, storage and WebSockets, and
+their cookies, where for cookies with the same name, domain, host-only flag,
+path and partition key (the cookie identity of RFC 6265bis) the capture that
+ended last wins. The start URL is the one of the earliest capture, and the
+model covers the time from the earliest start to the latest end. With more
+than one input, `source.captures` in `api.json` lists each input with its
+file, start URL, time span and number of requests. `-o` must not name one of
+the inputs.
+
+`appii run` takes `--with <file>` (repeatable) to do the same in one step: it
+records, then builds `api.json` from the earlier captures and the new one.
+
 #### Credentials
 
 A cookie, header or `Authorization` scheme is a credential of an endpoint only
@@ -90,11 +183,13 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
 - `auth.sets` lists the credentials that each successful request carried
   together, such as `["cookie:sid", "http:bearer"]`. Credentials in one set
   are all needed (AND); different sets are alternatives (OR). `auth.anonymous`
-  is true when a request without any credential succeeded (2xx), so the
-  credentials are optional; `list` then shows them with a `?` (`cookie?`).
-  `list --show` says `Anonymous: unknown` when no credential was seen and no
-  request without one got a 2xx answer (only a redirect or a 429, for
-  example), and `no` only when credentials were needed or refused.
+  is `allowed` when a request without a logged-in credential got an answer
+  that is not a failure (not 401 or 403 and not a redirect to the login page;
+  a 302 or 303 to another page counts), so the credentials are optional;
+  `list` then shows them with a `?` (`cookie?`). It is `refused` when every
+  such request failed, and `untested` when no request without credentials was
+  seen, as for an endpoint known only from a form. `auth.seen` says whether
+  requests were seen anonymously, logged in, or both.
 - An endpoint that answered only 401 or 403 to requests without credentials,
   while no credential was captured, needs a credential that appii did not
   see. It is never documented as public: the `AUTH` column shows `401?`,
@@ -332,7 +427,9 @@ forms of the selected endpoints, and `setBy` and `usedBy` name only selected
 endpoints. The site data (`origins`, `source` and `websockets`) does not change.
 The `har` export redacts secrets also in compressed request bodies. If appii
 cannot read a body completely, for example a truncated JSON body, the HAR keeps
-the size and the truncated mark but not the body text.
+the size and the truncated mark but not the body text. To export the `har`
+format from an `api.json`, give the recorded traffic with `--capture <file>`;
+for a model built from several captures, repeat `--capture` for each of them.
 
 ### All in one
 
@@ -341,5 +438,12 @@ appii run https://example.com
 ```
 
 Captures, builds and lists in one step and writes `capture.json` and
-`api.json` into `./appii-out`. Run `appii help <command>` for every option and
+`api.json` into `./appii-out`. It takes several URLs and `--login` like
+`capture`, and `--with <file>` to build `api.json` from earlier captures too:
+
+```sh
+appii run https://example.com/login https://example.com/account --headless \
+  --login username --login password --with anon.json --out-dir authed
+```
+ Run `appii help <command>` for every option and
 `appii --version` (or `appii -V`) for the version.

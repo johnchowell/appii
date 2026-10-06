@@ -211,7 +211,7 @@ export class TsEndpointWriter {
     if (Samples.basicAuth(endpoint)) lines.push("Needs HTTP Basic credentials: set the authorization header to 'Basic ' followed by the base64 of user:password.");
     if (endpoint.auth.bearer) {
       lines.push(
-        endpoint.auth.anonymous === true
+        endpoint.auth.anonymous === 'allowed'
           ? 'Sends a bearer token when the client has one: accessToken in the client options or in the request.'
           : 'Needs a bearer token: accessToken in the client options or in the request, or the authorization header. Without one it throws MissingCredentialError.',
       );
@@ -250,7 +250,7 @@ export class TsEndpointWriter {
     }
     const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : RequestBodies.variants(endpoint);
     if (variants.length > 0 && shape) spec.bodies = [shape, ...variants.map((variant) => variant.shape)].map((each) => TsEndpointWriter.#bodySpec(each));
-    if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === true ? 'optional' : 'required';
+    if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === 'allowed' ? 'optional' : 'required';
     const lines = endpoint.responses.filter((response) => response.body?.jsonLines === true).map((response) => response.status);
     if (lines.length > 0) spec.jsonLines = lines;
     spec.csrf = endpoint.auth.csrf.map((token) => this.#csrf(token, endpoint, ctx));
@@ -358,21 +358,10 @@ export class TsEndpointWriter {
       }
     }
     if (token.source === 'cookie' && token.sourceName !== undefined) {
-      const seed = TsEndpointWriter.#seed(ctx.model, token.sourceName);
+      const seed = Helpers.tokenSeed(ctx.model, token.sourceName);
       if (seed !== undefined) out.seed = seed;
     }
     return out;
-  }
-
-  static #seed(model: ApiModel, cookie: string): string | undefined {
-    const ids = model.cookies.filter((info) => info.name === cookie).flatMap((info) => info.setBy);
-    for (const id of ids) {
-      const setter = model.endpoints.find((endpoint) => endpoint.id === id);
-      if (setter && setter.method.toUpperCase() === 'GET' && Helpers.pathParams(setter.path).length === 0 && setter.queryParams.every((param) => !param.required)) {
-        return setter.origin + setter.path;
-      }
-    }
-    return undefined;
   }
 
   static #actionQuery(endpoint: Endpoint, action: string | undefined): Record<string, string> | undefined {

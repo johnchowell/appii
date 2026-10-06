@@ -5,6 +5,7 @@ import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { CookieClassifier } from './cookie-classifier.js';
 import { CredentialAnalyzer } from './credential-analyzer.js';
+import type { CredentialInput } from './credential-analyzer.js';
 import type { CredentialEvidence } from './credential-evidence.js';
 import { HeaderPolicy } from './header-policy.js';
 import { Redactor } from './redactor.js';
@@ -26,6 +27,7 @@ export type SecretSource = Pick<Capture, 'exchanges' | 'cookies'> & Partial<Pick
 interface Candidate {
   label: string;
   strong: boolean;
+  personal?: boolean;
 }
 
 interface Place {
@@ -86,16 +88,20 @@ export class SecretCollector {
     return SecretNames.isSecret(name) || SecretCollector.isTokenShaped(value);
   }
 
-  collect(capture: SecretSource, names: ReadonlySet<string> = Redactor.NO_NAMES, evidence?: CredentialEvidence): SecretValues {
+  collect(capture: SecretSource, names: ReadonlySet<string> = Redactor.NO_NAMES, evidence?: CredentialEvidence, input: CredentialInput = {}): SecretValues {
     if (!this.#redactor.enabled) return SecretValues.EMPTY;
-    const known = evidence ?? this.#credentials.analyze(capture);
+    const known = evidence ?? this.#credentials.analyze(capture, input);
     const role: RoleOf = (name) => known.role(name);
     const out: Candidates = new Map();
     for (const cookie of capture.cookies) this.#cookie(cookie.name, cookie.value, role, out);
-    for (const exchange of capture.exchanges) this.#exchange(exchange, names, role, out);
+    for (const exchange of capture.exchanges) {
+      this.#exchange(exchange, names, role, out);
+      this.#login(exchange, input, out);
+    }
     let corpus: Corpus | undefined;
     const kept = [...out].filter(([value, candidate]) => {
       if (!SecretValues.worthHiding(value)) return false;
+      if (candidate.personal === true) return true;
       if (!candidate.strong && SecretValues.isWordLike(value)) return false;
       if (SecretCollector.isTokenShaped(value)) return true;
       corpus ??= SecretCollector.#corpus(capture);
@@ -115,6 +121,13 @@ export class SecretCollector {
       if (!SecretCollector.URL_HEADERS.has(header.name.toLowerCase())) continue;
       const target = Http.parseUrl(header.value, exchange.request.url);
       if (target) this.#url(target.href, names, out);
+    }
+  }
+
+  #login(exchange: Exchange, input: CredentialInput, out: Candidates): void {
+    for (const { name, value, password } of this.#credentials.loginSubmission(exchange, input)?.values ?? []) {
+      if (password) SecretCollector.#add(value, name, true, out);
+      else if (SecretValues.worthHiding(value)) out.set(value, { label: name, strong: true, personal: true });
     }
   }
 

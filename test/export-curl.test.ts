@@ -211,7 +211,7 @@ describe('CurlExporter request variables agree with the other renderers', () => 
         { name: 'authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] },
         { name: 'x-csrf-token', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },
       ],
-      auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
+      auth: { cookies: ['csrftoken'], headers: ['authorization'], anonymous: 'untested', bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
     });
     const text = new CurlExporter().export(ExportModel.model([me])).content;
     assert.ok(text.includes(': "${APPII_ACCESS_TOKEN:=}"\n'), text);
@@ -225,7 +225,7 @@ describe('CurlExporter request variables agree with the other renderers', () => 
 
 describe('the default cookie of the curl script follows the shared cookie selection (ARCH-3)', () => {
   test('two cookies with the same name on different sites: each endpoint gets the cookie of its own site', () => {
-    const auth = { cookies: ['sid'], bearer: false, headers: [], csrf: [] };
+    const auth = { cookies: ['sid'], anonymous: 'untested' as const, bearer: false, headers: [], csrf: [] };
     const a = ExportModel.endpoint({ method: 'GET', path: '/a', origin: 'https://a.example.com', auth });
     const b = ExportModel.endpoint({ method: 'GET', path: '/b', origin: 'https://b.example.org', auth });
     const cookie = (domain: string, value: string, usedBy: string[]): ApiModel['cookies'][number] => ({

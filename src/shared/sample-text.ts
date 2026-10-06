@@ -11,6 +11,7 @@ export interface PlaceholderPart {
   readonly kind: 'placeholder';
   readonly name: string;
   readonly encoding?: PlaceholderEncoding;
+  readonly required?: string;
 }
 
 export type SamplePart = LiteralPart | PlaceholderPart;
@@ -52,6 +53,10 @@ export class SampleText {
     return new SampleText([part]);
   }
 
+  static required(name: string, label: string): SampleText {
+    return new SampleText([{ kind: 'placeholder', name: SampleText.placeholderName(name), required: label }]);
+  }
+
   static placeholderName(name: string): string {
     const snake = snakeCase(name) || SampleText.DEFAULT_NAME;
     return /^[0-9]/.test(snake) ? SampleText.NAME_PREFIX + snake : snake;
@@ -79,11 +84,21 @@ export class SampleText {
     return names;
   }
 
+  get requirement(): string | undefined {
+    for (const part of this.parts) if (part.kind === 'placeholder' && part.required !== undefined) return part.required;
+    return undefined;
+  }
+
+  requiring(label: string): SampleText {
+    return new SampleText(this.parts.map((part): SamplePart => (part.kind === 'placeholder' && part.required === undefined ? { ...part, required: label } : part)));
+  }
+
   map(rename: (name: string) => SampleTextInput): SampleText {
     return SampleText.concat(
       ...this.parts.map((part) => {
         if (part.kind === 'literal') return SampleText.literal(part.text);
-        const next = SampleText.of(rename(part.name));
+        const renamed = SampleText.of(rename(part.name));
+        const next = part.required === undefined ? renamed : renamed.requiring(part.required);
         return part.encoding === undefined ? next : next.encoded(part.encoding);
       }),
     );

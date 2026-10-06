@@ -355,7 +355,7 @@ describe('OpenApiExporter edge cases', () => {
     const endpoint = ExportModel.endpoint({
       method: 'GET',
       path: '/api/me',
-      auth: { cookies: [], headers: ['authorization', 'x-api-key'], bearer: true, csrf: [] },
+      auth: { cookies: [], headers: ['authorization', 'x-api-key'], anonymous: 'untested', bearer: true, csrf: [] },
       headerParams: [
         { name: 'accept', in: 'header', required: true, schema: { type: 'string' }, examples: ['application/json'] },
         { name: 'x-api-key', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },

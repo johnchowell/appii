@@ -69,6 +69,22 @@ export class Helpers {
     return method === undefined ? `${head} on ${where}` : `${head} of ${markup.text(method)} ${where}`;
   }
 
+  static tokenSeed(model: ApiModel, cookie: string): string | undefined {
+    const ids = model.cookies.filter((info) => info.name === cookie).flatMap((info) => info.setBy);
+    for (const id of ids) {
+      const setter = model.endpoints.find((endpoint) => endpoint.id === id);
+      if (setter && setter.method.toUpperCase() === 'GET' && Helpers.pathParams(setter.path).length === 0 && setter.queryParams.every((param) => !param.required)) {
+        return setter.origin + setter.path;
+      }
+    }
+    return undefined;
+  }
+
+  static tokenPage(token: CsrfToken, endpoint: Endpoint): string | undefined {
+    if (token.source === 'cookie') return undefined;
+    return token.sourceUrl ?? endpoint.form?.pageUrl;
+  }
+
   static sample(model: ApiModel, endpoint: Endpoint, options: ExportOptions, extra: Samples.SampleOptions = {}): Samples.RequestSample {
     return Samples.requestSample(endpoint, { baseUrl: Helpers.base(model, endpoint, options), ...extra });
   }

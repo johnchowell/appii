@@ -157,7 +157,7 @@ describe('MarkdownExporter request examples agree with the other renderers', () 
         { name: 'authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] },
         { name: 'x-csrf-token', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },
       ],
-      auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
+      auth: { cookies: ['csrftoken'], headers: ['authorization'], anonymous: 'untested', bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
     });
     const markdown = new MarkdownExporter().export(ExportModel.model([me])).content;
     assert.ok(markdown.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), markdown);

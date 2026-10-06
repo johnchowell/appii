@@ -57,7 +57,7 @@ function startQuotes(): Promise<{ server: Server; origin: string; sessions: Map<
 type AuthRow = [string, string[][] | undefined, boolean];
 
 function auth(model: ApiModel): Map<string, AuthRow> {
-  return new Map(model.endpoints.map((endpoint) => [`${endpoint.method} ${endpoint.path}`, [endpoint.auth.cookies.join(','), endpoint.auth.sets, endpoint.auth.anonymous === true]]));
+  return new Map(model.endpoints.map((endpoint) => [`${endpoint.method} ${endpoint.path}`, [endpoint.auth.cookies.join(','), endpoint.auth.sets, endpoint.auth.anonymous === 'allowed']]));
 }
 
 function collapse(capture: Capture): Capture {

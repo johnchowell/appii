@@ -1,5 +1,5 @@
 import { COOKIE_ROLES, ENDPOINT_KINDS } from '../model/index.js';
-import type { ApiModel, CookieRole, EndpointKind, FormDescriptor, SkippedRequests, SkipReason } from '../model/index.js';
+import type { ApiModel, CookieRole, EndpointKind, FormDescriptor, SkippedRequests, SkipReason, SourceCapture } from '../model/index.js';
 import { Ansi, Text } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
 import type { Definition } from './text-layout.js';
@@ -53,6 +53,12 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
       .join('; ');
   }
 
+  static captures(captures: readonly SourceCapture[], ansi: Ansi = Ansi.plain): string {
+    return captures
+      .map((capture, i) => `${ansi.clean(capture.file ?? capture.startUrl ?? `capture ${i + 1}`)} (${Text.plural(capture.exchanges, 'request')}, ${SummaryPresenter.span(capture.capturedFrom, capture.capturedTo, ansi)})`)
+      .join('; ');
+  }
+
   render(model: ApiModel): string {
     return this.compose([this.heading(model.name || 'API'), this.definitions(this.#source(model)), this.definitions(this.#counts(model))]);
   }
@@ -66,6 +72,7 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
     if (model.source.startUrl !== undefined) entries.push(['Start URL', this.ansi.clean(model.source.startUrl)]);
     entries.push(['Captured', SummaryPresenter.span(model.source.capturedFrom, model.source.capturedTo, this.ansi)]);
     if (model.source.file !== undefined) entries.push(['Source file', this.ansi.clean(model.source.file)]);
+    if (model.source.captures !== undefined && model.source.captures.length > 0) entries.push(['Built from', SummaryPresenter.captures(model.source.captures, this.ansi)]);
     entries.push(['Generated', this.ansi.clean(model.generatedAt)]);
     return entries;
   }

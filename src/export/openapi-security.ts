@@ -3,6 +3,7 @@ import { Credentials, Json } from '../shared/index.js';
 import type { CookieRoles, Credential } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 import type { TokenSourceMarkup } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { OpenApiComponents } from './openapi-components.js';
 
 export type SecurityRequirement = Record<string, string[]>;
@@ -20,11 +21,23 @@ export class OpenApiSecurity {
   readonly #model: ApiModel;
   readonly #components: OpenApiComponents;
   readonly #roles: CookieRoles;
+  readonly #guide: LoginGuide;
+  readonly #operations: ReadonlyMap<string, string>;
 
-  constructor(model: ApiModel, components: OpenApiComponents) {
+  constructor(model: ApiModel, components: OpenApiComponents, operations: ReadonlyMap<string, string> = new Map()) {
     this.#model = model;
     this.#components = components;
     this.#roles = Credentials.roles(model);
+    this.#guide = new LoginGuide(model);
+    this.#operations = operations;
+  }
+
+  get guide(): LoginGuide {
+    return this.#guide;
+  }
+
+  operation(endpoint: Endpoint): string {
+    return LoginGuide.label(endpoint, this.#operations.get(endpoint.id));
   }
 
   get roles(): CookieRoles {
@@ -32,6 +45,7 @@ export class OpenApiSecurity {
   }
 
   requirements(endpoint: Endpoint): SecurityRequirement[] {
+    if (LoginGuide.isLogin(endpoint)) return [];
     const csrf = endpoint.auth.csrf.filter((token) => token.location === 'header').map((token) => this.#csrfHeader(token));
     const alternatives: string[][] = [];
     for (const set of Credentials.sets(endpoint, this.#roles)) {
@@ -57,7 +71,7 @@ export class OpenApiSecurity {
   coveredHeaders(endpoint: Endpoint): Set<string> {
     const out = new Set<string>(Credentials.headers(endpoint, this.#roles));
     for (const name of endpoint.auth.headers) out.add(name.toLowerCase());
-    for (const token of endpoint.auth.csrf) if (token.location === 'header') out.add(token.name.toLowerCase());
+    if (!LoginGuide.isLogin(endpoint)) for (const token of endpoint.auth.csrf) if (token.location === 'header') out.add(token.name.toLowerCase());
     if (endpoint.auth.bearer || Credentials.schemes(endpoint, this.#roles).length > 0 || (endpoint.auth.schemes ?? []).length > 0) out.add(OpenApiSecurity.AUTHORIZATION);
     return out;
   }
@@ -75,8 +89,28 @@ export class OpenApiSecurity {
       : [];
     const role = info?.role ?? 'session';
     const kind = role === 'auth' ? 'Authentication' : role === 'session' ? 'Session' : 'Credential';
-    const description = `${kind} cookie ${name}${flags.length > 0 ? ` (${flags.join(', ')})` : ''}${info && info.setBy.length > 0 ? `, set by ${info.setBy.join(', ')}` : ''}.`;
-    return this.#components.scheme(`cookie:${name}`, `${name} cookie`, { type: 'apiKey', in: 'cookie', name, description });
+    const lines = [`${kind} cookie ${name}${flags.length > 0 ? ` (${flags.join(', ')})` : ''}${info && info.setBy.length > 0 ? `, set by ${info.setBy.join(', ')}` : ''}.`];
+    const issuers = this.#endpoints(this.#model.cookies.filter((cookie) => cookie.name === name).flatMap((cookie) => cookie.issuedBy ?? []));
+    const revokers = this.#endpoints(this.#model.cookies.filter((cookie) => cookie.name === name).flatMap((cookie) => cookie.revokedBy ?? []));
+    lines.push(...this.#login(issuers));
+    if (revokers.length > 0) lines.push(`The logout ${revokers.length === 1 ? 'operation' : 'operations'} ${revokers.map((endpoint) => this.operation(endpoint)).join(', ')} ${revokers.length === 1 ? 'revokes' : 'revoke'} it.`);
+    return this.#components.scheme(`cookie:${name}`, `${name} cookie`, { type: 'apiKey', in: 'cookie', name, description: lines.join(' ') });
+  }
+
+  #endpoints(ids: readonly string[]): Endpoint[] {
+    const out: Endpoint[] = [];
+    for (const id of ids) {
+      const endpoint = this.#guide.endpoint(id);
+      if (endpoint && !out.includes(endpoint)) out.push(endpoint);
+    }
+    return out;
+  }
+
+  #login(issuers: readonly Endpoint[]): string[] {
+    if (issuers.length > 0) return [`The login ${issuers.length === 1 ? 'operation' : 'operations'} ${issuers.map((endpoint) => this.operation(endpoint)).join(', ')} ${issuers.length === 1 ? 'issues' : 'issue'} it.`];
+    const logins = this.#guide.logins();
+    if (logins.length === 0) return [];
+    return [`The login ${logins.length === 1 ? 'operation is' : 'operations are'} ${logins.map((endpoint) => this.operation(endpoint)).join(', ')}; ${LoginGuide.UNKNOWN_ISSUE}.`];
   }
 
   #csrfHeader(token: CsrfToken): string {
@@ -91,7 +125,16 @@ export class OpenApiSecurity {
 
   #http(scheme: string): string {
     const lower = scheme.toLowerCase();
-    if (lower === Credentials.BEARER) return this.#components.scheme(OpenApiSecurity.BEARER_KEY, OpenApiSecurity.BEARER_NAME, { type: 'http', scheme: 'bearer', description: OpenApiSecurity.SCHEME_DESCRIPTIONS.bearer ?? '' });
+    if (lower === Credentials.BEARER) {
+      const issuers = this.#guide.logins().filter((endpoint) => (endpoint.login?.issues.tokens.length ?? 0) > 0);
+      const lines = [OpenApiSecurity.SCHEME_DESCRIPTIONS.bearer ?? ''];
+      for (const endpoint of issuers) {
+        const fields = endpoint.login?.issues.tokens ?? [];
+        lines.push(`The login operation ${this.operation(endpoint)} returns it in the response ${fields.length === 1 ? 'field' : 'fields'} ${fields.join(', ')}.`);
+      }
+      if (issuers.length === 0) lines.push(...this.#login([]));
+      return this.#components.scheme(OpenApiSecurity.BEARER_KEY, OpenApiSecurity.BEARER_NAME, { type: 'http', scheme: 'bearer', description: lines.join(' ') });
+    }
     const description = OpenApiSecurity.SCHEME_DESCRIPTIONS[lower] ?? `HTTP ${scheme} authentication in the Authorization header.`;
     return this.#components.scheme(`http:${lower}`, `${lower} auth`, { type: 'http', scheme: lower, description });
   }

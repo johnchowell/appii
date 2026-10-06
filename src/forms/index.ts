@@ -3,6 +3,8 @@ export type { FormExtractorDeps, FormExtractorOptions } from './form-extractor.j
 export { FormSchemaBuilder } from './form-schema-builder.js';
 export type { FieldSchemaContext, FormBuildOptions, FormSchema, FormSchemaBuilderDeps, FormTarget } from './form-schema-builder.js';
 export { TokenDetector } from './token-detector.js';
+export { LoginFormDetector } from './login-form-detector.js';
+export type { LoginFields } from './login-form-detector.js';
 export { HtmlDocument } from './html-document.js';
 export type { HtmlElement, HtmlNode } from './html-document.js';
 export { HtmlMicrosyntax } from './html-microsyntax.js';

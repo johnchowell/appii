@@ -1,15 +1,19 @@
 import {
+  ANONYMOUS_ACCESS,
   BODY_KINDS,
   COOKIE_ROLES,
   CSRF_LOCATIONS,
   ENDPOINT_KINDS,
+  ENDPOINT_ROLES,
   FIELD_KINDS,
   FORM_ENCTYPES,
   FORM_METHODS,
+  LOGIN_EVIDENCE,
   MODEL_VERSION,
   PARAM_LOCATIONS,
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
+  SEEN_STATES,
   SKIP_REASONS,
   TOKEN_SOURCES,
 } from '../model/index.js';
@@ -28,6 +32,11 @@ export class ModelValidator {
   static readonly VERSION = MODEL_VERSION;
   static readonly MAX_PROBLEMS = 25;
   static readonly ENDPOINT_KINDS: ReadonlySet<string> = new Set(ENDPOINT_KINDS);
+  static readonly ANONYMOUS_ACCESS: ReadonlySet<string> = new Set(ANONYMOUS_ACCESS);
+  static readonly SEEN_STATES: ReadonlySet<string> = new Set(SEEN_STATES);
+  static readonly ENDPOINT_ROLES: ReadonlySet<string> = new Set(ENDPOINT_ROLES);
+  static readonly LOGIN_EVIDENCE: ReadonlySet<string> = new Set(LOGIN_EVIDENCE);
+  static readonly LOGIN_ROLE = 'login';
   static readonly BODY_KINDS: ReadonlySet<string> = new Set(BODY_KINDS);
   static readonly PARAM_LOCATIONS: ReadonlySet<string> = new Set(PARAM_LOCATIONS);
   static readonly CSRF_LOCATIONS: ReadonlySet<string> = new Set(CSRF_LOCATIONS);
@@ -61,6 +70,13 @@ export class ModelValidator {
     if (source) {
       this.#number(problems, source, 'exchanges', 'source.');
       for (const key of ['startUrl', 'file', 'capturedFrom', 'capturedTo']) this.#string(problems, source, key, 'source.', { optional: true });
+      this.#array(problems, source, 'captures', 'source.', (item, p) => {
+        const entry = this.#object(problems, item, p);
+        if (!entry) return;
+        for (const key of ['file', 'startUrl']) this.#string(problems, entry, key, p + '.', { optional: true });
+        for (const key of ['capturedFrom', 'capturedTo']) this.#string(problems, entry, key, p + '.');
+        this.#number(problems, entry, 'exchanges', p + '.');
+      }, { optional: true });
       this.#array(problems, source, 'skipped', 'source.', (item, p) => {
         const entry = this.#object(problems, item, p);
         if (!entry) return;
@@ -108,7 +124,10 @@ export class ModelValidator {
       this.#strings(problems, auth, 'cookies', at + 'auth.');
       this.#strings(problems, auth, 'headers', at + 'auth.');
       this.#boolean(problems, auth, 'bearer', at + 'auth.');
-      this.#boolean(problems, auth, 'anonymous', at + 'auth.', { optional: true });
+      this.#oneOf(problems, auth, 'anonymous', ModelValidator.ANONYMOUS_ACCESS, at + 'auth.');
+      this.#array(problems, auth, 'seen', at + 'auth.', (item, p) => {
+        if (typeof item !== 'string' || !ModelValidator.SEEN_STATES.has(item)) problems.push(`${p}: expected one of ${[...ModelValidator.SEEN_STATES].join(', ')}`);
+      }, { optional: true });
       this.#strings(problems, auth, 'schemes', at + 'auth.', { optional: true });
       this.#array(problems, auth, 'sets', at + 'auth.', (item, p) => {
         if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || !Credentials.ENTRY.test(entry))) problems.push(`${p}: expected an array of credential entries such as cookie:<name>, header:<name> or http:<scheme>`);
@@ -125,6 +144,8 @@ export class ModelValidator {
         this.#strings(problems, token, 'sessionCookies', p + '.', { optional: true });
       });
     }
+    this.#oneOf(problems, endpoint, 'role', ModelValidator.ENDPOINT_ROLES, at, { optional: true });
+    this.#login(problems, endpoint, at);
     if (endpoint.form !== undefined) {
       const form = this.#object(problems, endpoint.form, at + 'form');
       if (form) {
@@ -147,6 +168,24 @@ export class ModelValidator {
       this.#string(problems, sample, 'pageUrl', p + '.', { optional: true });
       this.#number(problems, sample, 'status', p + '.', { optional: true });
     });
+  }
+
+  #login(problems: string[], endpoint: Fields, at: string): void {
+    const role = endpoint.role === ModelValidator.LOGIN_ROLE;
+    if (endpoint.login === undefined) {
+      if (role) problems.push(`${at}login: expected an object for an endpoint with role login`);
+      return;
+    }
+    if (!role) problems.push(`${at}login: expected only on an endpoint with role login`);
+    const login = this.#object(problems, endpoint.login, at + 'login');
+    if (!login) return;
+    this.#oneOf(problems, login, 'evidence', ModelValidator.LOGIN_EVIDENCE, at + 'login.');
+    this.#string(problems, login, 'identifier', at + 'login.', { optional: true });
+    this.#string(problems, login, 'password', at + 'login.');
+    const issues = this.#object(problems, login.issues, at + 'login.issues');
+    if (!issues) return;
+    this.#strings(problems, issues, 'cookies', at + 'login.issues.');
+    this.#strings(problems, issues, 'tokens', at + 'login.issues.');
   }
 
   #param(problems: string[], value: unknown, path: string): void {
@@ -181,6 +220,8 @@ export class ModelValidator {
     this.#oneOf(problems, cookie, 'role', ModelValidator.COOKIE_ROLES, at);
     this.#strings(problems, cookie, 'setBy', at);
     this.#strings(problems, cookie, 'usedBy', at);
+    this.#strings(problems, cookie, 'issuedBy', at, { optional: true });
+    this.#strings(problems, cookie, 'revokedBy', at, { optional: true });
   }
 
   #form(problems: string[], value: unknown, path: string): void {

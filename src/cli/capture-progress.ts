@@ -5,6 +5,7 @@ import type { CliContext } from './cli-context.js';
 export interface CaptureProgressOptions {
   intervalMs?: number;
   now?: () => number;
+  url?: (url: string) => string;
 }
 
 export class CaptureProgress {
@@ -14,6 +15,7 @@ export class CaptureProgress {
   readonly #ctx: CliContext;
   readonly #intervalMs: number;
   readonly #now: () => number;
+  readonly #url: (url: string) => string;
   #count = 0;
   #drawnAt = Number.NEGATIVE_INFINITY;
 
@@ -21,11 +23,12 @@ export class CaptureProgress {
     this.#ctx = ctx;
     this.#intervalMs = options.intervalMs ?? CaptureProgress.INTERVAL_MS;
     this.#now = options.now ?? Date.now;
+    this.#url = options.url ?? ((url) => url);
   }
 
-  static line(count: number, exchange: Exchange): string {
+  static line(count: number, exchange: Exchange, url: string = exchange.request.url): string {
     const status = exchange.response ? String(exchange.response.status) : CaptureProgress.FAILED_STATUS;
-    return `Recording: ${Text.plural(count, 'request')}, last ${exchange.request.method} ${status} ${exchange.request.url}`;
+    return `Recording: ${Text.plural(count, 'request')}, last ${exchange.request.method} ${status} ${url}`;
   }
 
   get count(): number {
@@ -38,7 +41,7 @@ export class CaptureProgress {
     const now = this.#now();
     if (now - this.#drawnAt < this.#intervalMs) return;
     this.#drawnAt = now;
-    this.#ctx.progress(CaptureProgress.line(this.#count, exchange));
+    this.#ctx.progress(CaptureProgress.line(this.#count, exchange, this.#url(exchange.request.url)));
   }
 
   finish(): void {

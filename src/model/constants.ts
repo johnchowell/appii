@@ -1,4 +1,4 @@
-export const MODEL_VERSION = 2;
+export const MODEL_VERSION = 3;
 export const CAPTURE_VERSION = 1;
 
 export const RESOURCE_TYPES = Object.freeze([
@@ -43,5 +43,13 @@ export const ENDPOINT_KINDS = Object.freeze(['json', 'form', 'graphql', 'documen
 export const COOKIE_ROLES = Object.freeze(['session', 'auth', 'csrf', 'preference', 'tracking', 'unknown'] as const);
 
 export const CREDENTIAL_COOKIE_ROLES = Object.freeze(['session', 'auth'] as const);
+
+export const ENDPOINT_ROLES = Object.freeze(['login', 'logout'] as const);
+
+export const LOGIN_EVIDENCE = Object.freeze(['form', 'observed'] as const);
+
+export const ANONYMOUS_ACCESS = Object.freeze(['allowed', 'refused', 'untested'] as const);
+
+export const SEEN_STATES = Object.freeze(['anonymous', 'authenticated'] as const);
 
 export const SKIP_REASONS = Object.freeze(['other-origin', 'static', 'document', 'preflight', 'websocket', 'service-worker', 'cache', 'not-http'] as const);

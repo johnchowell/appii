@@ -1,5 +1,5 @@
 import type { FormDescriptor, FormField, JsonSchema } from '../model/index.js';
-import { TokenDetector } from '../forms/index.js';
+import { LoginFormDetector, TokenDetector } from '../forms/index.js';
 import { Http, Json, Samples, Schema, SecretNames, Text } from '../shared/index.js';
 import { SecretValues } from './secret-values.js';
 
@@ -336,20 +336,20 @@ export class Redactor {
 
   form(form: FormDescriptor): FormDescriptor {
     if (!this.#enabled) return form;
-    const tokens = new Set(form.tokenFields);
+    const secrets = new Set([...form.tokenFields, ...(LoginFormDetector.detect(form)?.personal ?? [])]);
     return {
       ...form,
       pageUrl: this.url(form.pageUrl),
       action: this.url(form.action),
-      fields: form.fields.map((field) => this.formField(field, tokens.has(field.name))),
+      fields: form.fields.map((field) => this.formField(field, secrets.has(field.name))),
       submitters: form.submitters.map((field) => this.formField(field)),
     };
   }
 
-  schema(schema: JsonSchema): JsonSchema {
+  schema(schema: JsonSchema, names: ReadonlySet<string> = Redactor.NO_NAMES): JsonSchema {
     if (!this.#enabled) return schema;
     const copy = Json.clone(schema);
-    this.#schemaNode(copy, false);
+    this.#schemaNode(copy, false, names);
     return copy;
   }
 
@@ -506,18 +506,18 @@ export class Redactor {
     return headers + blank[0] + redacted + end;
   }
 
-  #schemaNode(node: JsonSchema, secret: boolean): void {
+  #schemaNode(node: JsonSchema, secret: boolean, names: ReadonlySet<string>): void {
     for (const key of Redactor.SCHEMA_VALUES) if (Object.hasOwn(node, key)) node[key] = this.#values.scrubDeep(node[key]);
     if (Object.hasOwn(node, Redactor.TOKEN_EXAMPLE)) node[Redactor.TOKEN_EXAMPLE] = Samples.REDACTED;
     if (secret && Object.hasOwn(node, 'default')) node.default = Redactor.#all(node.default);
-    for (const [name, child] of Object.entries(Schema.properties(node))) this.#schemaNode(child, this.isSecretField(name) || child['x-appii-token'] === true);
+    for (const [name, child] of Object.entries(Schema.properties(node))) this.#schemaNode(child, this.isSecretField(name) || names.has(name) || child['x-appii-token'] === true, names);
     for (const key of Redactor.SCHEMA_CHILDREN) {
       const child = node[key];
-      if (Json.isPlainObject(child)) this.#schemaNode(child, secret);
+      if (Json.isPlainObject(child)) this.#schemaNode(child, secret, names);
     }
     for (const key of Redactor.SCHEMA_LISTS) {
       const list = node[key];
-      if (Array.isArray(list)) for (const item of list) if (Json.isPlainObject(item)) this.#schemaNode(item, secret);
+      if (Array.isArray(list)) for (const item of list) if (Json.isPlainObject(item)) this.#schemaNode(item, secret, names);
     }
   }
 

@@ -1,17 +1,21 @@
 import type {
+  ANONYMOUS_ACCESS,
   BODY_KINDS,
   CACHE_KINDS,
   CAPTURE_SOURCES,
   COOKIE_ROLES,
   CSRF_LOCATIONS,
   ENDPOINT_KINDS,
+  ENDPOINT_ROLES,
   FIELD_KINDS,
   FORM_ENCTYPES,
   FORM_METHODS,
+  LOGIN_EVIDENCE,
   MODEL_VERSION,
   PARAM_LOCATIONS,
   RESOURCE_TYPES,
   SAME_SITE_VALUES,
+  SEEN_STATES,
   SERVED_BY_VALUES,
   SKIP_REASONS,
   TOKEN_SOURCES,
@@ -239,14 +243,30 @@ export interface CsrfToken {
   sessionCookies?: string[];
 }
 
+export type AnonymousAccess = (typeof ANONYMOUS_ACCESS)[number];
+
+export type SeenState = (typeof SEEN_STATES)[number];
+
 export interface EndpointAuth {
   cookies: string[];
   headers: string[];
   bearer: boolean;
   csrf: CsrfToken[];
-  anonymous?: boolean;
+  anonymous: AnonymousAccess;
+  seen?: SeenState[];
   schemes?: string[];
   sets?: string[][];
+}
+
+export type EndpointRole = (typeof ENDPOINT_ROLES)[number];
+
+export type LoginEvidence = (typeof LOGIN_EVIDENCE)[number];
+
+export interface EndpointLogin {
+  evidence: LoginEvidence;
+  identifier?: string;
+  password: string;
+  issues: { cookies: string[]; tokens: string[] };
 }
 
 export interface EndpointForm {
@@ -288,6 +308,8 @@ export interface Endpoint {
   otherRequestBodies?: BodyShape[];
   responses: EndpointResponse[];
   auth: EndpointAuth;
+  role?: EndpointRole;
+  login?: EndpointLogin;
   form?: EndpointForm;
   resourceTypes: ResourceType[];
   samples: EndpointSample[];
@@ -317,7 +339,17 @@ export interface CookieInfo {
   role: CookieRole;
   setBy: string[];
   usedBy: string[];
+  issuedBy?: string[];
+  revokedBy?: string[];
   valueExample: string;
+}
+
+export interface SourceCapture {
+  file?: string;
+  startUrl?: string;
+  capturedFrom: string;
+  capturedTo: string;
+  exchanges: number;
 }
 
 export interface ApiModel {
@@ -330,6 +362,7 @@ export interface ApiModel {
     exchanges: number;
     capturedFrom?: string;
     capturedTo?: string;
+    captures?: SourceCapture[];
     skipped?: SkippedRequests[];
   };
   primaryOrigin: string;

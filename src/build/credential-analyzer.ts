@@ -20,11 +20,32 @@ export interface CredentialAnalyzerDeps {
 export interface CredentialInput {
   passwordFields?: ReadonlySet<string>;
   loginPages?: ReadonlySet<string>;
+  identifierFields?: ReadonlySet<string>;
+  personalFields?: ReadonlySet<string>;
+}
+
+export interface LoginValue {
+  readonly name: string;
+  readonly value: string;
+  readonly password: boolean;
+}
+
+export interface LoginSubmission {
+  readonly password: string;
+  readonly identifier?: string;
+  readonly values: readonly LoginValue[];
 }
 
 interface Sent {
   readonly name: string;
   readonly value: string;
+}
+
+interface FieldEntry {
+  readonly path: string;
+  readonly key: string;
+  readonly value: unknown;
+  readonly container: object;
 }
 
 export class CredentialAnalyzer {
@@ -33,6 +54,13 @@ export class CredentialAnalyzer {
   static readonly FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json', 'graphql']);
   static readonly SCHEME_HEADERS: ReadonlySet<string> = new Set(['authorization']);
   static readonly MIN_ECHO_LENGTH = 8;
+  static readonly PATH_SEPARATOR = '.';
+  static readonly CLIENT_ERROR_MIN = 400;
+  static readonly CLIENT_ERROR_MAX = 499;
+  static readonly IDENTIFIER_NAMES: ReadonlySet<string> = new Set([
+    'username', 'user', 'userid', 'login', 'loginid', 'loginname', 'email', 'mail', 'emailaddress', 'useremail', 'account', 'accountname',
+    'identifier', 'handle', 'phone', 'phonenumber', 'mobile',
+  ]);
 
   readonly #cookies: CookieClassifier;
   readonly #body: BodyParser;
@@ -75,6 +103,10 @@ export class CredentialAnalyzer {
     return out;
   }
 
+  static isIdentifierName(name: string): boolean {
+    return CredentialAnalyzer.IDENTIFIER_NAMES.has(Text.letterWords(name).join(''));
+  }
+
   static isSignOut(exchange: Exchange): boolean {
     const url = Http.parseUrl(exchange.request.url);
     return url !== undefined && CredentialAnalyzer.SIGN_OUT.test(Http.decodeComponent(url.pathname));
@@ -109,6 +141,62 @@ export class CredentialAnalyzer {
     }
     if (!CredentialAnalyzer.FIELD_KINDS.has(parsed.kind)) return false;
     return this.#hasPassword(parsed.value, input);
+  }
+
+  loginSubmission(exchange: Exchange, input: CredentialInput = {}): LoginSubmission | undefined {
+    const entries = this.#fieldEntries(exchange);
+    const passwords = entries.filter((entry) => this.#isPassword(entry.key, input) && CredentialAnalyzer.#filled(entry.value));
+    const [password] = passwords;
+    if (passwords.length !== 1 || password === undefined) return undefined;
+    const siblings = entries.filter((entry) => entry !== password && entry.container === password.container);
+    const identifier = siblings.find((entry) => input.identifierFields?.has(entry.key) === true) ?? siblings.find((entry) => CredentialAnalyzer.isIdentifierName(entry.key));
+    const personal = siblings.filter((entry) => entry === identifier || input.personalFields?.has(entry.key) === true);
+    const values = [password, ...personal].flatMap((entry) => CredentialAnalyzer.#strings(entry.value).map((value) => ({ name: entry.key, value, password: entry === password })));
+    return identifier ? { password: password.path, identifier: identifier.path, values } : { password: password.path, values };
+  }
+
+  #fieldEntries(exchange: Exchange): FieldEntry[] {
+    const out: FieldEntry[] = [];
+    const url = Http.parseUrl(exchange.request.url);
+    if (url && url.search.length > 1) {
+      const query: Record<string, string[]> = {};
+      for (const [name, value] of url.searchParams) (query[name] ??= []).push(value);
+      CredentialAnalyzer.#walk(query, [], out);
+    }
+    let parsed;
+    try {
+      parsed = this.#body.request(exchange.request);
+    } catch {
+      return out;
+    }
+    if (CredentialAnalyzer.FIELD_KINDS.has(parsed.kind)) CredentialAnalyzer.#walk(parsed.value, [], out);
+    return out;
+  }
+
+  static #walk(value: unknown, path: readonly string[], out: FieldEntry[]): void {
+    if (Array.isArray(value)) {
+      for (const item of value) CredentialAnalyzer.#walk(item, path, out);
+      return;
+    }
+    if (!Json.isPlainObject(value) || BodyParser.isUploadedFile(value)) return;
+    for (const [key, item] of Object.entries(value)) {
+      const at = [...path, key];
+      out.push({ path: at.join(CredentialAnalyzer.PATH_SEPARATOR), key, value: item, container: value });
+      CredentialAnalyzer.#walk(item, at, out);
+    }
+  }
+
+  static #strings(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap((item) => (Array.isArray(item) ? [] : CredentialAnalyzer.#strings(item)));
+    if (typeof value === 'string') return value === '' ? [] : [value];
+    return typeof value === 'number' ? [String(value)] : [];
+  }
+
+  static #refused(exchange: Exchange, loginPages: ReadonlySet<string>): boolean {
+    const status = exchange.response?.status;
+    if (status !== undefined && status >= CredentialAnalyzer.CLIENT_ERROR_MIN && status <= CredentialAnalyzer.CLIENT_ERROR_MAX) return true;
+    const target = CredentialEvidence.redirectTarget(exchange);
+    return target !== undefined && CredentialEvidence.loginPage(target, loginPages);
   }
 
   #hasPassword(value: unknown, input: CredentialInput): boolean {
@@ -179,7 +267,8 @@ export class CredentialAnalyzer {
       const set = CredentialAnalyzer.setCookies(exchange).filter((cookie) => cookie.value !== '' && credential(cookie.name));
       if (set.length === 0) return;
       const carried = CredentialAnalyzer.sent(exchange).some((cookie) => credential(cookie.name) && cookie.value !== '' && current(cookie.name, cookie.value)?.generation !== 'anonymous');
-      const authenticated = this.isCredentialSubmission(exchange, input) || (carried && !CredentialAnalyzer.isSignOut(exchange));
+      const submitted = this.isCredentialSubmission(exchange, input) && !CredentialAnalyzer.#refused(exchange, input.loginPages ?? new Set());
+      const authenticated = submitted || (carried && !CredentialAnalyzer.isSignOut(exchange));
       for (const cookie of set) {
         const key = CredentialEvidence.key(cookie.name, cookie.value);
         const events = generations.get(key) ?? [];

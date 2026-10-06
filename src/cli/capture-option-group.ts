@@ -1,6 +1,6 @@
 import type { ParseArgsOptionsConfig } from 'node:util';
 import { CaptureSession, TrafficRecorder } from '../capture/index.js';
-import type { CaptureSessionOptions, TrafficRecorderOptions } from '../capture/index.js';
+import type { CaptureSessionOptions, LoginField, TrafficRecorderOptions } from '../capture/index.js';
 import type { CliContext } from './cli-context.js';
 import type { OptionDocs, OptionGroup } from './option-group.js';
 import { OptionReader } from './option-reader.js';
@@ -11,6 +11,8 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
   static readonly MS_PER_SECOND = 1000;
   static readonly HEADER_FORBIDDEN: RegExp = /[\0\r\n]/;
   static readonly HTTP_WHITESPACE: RegExp = /^[\t ]+|[\t ]+$/g;
+  static readonly LOGIN_VARIABLE_PREFIX = 'APPII_LOGIN_';
+  static readonly LOGIN_VARIABLE_UNSAFE: RegExp = /[^A-Z0-9]/g;
 
   readonly options: ParseArgsOptionsConfig = {
     headless: { type: 'boolean' },
@@ -21,6 +23,7 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     'max-total-body': { type: 'string' },
     'read-timeout': { type: 'string' },
     'user-agent': { type: 'string' },
+    login: { type: 'string', multiple: true },
   };
 
   readonly docs: OptionDocs = {
@@ -32,10 +35,30 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     'max-total-body': { value: 'bytes', description: `Total size of all kept bodies; later bodies are marked as truncated (default: ${TrafficRecorder.DEFAULT_MAX_TOTAL_BODY_BYTES})` },
     'read-timeout': { value: 'sec', description: `Longest wait for one body after its request ends (default: ${CaptureOptionGroup.seconds(TrafficRecorder.READ_TIMEOUT_MS)})` },
     'user-agent': { value: 'ua', description: 'User-Agent that the browser sends and reports (default: the identity of the installed Chromium)' },
+    login: {
+      value: 'name[=value]',
+      description: `Log in after the first URL loads: fill this field of the login form, then submit the form like a user; repeat for each field. Without =value the value comes from ${CaptureOptionGroup.LOGIN_VARIABLE_PREFIX}<NAME>`,
+    },
   };
 
   static seconds(ms: number): string {
     return String(ms / CaptureOptionGroup.MS_PER_SECOND);
+  }
+
+  static loginVariable(name: string): string {
+    return CaptureOptionGroup.LOGIN_VARIABLE_PREFIX + name.toUpperCase().replace(CaptureOptionGroup.LOGIN_VARIABLE_UNSAFE, '_');
+  }
+
+  static loginField(spec: string, env: Readonly<Record<string, string | undefined>>): LoginField {
+    const eq = spec.indexOf('=');
+    const name = eq < 0 ? spec : spec.slice(0, eq);
+    if (name === '') throw new UsageError(`${OptionReader.flag('login')} needs a field name, as name or name=value`);
+    if (eq >= 0) return { name, value: spec.slice(eq + 1) };
+    const variable = CaptureOptionGroup.loginVariable(name);
+    const value = env[variable];
+    if (value === undefined) throw new UsageError(`${OptionReader.flag('login')} ${name}: set the environment variable ${variable}, or give ${name}=<value>`);
+    if (value === '') throw new UsageError(`${OptionReader.flag('login')} ${name}: the environment variable ${variable} is empty`);
+    return { name, value };
   }
 
   read(values: OptionValues, ctx: CliContext): CaptureSessionOptions {
@@ -47,6 +70,7 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     const maxTotalBodyBytes = OptionReader.integer(values, 'max-total-body', { min: 0 });
     const readTimeoutMs = OptionReader.seconds(values, 'read-timeout', { positive: true });
     const userAgent = CaptureOptionGroup.#userAgent(OptionReader.string(values, 'user-agent'));
+    const login = OptionReader.strings(values, 'login').map((spec) => CaptureOptionGroup.loginField(spec, ctx.io.env));
     const recorder: TrafficRecorderOptions = {};
     if (maxBodyBytes !== undefined) recorder.maxBodyBytes = maxBodyBytes;
     if (maxTotalBodyBytes !== undefined) recorder.maxTotalBodyBytes = maxTotalBodyBytes;
@@ -55,6 +79,7 @@ export class CaptureOptionGroup implements OptionGroup<CaptureSessionOptions> {
     if (idleMs !== undefined) out.idleMs = idleMs;
     if (storageState !== undefined) out.storageState = ctx.resolve(storageState);
     if (userAgent !== undefined) out.userAgent = userAgent;
+    if (login.length > 0) out.login = login;
     if (Object.keys(recorder).length > 0) out.recorder = recorder;
     return out;
   }

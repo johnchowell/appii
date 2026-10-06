@@ -27,7 +27,7 @@ function articles(samples: EndpointSample[]): Endpoint {
     queryParams: [param('limit', true, ['10']), param('offset', true, ['0']), param('tag', false, ['ai', 'backend']), param('author', false, ['mike']), param('favorited', false, ['mike'])],
     headerParams: [],
     responses: [],
-    auth: { cookies: [], headers: [], bearer: false, csrf: [] },
+    auth: { cookies: [], headers: [], anonymous: 'untested', bearer: false, csrf: [] },
     resourceTypes: ['fetch'],
     samples,
     count: samples.length,

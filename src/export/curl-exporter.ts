@@ -1,8 +1,10 @@
-import type { ApiModel, Endpoint } from '../model/index.js';
-import { CharsetEncoder, Credentials, Curl, EndpointIndex, Meta, RequestBodies, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
+import type { ApiModel, CsrfToken, Endpoint } from '../model/index.js';
+import { CharsetEncoder, Credentials, Curl, EndpointIndex, Http, Meta, RequestBodies, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
+import { CurlSessionScript } from './curl-session-script.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 
 export interface CurlPathArgument {
   readonly name: string;
@@ -53,13 +55,22 @@ export interface CurlTarget {
   readonly mediaType?: string;
 }
 
+export interface CurlFunctionContext {
+  readonly model: ApiModel;
+  readonly origins: ReadonlyMap<string, string>;
+  readonly guide: LoginGuide;
+  readonly functions: ReadonlyMap<string, string>;
+  readonly rename: (name: string) => string;
+}
+
 export class CurlExporter extends BaseExporter {
   static readonly BASE_NAME = 'base_url';
   static readonly COOKIE_NAME = 'cookie';
   static readonly QUERY_NAME = 'query_string';
   static readonly QUERY_LOCAL = 'appii_query';
   static readonly ALIAS_SUFFIX = '_value';
-  static readonly COOKIE_HELPER = 'appii_cookie';
+  static readonly COOKIE_HELPER = CurlSessionScript.COOKIE_HELPER;
+  static readonly JAR_WORD = `"$${CurlSessionScript.JAR_VARIABLE}"`;
   static readonly VALUE_LOCAL = 'appii_value';
   static readonly DEFAULT_PREFIX = 'appii_default_';
   static readonly FUNCTION_SUFFIX = 'Endpoint';
@@ -71,7 +82,7 @@ export class CurlExporter extends BaseExporter {
   static readonly MULTIPART_KIND = 'multipart';
   static readonly FILE_SUFFIX = ' file';
   static readonly RESERVED_FUNCTIONS: ReadonlySet<string> = new Set([
-    'list', 'usage', 'main', 'help', 'appii_cookie', 'appii_pct', 'appii_json', 'appii_form', 'appii_curl_args', 'curl', 'cat', 'printf', 'od', 'bash', 'sh', 'alias', 'bg',
+    'list', 'usage', 'main', 'help', ...CurlSessionScript.HELPERS, 'appii_pct', 'appii_json', 'appii_form', 'appii_curl_args', 'curl', 'cat', 'printf', 'od', 'awk', 'pwd', 'bash', 'sh', 'alias', 'bg',
     'bind', 'break', 'builtin', 'caller', 'case', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'coproc', 'declare',
     'dirs', 'disown', 'do', 'done', 'echo', 'elif', 'else', 'enable', 'esac', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg',
     'fi', 'for', 'function', 'getopts', 'hash', 'history', 'if', 'in', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
@@ -292,6 +303,8 @@ export class CurlExporter extends BaseExporter {
     const rename = CurlExporter.#renamer(reserved);
     const targets = CurlExporter.targets(endpoints);
     const names = this.targetNames(targets);
+    const functionNames = new Map(targets.flatMap((target): [string, string][] => (target.mediaType === undefined ? [[target.endpoint.id, names.get(target) ?? target.endpoint.name]] : [])));
+    const context: CurlFunctionContext = { model, origins, guide: new LoginGuide(model), functions: functionNames, rename };
     const functions: string[] = [];
     const globals = new Set<string>();
     const argumentsOf = new Map<CurlTarget, CurlArguments>();
@@ -305,7 +318,7 @@ export class CurlExporter extends BaseExporter {
       for (const variable of Curl.placeholderNames(sample, CurlExporter.#fallbacks(args))) {
         if (!locals.has(variable) && ![...reserved].some((name) => Curl.variableName(name) === variable)) globals.add(variable);
       }
-      functions.push(this.#function(endpoint, names.get(target) ?? endpoint.name, sample, args, rename));
+      functions.push(this.#function(target, names.get(target) ?? endpoint.name, sample, args, context));
     }
     const lines: string[] = [
       '#!/usr/bin/env bash',
@@ -322,11 +335,12 @@ export class CurlExporter extends BaseExporter {
     const cookie = Curl.variableName(CurlExporter.COOKIE_NAME);
     lines.push(ShellScript.ascii(`${CurlExporter.DEFAULT_PREFIX}${CurlExporter.COOKIE_NAME}=${Text.shellQuote(this.defaultCookie(model, endpoints))}`));
     lines.push(`${cookie}="\${${cookie}-$${CurlExporter.DEFAULT_PREFIX}${CurlExporter.COOKIE_NAME}}"`);
+    lines.push(...CurlSessionScript.jarLines(model));
     for (const variable of [...globals].sort()) lines.push(`: "\${${variable}:=}"`);
-    lines.push('', ...CurlExporter.#cookieHelper(), '', ...Curl.HELPER_FUNCTIONS, '');
+    lines.push('', ...CurlSessionScript.helpers(cookie), '', ...Curl.HELPER_FUNCTIONS, '');
     for (const fn of functions) lines.push(fn, '');
     lines.push(...this.#list(model, targets, index, names, argumentsOf), '');
-    lines.push(...CurlExporter.#usage(), '');
+    lines.push(...CurlExporter.#usage(CurlSessionScript.jarFile(model)), '');
     lines.push(...this.#main(targets, index, names), '');
     lines.push('if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then', '  set -euo pipefail', '  main "$@"', 'fi');
     return lines.join('\n') + '\n';
@@ -353,7 +367,9 @@ export class CurlExporter extends BaseExporter {
     };
   }
 
-  #function(endpoint: Endpoint, name: string, sample: Samples.RequestSample, args: CurlArguments, rename: (name: string) => string): string {
+  #function(target: CurlTarget, name: string, sample: Samples.RequestSample, args: CurlArguments, ctx: CurlFunctionContext): string {
+    const endpoint = target.endpoint;
+    const rename = ctx.rename;
     const value = CurlExporter.VALUE_LOCAL;
     const variable = (placeholder: string): string => (placeholder === CurlExporter.QUERY_NAME ? CurlExporter.QUERY_LOCAL : Curl.variableName(placeholder));
     const values: CurlValueArgument[] = [...args.query, ...args.body];
@@ -361,6 +377,7 @@ export class CurlExporter extends BaseExporter {
     const patterns = assignable.map((arg) => `${Curl.shellWord(arg.word)}=*`);
     const refusals = Credentials.refusals(endpoint);
     const lines = refusals.length === 0 ? [] : [`# ${name}: without credentials the server answered ${refusals.join(' and ')}; the credential it expects was not captured. Add it as a curl argument (-H or -b).`];
+    lines.push(...this.#roleComments(target, name, args, ctx));
     lines.push(`${name}() {`);
     if (args.path.length > 0 || args.files.length > 0 || values.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
     for (const arg of args.path) {
@@ -381,7 +398,7 @@ export class CurlExporter extends BaseExporter {
       const linkedVariable = Curl.variableName(rename(SampleText.placeholderName(token.sourceName)));
       if (!placeholders.includes(linkedVariable) || linked.has(linkedVariable)) continue;
       linked.add(linkedVariable);
-      lines.push(`  local ${linkedVariable}="\${${linkedVariable}:-$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})}"`);
+      lines.push(`  local ${linkedVariable}="\${${linkedVariable}:-$(${CurlSessionScript.DECODE_HELPER} "$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})")}"`);
     }
     for (const arg of values) {
       if (!CurlExporter.#ownDefault(arg) || arg.fallback === undefined) {
@@ -403,6 +420,9 @@ export class CurlExporter extends BaseExporter {
       lines.push('      *) break ;;', '    esac', '    shift', '  done');
     }
     lines.push(`  ${Curl.ARGUMENT_HELPER} ${Text.shellQuote(name)} ${Text.shellQuote(CurlExporter.#hint(args))} "$@" || return 2`);
+    lines.push(...CurlExporter.#credentialChecks(name, values));
+    lines.push(...this.#tokenLines(endpoint, name, args, placeholders, linked, ctx));
+    lines.push(`  ${CurlSessionScript.JAR_HELPER} || return 2`);
     if (args.query.length > 0) {
       const local = CurlExporter.QUERY_LOCAL;
       lines.push(`  local ${local}=''`);
@@ -412,9 +432,91 @@ export class CurlExporter extends BaseExporter {
       }
       lines.push(`  [[ -z "$${local}" ]] || ${local}="?\${${local}#&}"`);
     }
-    const command = Curl.curlCommand(sample, { variables: 'script', variable, extraArgs: ['"$@"'] });
+    const command = Curl.curlCommand(sample, { variables: 'script', variable, extraArgs: ['"$@"'], jar: CurlExporter.JAR_WORD });
     lines.push(ShellScript.indent(command, 2), '}');
     return ShellScript.ascii(lines.join('\n'));
+  }
+
+  #roleComments(target: CurlTarget, name: string, args: CurlArguments, ctx: CurlFunctionContext): string[] {
+    const endpoint = target.source;
+    const plain = (text: string): string => text;
+    if (LoginGuide.isLogout(endpoint)) return [`# ${name}: ${ctx.guide.describe(endpoint, plain) ?? 'Logout.'} The cookie jar ${CurlSessionScript.JAR_VARIABLE} keeps the new cookies.`];
+    const login = LoginGuide.isLogin(endpoint) ? endpoint.login : undefined;
+    if (!login) {
+      const hint = ctx.guide.hint(endpoint, (issuer) => ctx.functions.get(issuer.id) ?? issuer.name);
+      return hint === undefined ? [] : [`# ${name}: ${hint}`];
+    }
+    const inputs = [...args.query, ...args.body].filter((arg) => arg.fallback?.requirement !== undefined);
+    const lines = [`# ${name}: ${ctx.guide.describe(endpoint, plain) ?? 'Login.'}`];
+    if (inputs.length > 0) lines.push(`# Give ${inputs.map((arg) => `${Text.printable(arg.word)}=VALUE`).join(' and ')}, or set ${inputs.map((arg) => arg.variable).join(' and ')}.`);
+    lines.push(`# The cookies it sets stay in the cookie jar ${CurlSessionScript.JAR_VARIABLE}, so the functions called after it are logged in.`);
+    if (login.issues.tokens.length > 0) lines.push(`# It returns the bearer token in ${login.issues.tokens.join(', ')}: copy it into ${Curl.variableName(Samples.BEARER_TOKEN)} for the functions that need it.`);
+    return lines;
+  }
+
+  static #credentialChecks(name: string, values: readonly CurlValueArgument[]): string[] {
+    return values.flatMap((arg) => {
+      const label = arg.fallback?.requirement;
+      if (label === undefined) return [];
+      const message = `${name}: no value for ${label} (${Text.printable(arg.word)}). Give ${Text.printable(arg.word)}=VALUE or set ${arg.variable}.`;
+      return [`  if [[ -z "$${arg.variable}" ]]; then printf '%s\\n' ${Text.shellQuote(message)} >&2; return 2; fi`];
+    });
+  }
+
+  #tokenLines(endpoint: Endpoint, name: string, args: CurlArguments, placeholders: readonly string[], linked: ReadonlySet<string>, ctx: CurlFunctionContext): string[] {
+    const lines: string[] = [];
+    const done = new Set<string>();
+    for (const token of endpoint.auth.csrf) {
+      if (token.source === 'cookie') {
+        const variable = token.sourceName ? Curl.variableName(ctx.rename(SampleText.placeholderName(token.sourceName))) : undefined;
+        const seed = token.sourceName ? Helpers.tokenSeed(ctx.model, token.sourceName) : undefined;
+        if (variable === undefined || seed === undefined || !linked.has(variable) || done.has(variable)) continue;
+        done.add(variable);
+        lines.push(
+          `  if [[ -z "$${variable}" ]]; then`,
+          `    ${CurlSessionScript.PAGE_HELPER} ${this.#urlWord(seed, ctx)} > /dev/null || true`,
+          `    ${variable}="$(${CurlSessionScript.DECODE_HELPER} "$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName ?? '')})")"`,
+          '  fi',
+        );
+        continue;
+      }
+      const variable = CurlExporter.#tokenVariable(token, args, ctx.rename);
+      if (!placeholders.includes(variable) || done.has(variable)) continue;
+      done.add(variable);
+      if (![...args.query, ...args.body].some((arg) => arg.variable === variable)) lines.push(`  local ${variable}="\${${variable}:-}"`);
+      const page = Helpers.tokenPage(token, endpoint);
+      const method = EndpointIndex.tokenRequest(token);
+      if (method !== undefined || page === undefined || !CurlSessionScript.FETCHED_SOURCES.has(token.source)) {
+        const source = EndpointIndex.tokenSource(token, ctx.model.endpoints);
+        const call = source === undefined ? undefined : ctx.functions.get(source.id);
+        const origin = token.sourceUrl === undefined ? '' : ` comes from the response of ${method ?? 'GET'} ${Text.printable(token.sourceUrl)}${call === undefined ? '' : ` (${call})`};`;
+        const message = `${name}: warning: no value for the CSRF token ${Text.printable(token.name)}. It${origin === '' ? ' was not captured;' : origin} set ${variable} to send it.`;
+        lines.push(`  [[ -n "$${variable}" ]] || printf '%s\\n' ${Text.shellQuote(message)} >&2`);
+        continue;
+      }
+      const sourceName = token.sourceName ?? token.name;
+      const what = token.source === 'hidden-field' ? `the hidden field ${sourceName}` : token.source === 'meta' ? `the meta ${sourceName}` : `${sourceName} in the response`;
+      const message = `${name}: warning: GET ${Text.printable(page)} gave no value for the CSRF token ${Text.printable(token.name)} (${Text.printable(what)}). Set ${variable} to send it.`;
+      lines.push(
+        `  if [[ -z "$${variable}" ]]; then`,
+        `    ${variable}="$(${CurlSessionScript.TOKEN_HELPER} ${token.source} ${Text.shellQuote(sourceName)} ${this.#urlWord(page, ctx)})" || ${variable}=''`,
+        `    [[ -n "$${variable}" ]] || printf '%s\\n' ${Text.shellQuote(message)} >&2`,
+        '  fi',
+      );
+    }
+    return lines;
+  }
+
+  static #tokenVariable(token: CsrfToken, args: CurlArguments, rename: (name: string) => string): string {
+    const list = token.location === 'body' ? args.body : token.location === 'query' ? args.query : [];
+    return list.find((arg) => arg.name === token.name)?.variable ?? Curl.variableName(rename(SampleText.placeholderName(token.name)));
+  }
+
+  #urlWord(url: string, ctx: CurlFunctionContext): string {
+    const parsed = Http.parseUrl(url);
+    const base = parsed === undefined ? undefined : ctx.origins.get(parsed.origin);
+    if (parsed === undefined || base === undefined || !url.startsWith(parsed.origin)) return Text.shellQuote(url);
+    return Curl.shellArg(SampleText.concat(SampleText.placeholder(base), url.slice(parsed.origin.length)), 'script');
   }
 
   static #ownVariable(value: SampleText): string | undefined {
@@ -493,26 +595,7 @@ export class CurlExporter extends BaseExporter {
     return lines;
   }
 
-  static #cookieHelper(): string[] {
-    return [
-      `${CurlExporter.COOKIE_HELPER}() {`,
-      '  local wanted="$1" pair name',
-      '  local -a pairs=()',
-      `  IFS=';' read -r -a pairs <<< "$${Curl.variableName(CurlExporter.COOKIE_NAME)}" || true`,
-      '  for pair in "${pairs[@]+"${pairs[@]}"}"; do',
-      '    pair="${pair#"${pair%%[![:space:]]*}"}"',
-      '    name="${pair%%=*}"',
-      '    if [[ "$pair" == *=* && "$name" == "$wanted" ]]; then',
-      "      printf '%s' \"${pair#*=}\"",
-      '      return 0',
-      '    fi',
-      '  done',
-      '  return 0',
-      '}',
-    ];
-  }
-
-  static #usage(): string[] {
+  static #usage(jar: string): string[] {
     return [
       'usage() {',
       "  cat <<'APPII_USAGE'",
@@ -543,9 +626,21 @@ export class CurlExporter extends BaseExporter {
       'current directory). An endpoint that the site accepted with more than',
       'one body type has one function per type, for example postItemJson.',
       '',
+      'Every function reads and writes the cookie jar file, as a browser keeps',
+      'its cookies: after the login function, the functions that you call next',
+      'send the session cookie that the login set. The login function takes',
+      'the user name and the password as name=value arguments or from their',
+      'APPII_ variables and stops when one is missing; it never has a default.',
+      'A function whose request carries a CSRF token loads the page that holds',
+      'the token, with the same cookie jar, unless you give the token. Delete',
+      'the cookie jar file to start a new session.',
+      '',
       'Environment:',
       `  ${Curl.variableName(CurlExporter.BASE_NAME)}   base URL of the API (default: the captured origin)`,
       `  ${Curl.variableName(CurlExporter.COOKIE_NAME)}     Cookie header value sent with every request`,
+      `  ${CurlSessionScript.JAR_VARIABLE} cookie jar file that every function reads and writes`,
+      `                   (default: ${jar} in the directory where the`,
+      '                   script was started or sourced)',
       '  APPII_<NAME>     value of the placeholder, path parameter, query',
       '                   parameter or body field NAME, for example a CSRF token',
       '',

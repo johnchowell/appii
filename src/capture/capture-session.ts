@@ -8,6 +8,8 @@ import { BrowserStateTracker } from './browser-state-tracker.js';
 import { CaptureStore } from './capture-store.js';
 import { CookieParser } from './cookie-parser.js';
 import { Helpers } from './helpers.js';
+import { LoginSubmitter } from './login-submitter.js';
+import type { LoginField, LoginOutcome } from './login-submitter.js';
 import { NetworkIdleMonitor } from './network-idle-monitor.js';
 import { PageSnapshotter } from './page-snapshotter.js';
 import { TrafficRecorder } from './traffic-recorder.js';
@@ -17,6 +19,8 @@ import { UserAgentOverride } from './user-agent-override.js';
 
 export interface CaptureSessionOptions extends BrowserLauncherOptions {
   url?: string;
+  visits?: readonly string[];
+  login?: readonly LoginField[];
   durationMs?: number;
   idleMs?: number;
   recorder?: TrafficRecorderOptions;
@@ -24,6 +28,7 @@ export interface CaptureSessionOptions extends BrowserLauncherOptions {
   signal?: AbortSignal;
   onExchange?: (e: Exchange) => void;
   onReady?: () => void;
+  onLogin?: (outcome: LoginOutcome) => void;
 }
 
 export interface CaptureSessionDeps {
@@ -34,6 +39,7 @@ export interface CaptureSessionDeps {
   state?: () => BrowserStateTracker;
   idle?: () => NetworkIdleMonitor;
   identity?: (identity: UserAgentIdentity) => UserAgentOverride;
+  login?: () => LoginSubmitter;
 }
 
 interface RunFactories {
@@ -41,6 +47,7 @@ interface RunFactories {
   readonly state: () => BrowserStateTracker;
   readonly idle: () => NetworkIdleMonitor;
   readonly identity: (identity: UserAgentIdentity) => UserAgentOverride;
+  readonly login: () => LoginSubmitter;
 }
 
 interface CaptureRun {
@@ -84,6 +91,8 @@ export class CaptureSession {
     CaptureSession.#checkDuration(options.durationMs, 'durationMs');
     CaptureSession.#checkDuration(options.idleMs, 'idleMs');
     if (options.url !== undefined) CaptureSession.#checkUrl(options.url);
+    for (const visit of options.visits ?? []) CaptureSession.#checkUrl(visit);
+    CaptureSession.#checkLogin(options);
     this.#options = { ...options };
     this.#deps = deps;
     this.#factories = {
@@ -91,6 +100,7 @@ export class CaptureSession {
       state: deps.state ?? (() => new BrowserStateTracker()),
       idle: deps.idle ?? (() => new NetworkIdleMonitor()),
       identity: deps.identity ?? ((identity) => new UserAgentOverride(identity)),
+      login: deps.login ?? (() => new LoginSubmitter()),
     };
     this.recorder = deps.recorder;
     let resolveStop: () => void = () => undefined;
@@ -109,6 +119,7 @@ export class CaptureSession {
       state: () => new BrowserStateTracker(),
       idle: () => new NetworkIdleMonitor(),
       identity: (identity) => new UserAgentOverride(identity),
+      login: () => LoginSubmitter.create(),
     });
   }
 
@@ -144,6 +155,10 @@ export class CaptureSession {
 
   get #idleMs(): number {
     return this.#options.idleMs ?? CaptureSession.DEFAULT_IDLE_MS;
+  }
+
+  get #readTimeoutMs(): number {
+    return this.#options.recorder?.readTimeoutMs ?? TrafficRecorder.READ_TIMEOUT_MS;
   }
 
   async #capture(browser: Browser, context: BrowserContext, identity: UserAgentIdentity | undefined, startedAt: Date): Promise<Capture> {
@@ -246,6 +261,13 @@ export class CaptureSession {
     const url = this.#options.url;
     if (url) await this.#open(run, page, url);
     if (this.#stopped) return;
+    await this.#login(run, page);
+    for (const visit of this.#options.visits ?? []) {
+      if (this.#stopped) return;
+      await this.#open(run, page, visit);
+      await run.idle.waitForIdle(this.#idleMs);
+    }
+    if (this.#stopped) return;
     const script = this.#options.script;
     if (script) {
       try {
@@ -262,6 +284,15 @@ export class CaptureSession {
       return;
     }
     await new Promise<void>(() => undefined);
+  }
+
+  async #login(run: CaptureRun, page: Page): Promise<void> {
+    const fields = this.#options.login ?? [];
+    if (fields.length === 0) return;
+    await run.idle.waitForIdle(this.#idleMs);
+    if (this.#stopped) return;
+    const outcome = await this.#factories.login().submit(page, fields, { timeoutMs: this.#readTimeoutMs, settle: () => run.idle.waitForIdle(this.#idleMs) });
+    if (!this.#stopped) this.#options.onLogin?.(outcome);
   }
 
   async #open(run: CaptureRun, page: Page, url: string): Promise<void> {
@@ -348,6 +379,14 @@ export class CaptureSession {
     if (value === undefined) return;
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
       throw new AppiiError('BAD_INPUT', `Capture option ${name} must be a non-negative number of milliseconds, got ${String(value)}`);
+    }
+  }
+
+  static #checkLogin(options: CaptureSessionOptions): void {
+    for (const field of options.login ?? []) {
+      if (typeof field.name !== 'string' || field.name === '' || typeof field.value !== 'string') {
+        throw new AppiiError('BAD_INPUT', 'Capture option login needs fields with a non-empty name and a string value');
+      }
     }
   }
 

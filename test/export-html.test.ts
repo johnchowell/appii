@@ -26,7 +26,7 @@ function maliciousModel(): ApiModel {
       examples: [{ '<b>field</b>': '</pre><script>alert(6)</script>' }],
     },
     responses: [{ status: 200, count: 1, headers: ['x-<i>'], body: { mimeType: 'text/html', kind: 'html', examples: ['<script>alert(7)</script>'] } }],
-    auth: { cookies: ['sid'], headers: [], bearer: false, csrf: [{ location: 'header', name: 'x-<csrf>', source: 'cookie', sourceName: '<c>' }] },
+    auth: { cookies: ['sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [{ location: 'header', name: 'x-<csrf>', source: 'cookie', sourceName: '<c>' }] },
   });
   return ExportModel.model([evil], {
     name: '<script>alert(8)</script> Caf\u00e9',
@@ -230,7 +230,7 @@ describe('HTML report at phone width (BOOKS-7)', () => {
       method: 'GET',
       path: '/catalogue/the-no-1-ladies-detective-agency-no-1-ladies-detective-agency-1_176/index.html',
       name,
-      auth: { cookies: ['a_very_long_session_cookie_name_that_does_not_fit_on_a_phone'], headers: [], bearer: false, csrf: [] },
+      auth: { cookies: ['a_very_long_session_cookie_name_that_does_not_fit_on_a_phone'], headers: [], anonymous: 'untested', bearer: false, csrf: [] },
     });
     const file = join(dir, 'report.html');
     await writeFile(file, new HtmlExporter().export(ExportModel.model([endpoint])).content);

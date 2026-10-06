@@ -18,7 +18,7 @@ function endpoint(over: Partial<Endpoint>): Endpoint {
     queryParams: [],
     headerParams: [],
     responses: [],
-    auth: { cookies: [], headers: [], bearer: false, csrf: [] },
+    auth: { cookies: [], headers: [], anonymous: 'untested', bearer: false, csrf: [] },
     resourceTypes: ['fetch'],
     samples: [],
     count: 1,
@@ -35,7 +35,7 @@ test('requestSample fills path, query, csrf header and json body', () => {
       { name: 'page', in: 'query', required: true, schema: { type: 'integer' }, examples: [] },
       { name: 'q', in: 'query', required: false, schema: { type: 'string' }, examples: ['a b'] },
     ],
-    auth: { cookies: ['csrf'], headers: [], bearer: false, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }] },
+    auth: { cookies: ['csrf'], headers: [], anonymous: 'untested', bearer: false, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }] },
     requestBody: { mimeType: 'application/json', kind: 'json', examples: [{ name: 'Thing', password: '<redacted>' }] },
     samples: [{ exchangeId: 'e1', url: 'http://127.0.0.1:9/api/items/42?page=1&q=a+b', status: 201, startedAt: '2024-01-01T00:00:00.000Z' }],
   });
@@ -74,7 +74,7 @@ test('form and multipart samples become curl field flags', () => {
       schema: { type: 'object', properties: { email: { type: 'string', format: 'email' }, remember: { const: 'yes' } } },
       examples: [],
     },
-    auth: { cookies: [], headers: [], bearer: false, csrf: [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token' }] },
+    auth: { cookies: [], headers: [], anonymous: 'untested', bearer: false, csrf: [{ location: 'body', name: 'csrf_token', source: 'hidden-field', sourceName: 'csrf_token' }] },
   });
   const s = Samples.requestSample(form);
   assert.deepEqual(Samples.plainValue(s.body?.value), { email: 'user@example.com', remember: 'yes', csrf_token: '{{csrf_token}}' });
@@ -162,14 +162,14 @@ test('bearer and cookie-sourced CSRF placeholders are linked in the shared sampl
       { name: 'Authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] },
       { name: 'X-CSRF-Token', in: 'header', required: true, schema: { type: 'string' }, examples: ['<redacted>'] },
     ],
-    auth: { cookies: ['csrftoken'], headers: ['Authorization'], bearer: true, csrf: [{ location: 'header', name: 'X-CSRF-Token', source: 'cookie', sourceName: 'csrftoken' }] },
+    auth: { cookies: ['csrftoken'], headers: ['Authorization'], anonymous: 'untested', bearer: true, csrf: [{ location: 'header', name: 'X-CSRF-Token', source: 'cookie', sourceName: 'csrftoken' }] },
   });
   const s = Samples.requestSample(e);
   const literal = Curl.curlCommand(s, { multiline: false });
   assert.ok(literal.includes(`-H 'Authorization: Bearer {{access_token}}'`), literal);
   assert.ok(literal.includes(`-H 'X-CSRF-Token: {{csrftoken}}'`), literal);
   assert.deepEqual(Curl.placeholderNames(s), ['APPII_ACCESS_TOKEN', 'APPII_CSRFTOKEN']);
-  const missing = Samples.requestSample(endpoint({ auth: { cookies: [], headers: [], bearer: true, csrf: [] } }));
+  const missing = Samples.requestSample(endpoint({ auth: { cookies: [], headers: [], anonymous: 'untested', bearer: true, csrf: [] } }));
   assert.ok(Curl.curlCommand(missing).includes(`'Authorization: Bearer {{access_token}}'`));
 });
 

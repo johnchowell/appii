@@ -2,8 +2,10 @@ import type { ApiModel, CookieInfo, CookieRole } from '../model/index.js';
 import { Ansi, EndpointIndex, Text } from '../shared/index.js';
 import type { AnsiStyle } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
+import type { PresenterBlock } from './presenter.js';
 import type { TableColumn } from './table-renderer.js';
 import { TextLayout } from './text-layout.js';
+import type { Definition } from './text-layout.js';
 
 export class CookieListPresenter extends BasePresenter<ApiModel> {
   static readonly COLUMNS: readonly TableColumn[] = [
@@ -17,6 +19,7 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
     { header: 'USED BY', flex: true, minWidth: 10 },
     { header: 'VALUE', flex: true, minWidth: 8, optional: true, priority: 1 },
   ];
+  static readonly SESSION_HEADING = 'Login and logout';
   static readonly ROLE_STYLES: Readonly<Record<CookieRole, AnsiStyle>> = {
     session: 'cyan',
     auth: 'yellow',
@@ -67,7 +70,9 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
     const header = [this.heading(`${model.name || 'API'}: ${count}`)];
     if (this.filter.active) header.push(this.ansi.dim(this.ansi.clean(`Filter: cookies of endpoints matching ${this.filter.describe().join(', ')}`)));
     if (cookies.length === 0) return this.compose([header, total === 0 ? 'No cookies were recorded.' : 'No cookies belong to the matching endpoints.']);
-    const numbers = new Map(EndpointIndex.of(model).entries().map((entry) => [entry.endpoint.id, entry.number]));
+    const index = EndpointIndex.of(model);
+    const numbers = new Map(index.entries().map((entry) => [entry.endpoint.id, entry.number]));
+    const columns = CookieListPresenter.COLUMNS;
     const rows = cookies.map((cookie) => {
       const flags = CookieListPresenter.flags(cookie, this.ansi);
       return [
@@ -83,10 +88,32 @@ export class CookieListPresenter extends BasePresenter<ApiModel> {
       ];
     });
     const table = this.table();
-    const layout = table.layout(CookieListPresenter.COLUMNS, rows);
+    const layout = table.layout(columns, rows);
     const notes = [CookieListPresenter.LEGEND];
-    if (layout.hidden.length > 0) notes.push(`Columns hidden to fit ${this.width} characters: ${layout.hidden.map((i) => CookieListPresenter.COLUMNS[i]?.header ?? '').join(', ')}`);
-    return this.compose([header, table.render(CookieListPresenter.COLUMNS, rows, layout), notes.flatMap((note) => TextLayout.wrap(note, this.width)).map((line) => this.ansi.dim(line))]);
+    if (layout.hidden.length > 0) notes.push(`Columns hidden to fit ${this.width} characters: ${layout.hidden.map((i) => columns[i]?.header ?? '').join(', ')}`);
+    return this.compose([header, table.render(columns, rows, layout), this.#session(cookies, index), notes.flatMap((note) => TextLayout.wrap(note, this.width)).map((line) => this.ansi.dim(line))]);
+  }
+
+  static lifecycle(cookie: CookieInfo, index: EndpointIndex): string {
+    const where = (ids: readonly string[]): string =>
+      ids
+        .map((id) => {
+          const endpoint = index.get(id);
+          return endpoint ? `#${index.numberOf(endpoint)} ${endpoint.method} ${endpoint.path}` : id;
+        })
+        .join(', ');
+    const parts: string[] = [];
+    if ((cookie.issuedBy?.length ?? 0) > 0) parts.push(`issued by ${where(cookie.issuedBy ?? [])}`);
+    if ((cookie.revokedBy?.length ?? 0) > 0) parts.push(`revoked by ${where(cookie.revokedBy ?? [])}`);
+    return parts.join('; ');
+  }
+
+  #session(cookies: readonly CookieInfo[], index: EndpointIndex): PresenterBlock {
+    const entries: Definition[] = cookies.flatMap((cookie): Definition[] => {
+      const text = CookieListPresenter.lifecycle(cookie, index);
+      return text === '' ? [] : [[this.ansi.clean(cookie.name), this.ansi.clean(text)]];
+    });
+    return entries.length === 0 ? undefined : [this.ansi.bold(`${CookieListPresenter.SESSION_HEADING}:`), ...this.definitions(entries, 2)];
   }
 
   #numbers(ids: readonly string[], numbers: ReadonlyMap<string, number>): string {

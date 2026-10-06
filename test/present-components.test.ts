@@ -390,13 +390,17 @@ describe('EndpointFormatter', () => {
     assert.deepEqual(EndpointIndex.statuses(byId(FIXTURE, 'post-api-items')), [201, 400]);
     assert.equal(plain.statuses(byId(FIXTURE, 'get-api-items-itemid')), '200 404');
     assert.equal(color.statuses(byId(FIXTURE, 'get-api-items-itemid')), `${Ansi.color.green('200')} ${Ansi.color.yellow('404')}`);
-    assert.equal(plain.auth(byId(FIXTURE, 'post-api-items')), 'cookie,csrf');
+    assert.equal(plain.auth(byId(FIXTURE, 'post-api-items')), 'cookie~,csrf');
     assert.equal(plain.auth(byId(FIXTURE, 'get-root')), '');
-    assert.equal(plain.auth(byId(MIXED, 'post-api-v1-orders')), 'bearer');
-    assert.equal(plain.auth(byId(MIXED, 'get-api-v1-orders')), 'header');
-    const all = { ...byId(MIXED, 'post-api-v1-orders'), auth: { cookies: ['sid'], headers: ['authorization', 'x-api-key'], bearer: true, csrf: [{ location: 'header' as const, name: 'x-csrf', source: 'cookie' as const }] } };
+    assert.equal(plain.auth(byId(FIXTURE, 'post-login')), 'login,csrf');
+    assert.equal(plain.auth(byId(MIXED, 'post-api-v1-orders')), 'bearer~');
+    assert.equal(plain.auth(byId(MIXED, 'get-api-v1-orders')), 'header~');
+    const all = { ...byId(MIXED, 'post-api-v1-orders'), auth: { cookies: ['sid'], headers: ['authorization', 'x-api-key'], anonymous: 'refused' as const, bearer: true, csrf: [{ location: 'header' as const, name: 'x-csrf', source: 'cookie' as const }] } };
     assert.deepEqual(EndpointFormatter.authLabels(all), ['cookie', 'bearer', 'header', 'csrf']);
-    const basic = { ...all, auth: { cookies: [], headers: ['authorization'], bearer: false, csrf: [] } };
+    assert.deepEqual(EndpointFormatter.authLabels({ ...all, auth: { ...all.auth, anonymous: 'allowed' } }), ['cookie?', 'bearer?', 'header?', 'csrf']);
+    assert.deepEqual(EndpointFormatter.authLabels({ ...all, auth: { ...all.auth, anonymous: 'untested' } }), ['cookie~', 'bearer~', 'header~', 'csrf']);
+    assert.deepEqual(EndpointFormatter.authLabels({ ...all, role: 'logout', auth: { ...all.auth, anonymous: 'untested' } }), ['logout', 'cookie~', 'bearer~', 'header~', 'csrf']);
+    const basic = { ...all, auth: { cookies: [], headers: ['authorization'], anonymous: 'refused' as const, bearer: false, csrf: [] } };
     assert.deepEqual(EndpointFormatter.authLabels(basic), ['header']);
   });
 

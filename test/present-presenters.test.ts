@@ -199,12 +199,12 @@ describe('EndpointListPresenter', () => {
     assert.deepEqual(tableRows(out)[0], ['#', 'METHOD', 'PATH', 'QUERY', 'BODY', 'STATUS', 'AUTH', 'HITS']);
     const rows = numberedRows(out);
     assert.equal(rows.size, 12);
-    assert.deepEqual(rows.get(3), ['3', 'GET', '/api/items', 'page*, limit*', '', '200', 'cookie', '2']);
-    assert.deepEqual(rows.get(4), ['4', 'POST', '/api/items', '', 'json: name, price', '201 400', 'cookie,csrf', '2']);
-    assert.deepEqual(rows.get(5), ['5', 'GET', '/api/items/{itemId}', '', '', '200 404', 'cookie', '3']);
-    assert.deepEqual(rows.get(7), ['7', 'POST', '/graphql#GetItem', '', 'graphql: $id', '200', 'cookie', '1']);
-    assert.deepEqual(rows.get(9), ['9', 'POST', '/login', '', 'form: csrf_token, email, password +2', '303', 'csrf', '1']);
-    assert.deepEqual(rows.get(12), ['12', 'POST', '/signup', 'draft', 'multipart: username, email, age +10', '-', 'cookie?', '0']);
+    assert.deepEqual(rows.get(3), ['3', 'GET', '/api/items', 'page*, limit*', '', '200', 'cookie~', '2']);
+    assert.deepEqual(rows.get(4), ['4', 'POST', '/api/items', '', 'json: name, price', '201 400', 'cookie~,csrf', '2']);
+    assert.deepEqual(rows.get(5), ['5', 'GET', '/api/items/{itemId}', '', '', '200 404', 'cookie~', '3']);
+    assert.deepEqual(rows.get(7), ['7', 'POST', '/graphql#GetItem', '', 'graphql: $id', '200', 'cookie~', '1']);
+    assert.deepEqual(rows.get(9), ['9', 'POST', '/login', '', 'form: csrf_token, email, password +2', '303', 'login,csrf', '1']);
+    assert.deepEqual(rows.get(12), ['12', 'POST', '/signup', 'draft', 'multipart: username, email, age +10', '-', 'cookie~', '0']);
     const index = EndpointIndex.of(FIXTURE);
     for (const [number, row] of rows) assert.equal(index.get(number)?.path, row[2]?.replace(/#.*$/, ''));
     assert.doesNotMatch(out, /Columns hidden/);
@@ -240,8 +240,8 @@ describe('EndpointListPresenter', () => {
     assert.ok(first > 0 && second > first);
     assert.equal(all[first + 1], all[second + 1]);
     assert.deepEqual(numberedRows(out).get(7)?.slice(0, 4), ['7', 'POST', '/v2/collect', 'tid*']);
-    assert.equal(numberedRows(out).get(1)?.[6], 'header');
-    assert.equal(numberedRows(out).get(2)?.[6], 'bearer');
+    assert.equal(numberedRows(out).get(1)?.[6], 'header~');
+    assert.equal(numberedRows(out).get(2)?.[6], 'bearer~');
   });
 
   test('draws a top-10 hits chart, a status distribution line and command hints', () => {
@@ -444,8 +444,9 @@ describe('EndpointDetailPresenter', () => {
 
   test('auth section with the CSRF token table', () => {
     const auth = section(detail(4), 'Auth');
-    assert.ok(auth.includes('Credentials:        cookie auth'));
-    assert.ok(auth.includes('Anonymous:          no'));
+    assert.ok(auth.includes('Credentials:        cookie auth (anonymous access not tested)'));
+    assert.ok(auth.includes('Anonymous:          not tested, every request seen carried credentials'));
+    assert.ok(auth.includes('Seen:               authenticated'));
     assert.ok(auth.includes('Credential cookies: auth'));
     assert.ok(auth.includes('Other cookies:      csrf, sid, theme (sent by the browser; not credentials)'));
     assert.ok(auth.includes('Bearer:             no'));
@@ -457,11 +458,12 @@ describe('EndpointDetailPresenter', () => {
     const login = tableRows(section(detail(9), 'Auth').join('\n'));
     assert.deepEqual(login[1], ['body', 'csrf_token', 'hidden-field', 'csrf_token', 'https://shop.example.com/login']);
     const bearer = section(detail('createOrder', { width: 100 }, MIXED), 'Auth');
-    assert.ok(bearer.includes('Credentials:        bearer'));
+    assert.ok(bearer.includes('Credentials:        bearer (anonymous access not tested)'));
     assert.ok(bearer.includes('Bearer:             yes'));
     assert.ok(bearer.includes('Headers:            authorization'));
     assert.ok(section(detail(1), 'Auth').includes('CSRF:               none'));
-    assert.ok(section(detail(1), 'Auth').includes('Anonymous:          yes, a request without credentials succeeded'));
+    assert.ok(section(detail(1), 'Auth').includes('Anonymous:          allowed, a request without credentials was not refused'));
+    assert.ok(section(detail(1), 'Auth').includes('Seen:               anonymous'));
   });
 
   test('responses per status with counts, MIME types, headers and schema rows', () => {
@@ -582,6 +584,8 @@ describe('CookieListPresenter', () => {
     ]);
     assert.match(out, /SET BY and USED BY list endpoint numbers from the endpoint list\./);
     assert.doesNotMatch(out, /Columns hidden/);
+    const session = lines(out).slice(lines(out).indexOf('Login and logout:'));
+    assert.deepEqual(session.slice(0, 2), ['Login and logout:', '  auth: issued by #9 POST /login']);
   });
 
   test('narrow widths hide optional columns and say so', () => {

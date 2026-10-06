@@ -137,7 +137,8 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     const { model } = built!;
     const quotes = endpoint(model, 'GET', '/api/quotes');
     assert.deepEqual(quotes.auth.cookies, ['session']);
-    assert.equal(quotes.auth.anonymous, true);
+    assert.equal(quotes.auth.anonymous, 'allowed');
+    assert.deepEqual(quotes.auth.seen, ['anonymous']);
     assert.deepEqual(quotes.auth.sets, []);
     assert.deepEqual(openapi(model).paths['/api/quotes']?.get?.security ?? [], []);
     assert.deepEqual(EndpointFormatter.authLabels(quotes, Credentials.roles(model)), []);
@@ -148,7 +149,8 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     const { model } = built!;
     const account = endpoint(model, 'GET', '/account');
     assert.deepEqual(account.auth.sets, [['cookie:session']]);
-    assert.notEqual(account.auth.anonymous, true);
+    assert.equal(account.auth.anonymous, 'refused');
+    assert.deepEqual(account.auth.seen, ['anonymous', 'authenticated']);
     assert.deepEqual(openapi(model).paths['/account']?.get?.security, [{ sessionCookie: [] }]);
     assert.deepEqual(EndpointFormatter.authLabels(account, Credentials.roles(model)), ['cookie']);
     assert.ok(example(model, account).includes('-b "session=${APPII_SESSION}"'), example(model, account));
@@ -158,7 +160,7 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     const { model } = built!;
     const home = endpoint(model, 'GET', '/');
     assert.deepEqual(home.auth.sets, [['cookie:session']]);
-    assert.equal(home.auth.anonymous, true);
+    assert.equal(home.auth.anonymous, 'allowed');
     assert.deepEqual(openapi(model).paths['/']?.get?.security, [{ sessionCookie: [] }, {}]);
     assert.deepEqual(EndpointFormatter.authLabels(home, Credentials.roles(model)), ['cookie?']);
     const list = new EndpointListPresenter({ width: 200 }).render(model);
@@ -182,7 +184,7 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     const { model } = built!;
     const out = new EndpointDetailPresenter({ width: 160 }).render({ model, ref: endpoint(model, 'GET', '/api/quotes').id });
     assert.match(out, /Credentials: +none/);
-    assert.match(out, /Anonymous: +yes/);
+    assert.match(out, /Anonymous: +allowed/);
     assert.match(out, /Credential cookies: +none/);
     assert.match(out, /Other cookies: +session \(sent by the browser; not credentials\)/);
   });
@@ -225,7 +227,7 @@ describe('analytics ids that page scripts create are never credentials (WIKI-2, 
     assert.equal(model.cookies.find((info) => info.name === 'sitewikimwuser-sessionId')?.role, 'tracking');
     const summary = endpoint(model, 'GET', '/api/rest_v1/page/summary/{title}');
     assert.ok(summary.auth.cookies.includes('sitewikimwuser-sessionId'), summary.auth.cookies.join(', '));
-    assert.equal(summary.auth.anonymous, true);
+    assert.equal(summary.auth.anonymous, 'allowed');
     assert.deepEqual(summary.auth.sets, []);
     const spec = openapi(model);
     assert.equal(spec.components?.securitySchemes, undefined);
@@ -254,13 +256,16 @@ function httpbinLike(): Handler {
   };
 }
 
-describe('credentials sent together are one requirement, and HTTP schemes keep their meaning (HTTPBIN-3, HTTPBIN-9, HTTPBIN-11)', () => {
+describe('credentials sent together are one requirement, and HTTP schemes keep their meaning (HTTPBIN-3, HTTPBIN-9, HTTPBIN-11, QL-4)', () => {
   let built: Built | undefined;
 
   before(async () => {
     built = await build(httpbinLike(), async (page) => {
       const calls: [string, RequestInit][] = [
         ['/cookies/set?session=abc123def', {}],
+        ['/bearer', {}],
+        ['/basic-auth/user/pass', {}],
+        ['/api/me', {}],
         ['/bearer', { headers: { authorization: 'Bearer test-token-123' } }],
         ['/basic-auth/user/pass', { headers: { authorization: `Basic ${Buffer.from('user:pass-w0rd').toString('base64')}` } }],
         ['/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: { email: 'a@example.com', password: 'secret-pass-1' } }) }],
@@ -277,6 +282,7 @@ describe('credentials sent together are one requirement, and HTTP schemes keep t
     const bearer = endpoint(model, 'GET', '/bearer');
     assert.deepEqual(bearer.auth.cookies, ['session', 'visitor']);
     assert.deepEqual(bearer.auth.sets, [['http:bearer']]);
+    assert.equal(bearer.auth.anonymous, 'refused');
     assert.deepEqual(openapi(model).paths['/bearer']?.get?.security, [{ bearerAuth: [] }]);
   });
 

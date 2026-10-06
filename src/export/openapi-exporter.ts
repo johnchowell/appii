@@ -8,12 +8,19 @@ import { OpenApiOperationBuilder } from './openapi-operation-builder.js';
 import type { OpenApiObject } from './openapi-operation-builder.js';
 import { OpenApiOperationMerger } from './openapi-operation-merger.js';
 import { OpenApiPathPlanner } from './openapi-path-planner.js';
+import type { PathPlan } from './openapi-path-planner.js';
 import { OpenApiSecurity } from './openapi-security.js';
 
 export interface OpenApiExporterDeps {
   planner?: OpenApiPathPlanner;
   operations?: OpenApiOperationBuilder;
   merger?: OpenApiOperationMerger;
+}
+
+export interface OperationIds {
+  own: ReadonlyMap<Endpoint, string>;
+  merged: ReadonlyMap<PathPlan, string>;
+  operations: ReadonlyMap<string, string>;
 }
 
 export class OpenApiExporter extends BaseExporter {
@@ -44,12 +51,11 @@ export class OpenApiExporter extends BaseExporter {
     const opts = Helpers.normalizeOptions(options);
     const index = EndpointIndex.of(model);
     const components = new OpenApiComponents();
-    const security = new OpenApiSecurity(model, components);
     const primary = model.primaryOrigin || endpoints[0]?.origin || '';
     const top = primary === '' ? '' : Helpers.originBase(model, primary, opts);
     const result = this.#planner.plan(endpoints, { base: (origin) => Helpers.originBase(model, origin, opts) });
-    const operationIds = new Set<string>();
-    const reserved = new Set(endpoints.map((endpoint) => endpoint.name));
+    const ids = OpenApiExporter.operationIds(result.plans, endpoints);
+    const security = new OpenApiSecurity(model, components, ids.operations);
     const paths: Record<string, OpenApiObject> = {};
     const tags: string[] = [];
     for (const plan of result.plans) {
@@ -58,7 +64,7 @@ export class OpenApiExporter extends BaseExporter {
           model,
           index,
           key: plan.key,
-          operationId: Text.uniqueName(endpoint.name || 'operation', operationIds),
+          operationId: ids.own.get(endpoint) ?? endpoint.name,
           renames: plan.renames,
           components,
           security,
@@ -67,10 +73,8 @@ export class OpenApiExporter extends BaseExporter {
       const first = plan.endpoints[0];
       let operation = built[0] ?? {};
       if (built.length > 1 && first) {
-        const merged = Text.uniqueName(Text.camelCase(`${first.method} ${first.path}`) || 'graphql', new Set([...reserved, ...operationIds]));
-        operationIds.add(merged);
         operation = this.#merger.merge(built, {
-          operationId: merged,
+          operationId: ids.merged.get(plan) ?? first.name,
           summary: `GraphQL ${first.path}`,
           operationNames: plan.endpoints.map((endpoint) => endpoint.operationName ?? endpoint.name),
           components,
@@ -105,6 +109,25 @@ export class OpenApiExporter extends BaseExporter {
       }));
     }
     return document;
+  }
+
+  static operationIds(plans: readonly PathPlan[], endpoints: readonly Endpoint[]): OperationIds {
+    const taken = new Set<string>();
+    const reserved = new Set(endpoints.map((endpoint) => endpoint.name));
+    const own = new Map<Endpoint, string>();
+    const merged = new Map<PathPlan, string>();
+    const operations = new Map<string, string>();
+    for (const plan of plans) {
+      for (const endpoint of plan.endpoints) own.set(endpoint, Text.uniqueName(endpoint.name || 'operation', taken));
+      const first = plan.endpoints[0];
+      if (plan.endpoints.length > 1 && first) {
+        const id = Text.uniqueName(Text.camelCase(`${first.method} ${first.path}`) || 'graphql', new Set([...reserved, ...taken]));
+        taken.add(id);
+        merged.set(plan, id);
+      }
+      for (const endpoint of plan.endpoints) operations.set(endpoint.id, merged.get(plan) ?? own.get(endpoint) ?? endpoint.name);
+    }
+    return { own, merged, operations };
   }
 
   protected render(model: ApiModel, endpoints: Endpoint[], options: ExportOptions): string {

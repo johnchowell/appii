@@ -40,7 +40,8 @@ describe('EndpointGrouper on the fixture flow', () => {
     ]);
     for (const endpoint of endpoints) {
       assert.equal(endpoint.id, endpoint.key);
-      assert.deepEqual(endpoint.auth, { cookies: [], headers: [], bearer: false, csrf: [] });
+      assert.deepEqual(endpoint.auth, { cookies: [], headers: [], bearer: false, csrf: [], anonymous: 'untested' });
+      assert.equal(endpoint.role, undefined);
       assert.equal(endpoint.firstParty, false);
     }
   });

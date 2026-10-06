@@ -220,7 +220,7 @@ describe('Markdown and HTML show the command of list --show (HTTPBIN-12)', () =>
       method: 'GET',
       path: '/bearer',
       headerParams: [{ name: 'authorization', in: 'header', required: true, schema: { type: 'string' }, examples: ['Bearer <redacted>'] }],
-      auth: { cookies: ['session'], headers: ['authorization'], bearer: true, csrf: [] },
+      auth: { cookies: ['session'], headers: ['authorization'], anonymous: 'untested', bearer: true, csrf: [] },
     });
     const model = ExportModel.model([endpoint]);
     const shell = Curl.curlCommand(Samples.requestSample(endpoint, { baseUrl: ExportModel.ORIGIN }), { variables: 'shell' });

@@ -33,6 +33,9 @@ export const NEWLINE_SOURCE = '\r\n|\r|\n';
 export const FORM_BODY_KINDS: readonly BodyKind[] = Object.freeze<BodyKind[]>(['form', 'multipart', 'text']);
 export const REDACTED_KEY: RegExp = /([A-Za-z0-9_.\-[\]]+)=$/;
 export const REPEAT_SEPARATOR = '_';
+export const LOGIN_ROLE = 'login';
+export const IDENTIFIER_LABEL = 'the user name';
+export const PASSWORD_LABEL = 'the password';
 
 export interface SampleEntry {
   readonly name: string;
@@ -303,6 +306,19 @@ export function renamePlaceholders(sample: RequestSample, rename: (name: string)
   return sample.cookie ? { ...withUser, cookie: text(sample.cookie) } : withUser;
 }
 
+export function loginInputs(endpoint: Endpoint): [string, string][] {
+  const login = endpoint.role === LOGIN_ROLE ? endpoint.login : undefined;
+  if (!login) return [];
+  const out: [string, string][] = [];
+  if (login.identifier !== undefined && login.identifier !== login.password) out.push([login.identifier, IDENTIFIER_LABEL]);
+  if (login.password !== '') out.push([login.password, PASSWORD_LABEL]);
+  return out;
+}
+
+function requireLogin(entries: Map<string, SampleValue>, endpoint: Endpoint): void {
+  for (const [name, label] of loginInputs(endpoint)) if (entries.has(name)) entries.set(name, SampleText.required(name, label));
+}
+
 export function cookieJar(endpoint: Endpoint): SampleText | undefined {
   const names = Credentials.exampleCookies(endpoint);
   if (names.length === 0) return undefined;
@@ -448,6 +464,7 @@ function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined,
     for (const param of endpoint.queryParams) if (param.required && !entries.has(param.name)) entries.set(param.name, paramValue(param));
   }
   for (const token of endpoint.auth.csrf) if (token.location === 'query') entries.set(token.name, placeholder(token.name));
+  if (submission?.method === 'GET') requireLogin(entries, endpoint);
   return [...entries].map(([name, value]) => ({ name, value: textValue(value) }));
 }
 
@@ -508,6 +525,7 @@ function sampleBody(endpoint: Endpoint, submission: FormSubmission | undefined):
     const entries = new Map<string, SampleValue>(Object.entries(value));
     if (submission) applySubmitter(entries, submission);
     for (const token of endpoint.auth.csrf) if (token.location === 'body') entries.set(token.name, placeholder(token.name));
+    requireLogin(entries, endpoint);
     value = Object.fromEntries(entries);
     if (form) value = normalizeNewlines(value);
     if (form?.enctype === TEXT_PLAIN) value = textPlain(value);

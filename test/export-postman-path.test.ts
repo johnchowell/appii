@@ -86,7 +86,7 @@ describe('Postman keeps path parameters inside a segment as variables (BOOKS-R3)
       name: 'postItem',
       id: 'postItem',
       pathParams: [param('baseUrl', 'string', ['a']), param('csrf', 'string', ['b'])],
-      auth: { cookies: [], headers: [], bearer: false, csrf: [{ name: 'csrf', location: 'header', source: 'meta', sourceName: 'csrf-token' }] },
+      auth: { cookies: [], headers: [], anonymous: 'untested', bearer: false, csrf: [{ name: 'csrf', location: 'header', source: 'meta', sourceName: 'csrf-token' }] },
     });
     const own = JSON.parse(new PostmanExporter().export(ExportModel.model([csrf])).content) as Record<string, unknown>;
     const url = obj(obj(requests(own)[0]?.request).url);

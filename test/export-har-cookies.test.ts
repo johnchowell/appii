@@ -69,7 +69,7 @@ class QuotesSite {
 }
 
 function sets(model: ApiModel): Map<string, unknown> {
-  return new Map(model.endpoints.map((endpoint) => [`${endpoint.method} ${endpoint.path}`, [endpoint.auth.sets ?? [], endpoint.auth.anonymous === true]]));
+  return new Map(model.endpoints.map((endpoint) => [`${endpoint.method} ${endpoint.path}`, [endpoint.auth.sets ?? [], endpoint.auth.anonymous === 'allowed']]));
 }
 
 function sessionSent(har: Har, path: string): string[] {

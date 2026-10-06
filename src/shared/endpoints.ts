@@ -26,7 +26,18 @@ export class EndpointIndex {
     const forms = new Set(endpoints.flatMap((endpoint) => (endpoint.form ? [EndpointIndex.#formKey(endpoint.form.pageUrl, endpoint.form.selector)] : [])));
     const cookies = model.cookies
       .filter((cookie) => [...cookie.setBy, ...cookie.usedBy].some((id) => ids.has(id)) || (cookie.setBy.length === 0 && cookie.usedBy.length === 0 && sent.has(cookie.name)))
-      .map((cookie) => ({ ...cookie, setBy: cookie.setBy.filter((id) => ids.has(id)), usedBy: cookie.usedBy.filter((id) => ids.has(id)) }));
+      .map((cookie) => {
+        const { issuedBy, revokedBy, ...rest } = cookie;
+        const issued = (issuedBy ?? []).filter((id) => ids.has(id));
+        const revoked = (revokedBy ?? []).filter((id) => ids.has(id));
+        return {
+          ...rest,
+          setBy: cookie.setBy.filter((id) => ids.has(id)),
+          usedBy: cookie.usedBy.filter((id) => ids.has(id)),
+          ...(issued.length > 0 ? { issuedBy: issued } : {}),
+          ...(revoked.length > 0 ? { revokedBy: revoked } : {}),
+        };
+      });
     const kept = model.forms.flatMap((form) => {
       if (form.endpoints === undefined) return forms.has(EndpointIndex.#formKey(form.pageUrl, form.selector)) ? [form] : [];
       const linked = form.endpoints.filter((id) => ids.has(id));

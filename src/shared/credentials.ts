@@ -1,5 +1,5 @@
 import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
-import type { ApiModel, CookieRole, Endpoint } from '../model/index.js';
+import type { AnonymousAccess, ApiModel, CookieRole, Endpoint } from '../model/index.js';
 import { EndpointIndex } from './endpoints.js';
 
 export type CredentialKind = 'cookie' | 'header' | 'http';
@@ -23,7 +23,11 @@ export class Credentials {
   static readonly ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
   static readonly KINDS: ReadonlySet<string> = new Set<CredentialKind>(['cookie', 'header', 'http']);
   static readonly OPTIONAL_MARK = '?';
+  static readonly UNTESTED_MARK = '~';
   static readonly UNKNOWN_MARK = '?';
+  static readonly ANONYMOUS_LABELS: Readonly<Record<AnonymousAccess, string>> = Object.freeze({ allowed: 'allowed', refused: 'refused', untested: 'not tested' });
+  static readonly UNTESTED_NOTE = 'anonymous access not tested';
+  static readonly OPTIONAL_NOTE = 'optional';
   static readonly REFUSAL_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
   static entry(kind: CredentialKind, name: string): string {
@@ -98,7 +102,15 @@ export class Credentials {
   }
 
   static optional(endpoint: Endpoint): boolean {
-    return endpoint.auth.anonymous === true || endpoint.count === 0;
+    return endpoint.auth.anonymous !== 'refused';
+  }
+
+  static untested(endpoint: Endpoint): boolean {
+    return endpoint.auth.anonymous === 'untested';
+  }
+
+  static anonymousLabel(endpoint: Endpoint): string {
+    return Credentials.ANONYMOUS_LABELS[endpoint.auth.anonymous];
   }
 
   static required(endpoint: Endpoint, roles?: CookieRoles): boolean {
@@ -106,8 +118,8 @@ export class Credentials {
   }
 
   static refusals(endpoint: Endpoint, roles?: CookieRoles): number[] {
-    if (endpoint.count === 0 || endpoint.auth.anonymous === true || Credentials.sets(endpoint, roles).length > 0) return [];
-    return EndpointIndex.statuses(endpoint).filter((status) => Credentials.REFUSAL_STATUSES.has(status));
+    if (endpoint.auth.anonymous !== 'refused' || Credentials.sets(endpoint, roles).length > 0) return [];
+    return EndpointIndex.statuses(endpoint);
   }
 
   static refusalNote(endpoint: Endpoint, roles?: CookieRoles): string {
@@ -130,7 +142,7 @@ export class Credentials {
       const refusals = Credentials.refusals(endpoint, roles);
       return refusals.length === 0 ? [] : [refusals.join('/') + Credentials.UNKNOWN_MARK];
     }
-    const marker = Credentials.optional(endpoint) ? Credentials.OPTIONAL_MARK : '';
+    const marker = Credentials.untested(endpoint) ? Credentials.UNTESTED_MARK : Credentials.optional(endpoint) ? Credentials.OPTIONAL_MARK : '';
     return out.map((kind) => kind + marker);
   }
 
@@ -144,7 +156,8 @@ export class Credentials {
     );
     if (sets.length === 0) return Credentials.refusalNote(endpoint, roles);
     const text = sets.join(' or ');
-    return Credentials.optional(endpoint) ? `${text} (optional)` : text;
+    if (Credentials.untested(endpoint)) return `${text} (${Credentials.UNTESTED_NOTE})`;
+    return Credentials.optional(endpoint) ? `${text} (${Credentials.OPTIONAL_NOTE})` : text;
   }
 
   static exampleCookies(endpoint: Endpoint, roles?: CookieRoles): string[] {

@@ -1,12 +1,14 @@
-import type { ApiModel, Endpoint } from '../model/index.js';
+import type { ApiModel, Endpoint, EndpointLogin } from '../model/index.js';
 import { Ansi, Credentials, EndpointIndex, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { BarChart } from './bar-chart.js';
+import { CookieListPresenter } from './cookie-list-presenter.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
 import type { TableColumn } from './table-renderer.js';
 import { TextLayout } from './text-layout.js';
+import type { Definition } from './text-layout.js';
 
 export interface EndpointListPresenterDeps {
   formatter?: EndpointFormatter;
@@ -26,6 +28,11 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   static readonly TOP_HITS = 10;
   static readonly EXPORT_FORMAT = 'openapi';
   static readonly OPTIONAL_HINT = `a label ending in ${Credentials.OPTIONAL_MARK} means the endpoint also answered a request without those credentials`;
+  static readonly UNTESTED_HINT = `a label ending in ${Credentials.UNTESTED_MARK} means no request without those credentials was seen, so anonymous access was not tested`;
+  static readonly NOT_SUBMITTED = 'known from a form; not submitted yet';
+  static readonly NOTHING_ISSUED = 'submitted, but no credential was issued';
+  static readonly AUTHENTICATED_ONLY = 'seen only with a logged-in credential';
+  static readonly REFUSED_ONLY = 'refused requests without credentials';
   static readonly REFUSED_HINT = `a status such as 401${Credentials.UNKNOWN_MARK} means the endpoint refused a request without credentials and the credential it expects was not captured`;
 
   readonly #format: EndpointFormatter;
@@ -77,9 +84,11 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     }
     const roles = Credentials.roles(model);
     const notes: string[] = [];
-    if (endpoints.some((endpoint) => Credentials.optional(endpoint) && Credentials.sets(endpoint, roles).length > 0)) notes.push(EndpointListPresenter.OPTIONAL_HINT);
+    const credentialed = endpoints.filter((endpoint) => Credentials.sets(endpoint, roles).length > 0);
+    if (credentialed.some((endpoint) => endpoint.auth.anonymous === 'allowed')) notes.push(EndpointListPresenter.OPTIONAL_HINT);
+    if (credentialed.some((endpoint) => Credentials.untested(endpoint))) notes.push(EndpointListPresenter.UNTESTED_HINT);
     if (endpoints.some((endpoint) => Credentials.refusals(endpoint, roles).length > 0)) notes.push(EndpointListPresenter.REFUSED_HINT);
-    return this.compose([header.join('\n'), ...this.#tables(model, groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#hints(notes)]);
+    return this.compose([header.join('\n'), ...this.#tables(model, groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#session(model, endpoints, index), this.#hints(notes)]);
   }
 
   #tables(model: ApiModel, groups: ReadonlyMap<string, readonly Endpoint[]>, index: EndpointIndex): PresenterBlock[] {
@@ -140,6 +149,41 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     if (totals.size === 0) return undefined;
     const items = [...totals].map(([status, hits]) => `${this.ansi.status(status)} x${hits}`);
     return TextLayout.flow(items, this.width, { prefix: this.ansi.bold('Statuses:') + ' ' });
+  }
+
+  static loginSummary(login: EndpointLogin, submitted: boolean): string {
+    const fields = [login.identifier, login.password].filter((name): name is string => name !== undefined && name !== '');
+    const issued = EndpointListPresenter.issued(login);
+    const state = login.evidence === 'observed' && issued !== '' ? `issues ${issued}` : submitted ? EndpointListPresenter.NOTHING_ISSUED : EndpointListPresenter.NOT_SUBMITTED;
+    return `${fields.length > 0 ? `with ${fields.join(' and ')}, ` : ''}${state}`;
+  }
+
+  static issued(login: EndpointLogin): string {
+    const parts = [...login.issues.cookies.map((name) => `cookie ${name}`), ...login.issues.tokens.map((path) => `bearer token from ${path}`)];
+    return parts.join(' and ');
+  }
+
+  static revoked(model: ApiModel, endpoint: Endpoint): string[] {
+    return [...new Set(model.cookies.filter((cookie) => cookie.revokedBy?.includes(endpoint.id) === true).map((cookie) => cookie.name))];
+  }
+
+  #session(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex): PresenterBlock {
+    const entries: Definition[] = [];
+    const where = (endpoint: Endpoint): string => this.ansi.clean(`#${index.numberOf(endpoint)} ${endpoint.method} ${endpoint.path}`);
+    for (const endpoint of endpoints) {
+      if (endpoint.role !== 'login' || !endpoint.login) continue;
+      entries.push(['Login', `${where(endpoint)} ${this.ansi.clean(EndpointListPresenter.loginSummary(endpoint.login, endpoint.count > 0))}`]);
+    }
+    for (const endpoint of endpoints) {
+      if (endpoint.role !== 'logout') continue;
+      const revoked = EndpointListPresenter.revoked(model, endpoint);
+      entries.push(['Logout', `${where(endpoint)}${revoked.length > 0 ? this.ansi.clean(`, revokes ${revoked.map((name) => `cookie ${name}`).join(' and ')}`) : ''}`]);
+    }
+    const refused = endpoints.filter((endpoint) => endpoint.auth.anonymous === 'refused').map((endpoint) => index.numberOf(endpoint));
+    if (refused.length > 0) entries.push(['Login needed', `${CookieListPresenter.ranges(refused)} (${EndpointListPresenter.REFUSED_ONLY})`]);
+    const authenticated = endpoints.filter((endpoint) => endpoint.auth.seen?.length === 1 && endpoint.auth.seen[0] === 'authenticated').map((endpoint) => index.numberOf(endpoint));
+    if (authenticated.length > 0) entries.push(['After login', `${CookieListPresenter.ranges(authenticated)} (${EndpointListPresenter.AUTHENTICATED_ONLY})`]);
+    return entries.length > 0 ? this.definitions(entries) : undefined;
   }
 
   #hints(notes: readonly string[]): string[] {

@@ -15,7 +15,7 @@ export class EndpointFormatter {
   }
 
   static authLabels(endpoint: Endpoint, roles?: CookieRoles): string[] {
-    const labels = Credentials.kinds(endpoint, roles);
+    const labels = [...(endpoint.role === undefined ? [] : [endpoint.role]), ...Credentials.kinds(endpoint, roles)];
     if (endpoint.auth.csrf.length > 0) labels.push(EndpointFormatter.CSRF_LABEL);
     return labels;
   }

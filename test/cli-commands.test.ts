@@ -219,7 +219,7 @@ describe('cli commands', () => {
     test('capture usage errors and failures', async () => {
       const both = await cli.run(['capture', 'https://example.com', '--from-har', 'devtools.har']);
       assert.equal(both.code, 2);
-      assert.match(both.stderr, /^error: --from-har converts a file and takes no URL \(got 'https:\/\/example\.com'\)\nusage: appii capture <url> \[options\]\n       appii capture --from-har <file\.har> \[-o <file>\]\n/);
+      assert.match(both.stderr, /^error: --from-har converts a file and takes no URL \(got 'https:\/\/example\.com'\)\nusage: appii capture <url> \[<url>\.\.\.\] \[options\]\n       appii capture --from-har <file\.har> \[-o <file>\]\n/);
       const headless = await cli.run(['capture', '--from-har', 'devtools.har', '--headless']);
       assert.equal(headless.code, 2);
       assert.match(headless.stderr, /--headless applies to recording and cannot be combined with --from-har/);
@@ -234,6 +234,9 @@ describe('cli commands', () => {
       const badUrl = await cli.run(['capture', 'not a url', '--headless']);
       assert.equal(badUrl.code, 1);
       assert.match(badUrl.stderr, /^error: Capture URL is not an absolute URL: not a url\n$/);
+      const badVisit = await cli.run(['capture', site.url, 'not a url', '--headless']);
+      assert.equal(badVisit.code, 1);
+      assert.match(badVisit.stderr, /^error: Capture URL is not an absolute URL: not a url\n$/);
       const missingHar = await cli.run(['capture', '--from-har', 'nope.har']);
       assert.equal(missingHar.code, 1);
       assert.match(missingHar.stderr, /^error: File not found: /);

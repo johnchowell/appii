@@ -94,8 +94,9 @@ describe('ModelBuilder on a hand-built fixture capture', () => {
     );
     assert.ok(model.endpoints.every((e) => e.firstParty));
     assert.deepEqual(Object.keys(endpoint(model, 'post-login')), [
-      'id', 'name', 'key', 'method', 'origin', 'path', 'kind', 'firstParty', 'pathParams', 'queryParams', 'headerParams', 'requestBody', 'responses', 'auth', 'form', 'resourceTypes', 'samples', 'count',
+      'id', 'name', 'key', 'method', 'origin', 'path', 'kind', 'firstParty', 'pathParams', 'queryParams', 'headerParams', 'requestBody', 'responses', 'auth', 'role', 'login', 'form', 'resourceTypes', 'samples', 'count',
     ]);
+    assert.deepEqual(Object.keys(endpoint(model, 'get-search')).includes('role'), false);
     assert.deepEqual(Object.keys(endpoint(model, 'post-graphql-getitem')).slice(0, 8), ['id', 'name', 'key', 'method', 'origin', 'path', 'operationName', 'kind']);
   });
 

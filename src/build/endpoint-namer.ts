@@ -124,7 +124,7 @@ export class EndpointNamer {
     }
     const last = segments[segments.length - 1];
     const parent = segments[segments.length - 2];
-    if (endpoint.kind === 'document' && method === 'GET') {
+    if (endpoint.kind === 'document' && method === 'GET' && endpoint.role === undefined) {
       const words = EndpointNamer.#resource(segments, qualified);
       const resource = words.length > 0 ? words : [EndpointNamer.HOME_WORD];
       const tail = Text.words(resource[resource.length - 1] ?? '');

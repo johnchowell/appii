@@ -4,6 +4,7 @@ import { Credentials, EndpointIndex, Http, Json, RequestBodies, Schema, Text } f
 import type { CookieRoles } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 import type { TokenSourceMarkup } from './helpers.js';
+import { LoginGuide } from './login-guide.js';
 import { OpenApiComponents } from './openapi-components.js';
 import { OpenApiSchemaAdapter } from './openapi-schema-adapter.js';
 import type { OpenApiSecurity } from './openapi-security.js';
@@ -36,6 +37,14 @@ export class OpenApiOperationBuilder {
   static readonly AUTH_KEY = 'x-appii-auth';
   static readonly UNOBSERVED_AUTH = 'required-unobserved';
   static readonly FILE_EXAMPLE_NOTE = 'A file part shows the name of the file that was sent; its media type is in the encoding of the part.';
+  static readonly ROLE_KEY = 'x-appii-role';
+  static readonly LOGIN_KEY = 'x-appii-login';
+  static readonly ANONYMOUS_KEY = 'x-appii-anonymous';
+  static readonly ANONYMOUS_LINES: Readonly<Record<string, string>> = Object.freeze({
+    allowed: 'Anonymous access: allowed. A request without the credential was also answered, so the credential is optional.',
+    refused: 'Anonymous access: refused. Every request without the credential failed, so the credential is required.',
+    untested: 'Anonymous access: not tested. No request without the credential was captured, so the security also lists {} (no credential): the credential may not be needed.',
+  });
 
   readonly #schemas: OpenApiSchemaAdapter;
 
@@ -51,7 +60,7 @@ export class OpenApiOperationBuilder {
     const operation: OpenApiObject = {
       operationId: ctx.operationId,
       summary: Helpers.summary(endpoint),
-      description: this.description(endpoint, ctx.security.roles),
+      description: this.description(endpoint, ctx.security.roles, ctx.security),
       tags: [Helpers.group(endpoint)],
     };
     const parameters = this.parameters(endpoint, ctx);
@@ -60,24 +69,38 @@ export class OpenApiOperationBuilder {
     if (body) operation.requestBody = body;
     operation.responses = this.responses(endpoint, ctx);
     const requirements = ctx.security.requirements(endpoint);
-    if (requirements.length > 0 || Credentials.refusals(endpoint, ctx.security.roles).length === 0) operation.security = requirements;
+    if (requirements.length > 0 || LoginGuide.isLogin(endpoint) || Credentials.refusals(endpoint, ctx.security.roles).length === 0) operation.security = requirements;
     else operation[OpenApiOperationBuilder.AUTH_KEY] = OpenApiOperationBuilder.UNOBSERVED_AUTH;
+    if (endpoint.role !== undefined) operation[OpenApiOperationBuilder.ROLE_KEY] = endpoint.role;
+    if (endpoint.login !== undefined && LoginGuide.isLogin(endpoint)) operation[OpenApiOperationBuilder.LOGIN_KEY] = Json.clone(endpoint.login);
+    if (OpenApiOperationBuilder.#authMatters(endpoint, ctx.security.roles)) operation[OpenApiOperationBuilder.ANONYMOUS_KEY] = endpoint.auth.anonymous;
     if (endpoint.auth.csrf.length > 0) operation['x-appii-csrf'] = Json.clone(endpoint.auth.csrf);
     if (endpoint.form) operation['x-appii-form'] = { pageUrl: endpoint.form.pageUrl, selector: endpoint.form.selector, enctype: endpoint.form.enctype };
     if (endpoint.kind === 'graphql' && endpoint.operationName !== undefined) operation['x-appii-graphql-operations'] = [endpoint.operationName];
-    operation['x-appii-endpoint'] = { id: endpoint.id, number: ctx.index.numberOf(endpoint), kind: endpoint.kind, count: endpoint.count, firstParty: endpoint.firstParty };
+    const facts: OpenApiObject = { id: endpoint.id, number: ctx.index.numberOf(endpoint), kind: endpoint.kind, count: endpoint.count, firstParty: endpoint.firstParty };
+    if (endpoint.auth.seen !== undefined) facts.seen = [...endpoint.auth.seen];
+    operation['x-appii-endpoint'] = facts;
     return operation;
   }
 
-  description(endpoint: Endpoint, roles?: CookieRoles): string {
+  static #authMatters(endpoint: Endpoint, roles: CookieRoles): boolean {
+    return endpoint.role !== undefined || Credentials.sets(endpoint, roles).length > 0 || Credentials.refusals(endpoint, roles).length > 0;
+  }
+
+  description(endpoint: Endpoint, roles?: CookieRoles, security?: OpenApiSecurity): string {
     const lines: string[] = [];
     lines.push(
       endpoint.count > 0
         ? `Observed ${Text.plural(endpoint.count, 'time')} in the captured traffic (${endpoint.kind}).`
         : `Not observed in the captured traffic; inferred from an HTML form (${endpoint.kind}).`,
     );
+    const role = security?.guide.describe(endpoint, OpenApiOperationBuilder.MARKUP.code);
+    if (role !== undefined) lines.push(role);
     const refusals = Credentials.refusals(endpoint, roles);
     if (refusals.length > 0) lines.push(`Answered ${refusals.join(' and ')} to requests without credentials; the credential this endpoint expects was not captured.`);
+    if (!LoginGuide.isLogin(endpoint) && Credentials.sets(endpoint, roles).length > 0) lines.push(OpenApiOperationBuilder.ANONYMOUS_LINES[endpoint.auth.anonymous] ?? '');
+    const hint = security?.guide.hint(endpoint, (login) => security.operation(login));
+    if (hint !== undefined) lines.push(hint);
     if (endpoint.form) lines.push(`Submitted by the form \`${endpoint.form.selector}\` on ${endpoint.form.pageUrl} (${endpoint.form.enctype}).`);
     for (const token of endpoint.auth.csrf) {
       lines.push(`CSRF token \`${token.name}\` (${token.location}) comes from ${Helpers.tokenSource(token, OpenApiOperationBuilder.MARKUP)}.`);
@@ -104,8 +127,8 @@ export class OpenApiOperationBuilder {
     for (const name of pathNames) add({ name, in: 'path', required: true, schema: { type: 'string' } });
     for (const param of endpoint.queryParams) add({ name: param.name, in: 'query', required: param.required, schema: this.#schemas.param(param) });
     for (const token of endpoint.auth.csrf) {
-      if (token.location !== 'query') continue;
-      add({ name: token.name, in: 'query', required: true, description: 'CSRF token.', schema: { type: 'string' } });
+      if (token.location === 'query') add({ name: token.name, in: 'query', required: true, description: 'CSRF token.', schema: { type: 'string' } });
+      else if (token.location === 'header' && LoginGuide.isLogin(endpoint)) add({ name: token.name, in: 'header', required: true, description: 'CSRF token.', schema: { type: 'string' } });
     }
     const covered = ctx.security.coveredHeaders(endpoint);
     for (const param of endpoint.headerParams) {

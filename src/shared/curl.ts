@@ -13,6 +13,7 @@ export interface CurlOptions {
   variables?: VariableMode;
   variable?: (name: string) => string;
   cookie?: SampleText;
+  jar?: string;
   multiline?: boolean;
   extraArgs?: readonly string[];
 }
@@ -65,6 +66,8 @@ export const SINGLE_QUOTE = 0x27;
 export const FIRST_PRINTABLE = 0x20;
 export const LAST_PRINTABLE = 0x7e;
 export const ARGUMENT_HELPER = 'appii_curl_args';
+export const REQUIRED_PREFIX = 'set it to ';
+export const UNSAFE_MESSAGE: RegExp = /[^A-Za-z0-9 ,.()_-]/g;
 export const VALUE_OPTIONS: readonly string[] = Object.freeze([
   '--abstract-unix-socket', '--alt-svc', '--aws-sigv4', '--cacert', '--capath', '--cert', '--cert-type', '--ciphers', '--config', '--connect-timeout',
   '--connect-to', '--continue-at', '--cookie', '--cookie-jar', '--create-file-mode', '--crlfile', '--curves', '--data', '--data-ascii', '--data-binary',
@@ -150,13 +153,20 @@ export function variableName(name: string): string {
   return VARIABLE_PREFIX + name.toUpperCase();
 }
 
+export function requiredMessage(label: string): string {
+  return `${REQUIRED_PREFIX}${label.replace(UNSAFE_MESSAGE, '')}`;
+}
+
+export function variableReference(name: string, part: PlaceholderPart, variables: VariableMode, variable: (name: string) => string = variableName): string {
+  const helper = variables === 'script' && part.encoding !== undefined ? ENCODING_HELPERS[part.encoding] : undefined;
+  if (helper !== undefined) return `$(${helper} ${variable(name)})`;
+  return variables === 'shell' && part.required !== undefined ? `\${${variable(name)}:?${requiredMessage(part.required)}}` : `\${${variable(name)}}`;
+}
+
 export function shellArg(input: SampleTextInput, variables: VariableMode = 'literal', variable: (name: string) => string = variableName): string {
   const text = SampleText.of(input);
   if (variables === 'literal' || text.isLiteral) return shellQuote(text.toString());
-  const reference = (name: string, part: PlaceholderPart): string => {
-    const helper = variables === 'script' && part.encoding !== undefined ? ENCODING_HELPERS[part.encoding] : undefined;
-    return helper === undefined ? `\${${variable(name)}}` : `$(${helper} ${variable(name)})`;
-  };
+  const reference = (name: string, part: PlaceholderPart): string => variableReference(name, part, variables, variable);
   if (text.parts.every((part) => part.kind === 'placeholder' || !DOUBLE_QUOTE_SPECIAL.test(part.text))) {
     return `"${text.render({ literal: (literal) => literal, placeholder: reference })}"`;
   }
@@ -219,6 +229,7 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   if (sample.user) groups.push([USER_FLAG, arg(sample.user)]);
   const cookie = opts.cookie ?? sample.cookie;
   if (cookie) groups.push(['-b', arg(cookie)]);
+  if (opts.jar !== undefined) groups.push(['-b', opts.jar, '-c', opts.jar]);
   if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
   else groups.push(...bodyGroups(sample.body, arg, vars));
   groups.push([COMPRESSED_FLAG]);
@@ -295,7 +306,7 @@ function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: strin
       else if (vars === 'literal') format += printfFormat(new TextEncoder().encode(SampleText.DISPLAY.placeholder(part.name, part)));
       else {
         format += PRINTF_PLACEHOLDER;
-        args.push(`"\${${variable(part.name)}}"`);
+        args.push(`"${variableReference(part.name, { ...part, encoding: undefined }, vars, variable)}"`);
       }
     }
   }

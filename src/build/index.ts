@@ -45,7 +45,9 @@ export type { CsrfSourceResolverDeps, TokenOrigin } from './csrf-source-resolver
 export { CredentialEvidence } from './credential-evidence.js';
 export type { CookieGeneration, CredentialEvidenceData, GenerationEvent } from './credential-evidence.js';
 export { CredentialAnalyzer } from './credential-analyzer.js';
-export type { CredentialAnalyzerDeps, CredentialInput } from './credential-analyzer.js';
+export type { CredentialAnalyzerDeps, CredentialInput, LoginSubmission, LoginValue } from './credential-analyzer.js';
+export { EndpointRoleDetector } from './endpoint-role-detector.js';
+export type { EndpointRoleDetectorDeps, RoleContext } from './endpoint-role-detector.js';
 export { AuthDetector } from './auth-detector.js';
 export type { AuthDetectorDeps } from './auth-detector.js';
 export { CookieClassifier } from './cookie-classifier.js';

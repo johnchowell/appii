@@ -2,6 +2,7 @@ import type { ApiModel, BodyKind, BodyShape, Endpoint, EndpointResponse, FormFie
 import { Ansi, Credentials, Curl, EndpointIndex, Json, RequestBodies, Samples, Schema, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
+import { EndpointListPresenter } from './endpoint-list-presenter.js';
 import { BasePresenter } from './presenter.js';
 import type { PresenterBlock, PresenterOptions } from './presenter.js';
 import { SchemaTree } from './schema-tree.js';
@@ -96,7 +97,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       this.#params('Header parameters', endpoint.headerParams),
       this.#requestBody(endpoint),
       this.#form(endpoint),
-      this.#auth(endpoint, Credentials.roles(input.model)),
+      this.#auth(input.model, endpoint, Credentials.roles(input.model)),
       this.#responses(endpoint),
       this.#samples(endpoint),
       this.#curl(endpoint),
@@ -172,23 +173,53 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
   }
 
   static anonymous(endpoint: Endpoint, roles?: CookieRoles): string {
-    if (endpoint.auth.anonymous === true) return 'yes, a request without credentials succeeded';
-    const refusals = Credentials.refusals(endpoint, roles);
-    if (refusals.length > 0) return `no, a request without credentials was refused (${refusals.join(', ')})`;
-    if (Credentials.sets(endpoint, roles).length > 0) return 'no';
-    if (endpoint.count === 0) return 'unknown, no request was observed';
-    return 'unknown, no request without credentials got a 2xx response';
+    const label = Credentials.anonymousLabel(endpoint);
+    if (endpoint.auth.anonymous === 'allowed') return `${label}, a request without credentials was not refused`;
+    if (endpoint.auth.anonymous === 'refused') {
+      const refusals = Credentials.refusals(endpoint, roles);
+      return `${label}, every request without credentials was refused${refusals.length > 0 ? ` (${refusals.join(', ')})` : ''}`;
+    }
+    return endpoint.count === 0 ? `${label}, no request was observed` : `${label}, every request seen carried credentials`;
   }
 
-  #auth(endpoint: Endpoint, roles: CookieRoles): PresenterBlock {
+  static seen(endpoint: Endpoint): string {
+    const seen = endpoint.auth.seen ?? [];
+    return seen.length > 0 ? seen.join(', ') : 'not observed';
+  }
+
+  static role(endpoint: Endpoint): string | undefined {
+    if (endpoint.role === 'logout') return 'logout, signs out';
+    if (endpoint.role !== 'login' || !endpoint.login) return undefined;
+    if (endpoint.login.evidence === 'observed') return 'login, a submission issued a credential';
+    return endpoint.count > 0 ? `login, ${EndpointListPresenter.NOTHING_ISSUED}` : `login, ${EndpointListPresenter.NOT_SUBMITTED}`;
+  }
+
+  #session(model: ApiModel, endpoint: Endpoint): Definition[] {
+    const role = EndpointDetailPresenter.role(endpoint);
+    if (role === undefined) return [];
+    const entries: Definition[] = [['Role', this.ansi.clean(role)]];
+    const login = endpoint.login;
+    if (endpoint.role === 'login' && login) {
+      const fields = [login.identifier === undefined ? 'identifier unknown' : `identifier ${login.identifier}`, `password ${login.password}`];
+      entries.push(['Login fields', this.ansi.clean(fields.join(', '))], ['Issues', this.ansi.clean(EndpointListPresenter.issued(login)) || 'nothing observed yet']);
+    } else {
+      const revoked = EndpointListPresenter.revoked(model, endpoint);
+      entries.push(['Revokes', revoked.length > 0 ? this.ansi.clean(revoked.map((name) => `cookie ${name}`).join(', ')) : 'no credential cookie change observed']);
+    }
+    return entries;
+  }
+
+  #auth(model: ApiModel, endpoint: Endpoint, roles: CookieRoles): PresenterBlock {
     const auth = endpoint.auth;
     const credentialCookies = new Set(Credentials.cookies(endpoint, roles));
     const others = auth.cookies.filter((name) => !credentialCookies.has(name));
     const lines = [
       this.heading('Auth'),
       ...this.definitions([
+        ...this.#session(model, endpoint),
         ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles)) || 'none'],
         ['Anonymous', EndpointDetailPresenter.anonymous(endpoint, roles)],
+        ['Seen', EndpointDetailPresenter.seen(endpoint)],
         ['Credential cookies', credentialCookies.size > 0 ? this.ansi.clean([...credentialCookies].join(', ')) : 'none'],
         ['Other cookies', others.length > 0 ? this.ansi.clean(others.join(', ')) + ' (sent by the browser; not credentials)' : 'none'],
         ['Bearer', auth.bearer ? 'yes' : 'no'],

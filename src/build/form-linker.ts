@@ -1,5 +1,5 @@
 import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo, Exchange } from '../model/index.js';
-import { FormExtractor, FormSchemaBuilder, SubmissionRules, TokenDetector } from '../forms/index.js';
+import { FormExtractor, FormSchemaBuilder, LoginFormDetector, SubmissionRules, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
 import { Json, Schema, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
@@ -167,11 +167,24 @@ export class FormLinker {
   loginPages(capture: Capture): Set<string> {
     const pages = new Set<string>();
     for (const form of this.#collector.collect(capture)) {
-      if (!form.fields.some((field) => FormLinker.SECRET_TYPES.has(field.type))) continue;
+      if (!LoginFormDetector.isLogin(form)) continue;
       const url = Helpers.httpUrl(form.pageUrl);
       if (url) pages.add(url.origin + url.pathname);
     }
     return pages;
+  }
+
+  identifierFields(capture: Capture): Set<string> {
+    const names = new Set<string>();
+    for (const form of this.#collector.collect(capture)) {
+      const identifier = LoginFormDetector.detect(form)?.identifier;
+      if (identifier !== undefined) names.add(identifier);
+    }
+    return names;
+  }
+
+  personalFields(capture: Capture): Set<string> {
+    return FormLinker.personalNames(this.#collector.collect(capture));
   }
 
   submitted(capture: Capture): (exchange: Exchange) => boolean {
@@ -340,8 +353,8 @@ export class FormLinker {
       return this.#schemas.build(submission.form, submission.submitter ?? null, openChoices ? { openChoices } : {});
     });
     const primary = built[0]!;
-    const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)));
     const secrets = FormLinker.#secretNames(submissions);
+    const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)), secrets);
     if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), primary.mimeType);
     if (link.template) endpoint.pathParams = this.#params.path(link.template, submissions.map((submission) => submission.url.pathname));
     if (endpoint.method === 'GET') {
@@ -425,13 +438,23 @@ export class FormLinker {
     return names;
   }
 
+  static personalNames(forms: readonly Pick<FormDescriptor, 'fields'>[]): Set<string> {
+    const names = new Set<string>();
+    for (const form of forms) for (const name of LoginFormDetector.detect(form)?.personal ?? []) names.add(name);
+    return names;
+  }
+
+  static formSecrets(forms: readonly Pick<FormDescriptor, 'fields' | 'tokenFields'>[]): Set<string> {
+    return new Set([...FormLinker.secretNames(forms), ...FormLinker.personalNames(forms)]);
+  }
+
   static endpointSecrets(endpoint: Pick<Endpoint, 'id' | 'form'>, forms: readonly FormDescriptor[]): Set<string> {
     const linked = forms.filter((form) => form.endpoints?.includes(endpoint.id) === true);
-    return FormLinker.secretNames(endpoint.form ? [...linked, endpoint.form] : linked);
+    return FormLinker.formSecrets(endpoint.form ? [...linked, endpoint.form] : linked);
   }
 
   static #secretNames(submissions: readonly Submission[]): Set<string> {
-    return FormLinker.secretNames(submissions.map((submission) => submission.form));
+    return FormLinker.formSecrets(submissions.map((submission) => submission.form));
   }
 
   static #find(endpoints: readonly Endpoint[], method: string, url: URL, matcher: EndpointMatcher): Endpoint | undefined {

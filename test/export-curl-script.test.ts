@@ -234,7 +234,7 @@ describe('the curl script sends what the browser sends', () => {
 
 describe('example requests in every format send the cookies of the endpoint', () => {
   test('list --show, Markdown and HTML build the same command for a cookie endpoint', () => {
-    const endpoint = ExportModel.endpoint({ method: 'GET', path: '/api/me', auth: { cookies: ['auth', 'sid'], headers: [], bearer: false, csrf: [] } });
+    const endpoint = ExportModel.endpoint({ method: 'GET', path: '/api/me', auth: { cookies: ['auth', 'sid'], headers: [], anonymous: 'untested', bearer: false, csrf: [] } });
     const model = ExportModel.model([endpoint]);
     const sample = Samples.requestSample(endpoint, { baseUrl: ExportModel.ORIGIN });
     const literal = Curl.curlCommand(sample);
