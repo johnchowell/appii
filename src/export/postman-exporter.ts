@@ -70,11 +70,13 @@ export class PostmanExporter extends BaseExporter {
     const placeholders = new Set<string>();
     for (const endpoint of endpoints) {
       const variable = origins.get(endpoint.origin) ?? PostmanExporter.BASE_VARIABLE;
-      const item = this.#requests.item(endpoint, { model, index, options: opts, variable });
-      for (const name of Samples.placeholderNames(Helpers.sample(model, endpoint, opts, { cookie: false }))) placeholders.add(name);
+      const items = this.#requests.items(endpoint, { model, index, options: opts, variable });
+      for (const each of [endpoint, ...Helpers.bodyVariants(endpoint).map((variant) => variant.endpoint)]) {
+        for (const name of Samples.placeholderNames(Helpers.sample(model, each, opts, { cookie: false }))) placeholders.add(name);
+      }
       const group = Helpers.group(endpoint);
       const list = folders.get(group) ?? [];
-      list.push(item);
+      list.push(...items);
       folders.set(group, list);
     }
     const variable: PostmanObject[] = [];

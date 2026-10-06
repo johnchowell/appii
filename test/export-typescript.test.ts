@@ -140,7 +140,7 @@ describe('TypeScriptExporter: generated client against the fixture site', () => 
     assert.equal(result.filename, `${Text.kebabCase(model.name)}-client.ts`);
     assert.ok(Text.isAscii(result.content));
     assert.doesNotMatch(result.content, /^import /m);
-    assert.match(result.content, /\nexport class Api127001\d+Client extends BaseApiClient \{\n/);
+    assert.match(result.content, /\nexport class Api127001\d+Client<R extends RedirectMode = 'follow'> extends BaseApiClient \{\n {2}constructor\(options: ClientOptions<R> = \{\}\) \{\n/);
     assert.equal(TypeScriptExporter.clientName({ ...model, name: 'shop.example.com' }), 'ShopExampleComClient');
     assert.equal(TypeScriptExporter.clientName({ ...model, name: '' }), 'ApiClient');
     for (const endpoint of model.endpoints) assert.match(result.content, new RegExp(`\\n  async ${endpoint.name}\\(request: `));

@@ -1,12 +1,18 @@
 import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
-import type { ApiModel, CookieRole, CsrfToken, Endpoint, JsonSchema } from '../model/index.js';
-import { AppiiError, EndpointIndex, Http, Samples, Schema, Text } from '../shared/index.js';
+import type { ApiModel, BodyKind, BodyShape, CookieRole, CsrfToken, Endpoint, JsonSchema } from '../model/index.js';
+import { AppiiError, EndpointIndex, Http, Json, Samples, Schema, Text } from '../shared/index.js';
 import type { ExportOptions } from './exporter.js';
 
 export interface TokenSourceMarkup {
   text(value: string): string;
   code(value: string): string;
   url(value: string): string;
+}
+
+export interface BodyVariant {
+  endpoint: Endpoint;
+  shape: BodyShape;
+  mediaType: string;
 }
 
 export interface PathSegment {
@@ -20,6 +26,18 @@ export class Helpers {
   static readonly AUTH_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(CREDENTIAL_COOKIE_ROLES);
   static readonly BASE_URL_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
   static readonly UNSAFE_PATTERN_CLIENT = 'The generated TypeScript client does not check it unless the unsafePatterns option is true.';
+  static readonly JSON_LINES_LABEL = 'JSON lines';
+  static readonly MEDIA_RANGE: RegExp = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+  static readonly DEFAULT_MEDIA: Readonly<Record<BodyKind, string>> = Object.freeze({
+    json: 'application/json',
+    form: 'application/x-www-form-urlencoded',
+    multipart: 'multipart/form-data',
+    graphql: 'application/json',
+    html: 'text/html',
+    text: 'text/plain',
+    binary: 'application/octet-stream',
+    empty: 'application/octet-stream',
+  });
 
   static normalizeOptions(options: ExportOptions): ExportOptions {
     const out: ExportOptions = { ...options };
@@ -72,6 +90,42 @@ export class Helpers {
 
   static sample(model: ApiModel, endpoint: Endpoint, options: ExportOptions, extra: Samples.SampleOptions = {}): Samples.RequestSample {
     return Samples.requestSample(endpoint, { baseUrl: Helpers.base(model, endpoint, options), ...extra });
+  }
+
+  static mediaType(shape: BodyShape): string {
+    const essence = Http.mimeEssence(shape.mimeType);
+    return Helpers.MEDIA_RANGE.test(essence) ? essence : Helpers.DEFAULT_MEDIA[shape.kind];
+  }
+
+  static requestBodies(endpoint: Endpoint): BodyShape[] {
+    const shapes = endpoint.requestBody ? [endpoint.requestBody, ...(endpoint.otherRequestBodies ?? [])] : [...(endpoint.otherRequestBodies ?? [])];
+    const out: BodyShape[] = [];
+    for (const shape of shapes) {
+      if (shape.kind === 'empty' || out.some((known) => Helpers.mediaType(known) === Helpers.mediaType(shape))) continue;
+      out.push(shape);
+    }
+    return out;
+  }
+
+  static bodyVariants(endpoint: Endpoint): BodyVariant[] {
+    const primary = endpoint.requestBody;
+    return Helpers.requestBodies(endpoint)
+      .filter((shape) => shape !== primary)
+      .map((shape) => {
+        const variant: Endpoint = { ...endpoint, requestBody: shape };
+        delete variant.otherRequestBodies;
+        delete variant.form;
+        return { endpoint: variant, shape, mediaType: Helpers.mediaType(shape) };
+      });
+  }
+
+  static jsonLines(values: readonly unknown[]): string {
+    return values.map((value) => Json.asciiJson(value, 0) + '\n').join('');
+  }
+
+  static bodyLabel(shape: BodyShape): string {
+    const media = shape.mimeType || shape.kind;
+    return shape.jsonLines === true ? `${media}, ${Helpers.JSON_LINES_LABEL}` : media;
   }
 
   static title(model: ApiModel, options: ExportOptions): string {

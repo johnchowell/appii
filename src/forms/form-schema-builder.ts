@@ -17,6 +17,7 @@ export interface FormSchema {
 
 export interface FormBuildOptions {
   documentEncoding?: string | undefined;
+  openChoices?: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface FormTarget {
@@ -54,25 +55,26 @@ export class FormSchemaBuilder {
     return new FormSchemaBuilder({ tokens: new TokenDetector(), slots: EntrySlotFactory.create(), composer: new EntryGroupComposer() });
   }
 
-  submitter(form: FormDescriptor, submitter?: FormField): FormField | undefined {
+  submitter(form: FormDescriptor, submitter?: FormField | null): FormField | undefined {
+    if (submitter === null) return undefined;
     return submitter ?? form.submitters.find((candidate) => !candidate.disabled);
   }
 
-  target(form: FormDescriptor, submitter?: FormField): FormTarget {
+  target(form: FormDescriptor, submitter?: FormField | null): FormTarget {
     const active = this.submitter(form, submitter);
     const method = active?.formMethod ?? form.method;
     const action = active?.formAction ?? form.action;
     const enctype = method === 'GET' ? FormSchemaBuilder.QUERY_ENCTYPE : (active?.formEnctype ?? form.enctype);
-    return { method, url: FormSchemaBuilder.#requestUrl(action, method), enctype };
+    return { method, url: FormSchemaBuilder.requestUrl(action, method), enctype };
   }
 
   charset(form: FormDescriptor, options: FormBuildOptions = {}): string {
     return options.documentEncoding === undefined ? form.charset : ControlRules.submissionEncoding(form.acceptCharset, options.documentEncoding);
   }
 
-  build(form: FormDescriptor, submitter?: FormField, options: FormBuildOptions = {}): FormSchema {
+  build(form: FormDescriptor, submitter?: FormField | null, options: FormBuildOptions = {}): FormSchema {
     const active = this.submitter(form, submitter);
-    const target = this.target(form, active);
+    const target = this.target(form, active ?? null);
     if (target.method === 'DIALOG') {
       throw new AppiiError('UNSUPPORTED', `Form ${form.selector} uses method=dialog and does not submit a request`, {
         details: { selector: form.selector, pageUrl: form.pageUrl },
@@ -85,6 +87,7 @@ export class FormSchemaBuilder {
       validate: !form.noValidate && active?.formNoValidate !== true,
       tokens,
       charset,
+      ...(options.openChoices ? { openChoices: options.openChoices } : {}),
     };
     const entries = this.#entries(form, active, context);
     const properties: [string, JsonSchema][] = [];
@@ -166,7 +169,7 @@ export class FormSchemaBuilder {
     return out;
   }
 
-  static #requestUrl(action: string, method: FormTarget['method']): string {
+  static requestUrl(action: string, method: FormTarget['method']): string {
     if (method === 'DIALOG') return action;
     try {
       const url = new URL(action);

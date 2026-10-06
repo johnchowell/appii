@@ -166,6 +166,7 @@ export interface FormField {
   autocomplete?: string;
   id?: string;
   formAction?: string;
+  explicitFormAction?: boolean;
   formMethod?: FormMethod;
   formEnctype?: FormEnctype;
   formNoValidate?: boolean;
@@ -178,6 +179,7 @@ export interface FormDescriptor {
   selector: string;
   pageUrl: string;
   action: string;
+  explicitAction?: boolean;
   method: FormMethod;
   enctype: FormEnctype;
   acceptCharset?: string;
@@ -188,6 +190,8 @@ export interface FormDescriptor {
   submitters: FormField[];
   tokenFields: string[];
   endpoints?: string[];
+  instances?: number;
+  pages?: string[];
 }
 
 export type JsonSchema = { [key: string]: unknown };

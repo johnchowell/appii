@@ -1,5 +1,5 @@
 import type { ApiModel, Endpoint } from '../model/index.js';
-import { Curl, EndpointIndex, Meta, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
+import { CharsetEncoder, Curl, EndpointIndex, Meta, SampleText, Samples, ShellScript, Text } from '../shared/index.js';
 import { BaseExporter } from './exporter.js';
 import type { ExportFormat, ExportOptions } from './exporter.js';
 import { Helpers } from './helpers.js';
@@ -10,9 +10,23 @@ export interface CurlPathArgument {
   readonly fallback: string;
 }
 
+export interface CurlQueryArgument {
+  readonly name: string;
+  readonly key: string;
+  readonly variable: string;
+  readonly fallback?: SampleText;
+}
+
+export interface CurlArguments {
+  readonly path: readonly CurlPathArgument[];
+  readonly query: readonly CurlQueryArgument[];
+}
+
 export class CurlExporter extends BaseExporter {
   static readonly BASE_NAME = 'base_url';
   static readonly COOKIE_NAME = 'cookie';
+  static readonly QUERY_NAME = 'query_string';
+  static readonly QUERY_LOCAL = 'appii_query';
   static readonly ALIAS_SUFFIX = '_value';
   static readonly COOKIE_HELPER = 'appii_cookie';
   static readonly VALUE_LOCAL = 'appii_value';
@@ -27,7 +41,8 @@ export class CurlExporter extends BaseExporter {
     'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'select', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'then',
     'time', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'until', 'wait', 'while',
   ]);
-  static readonly USAGE = 'Usage: bash endpoints.sh [ENDPOINT [PATH_VALUES...] [CURL_ARGS...]]';
+  static readonly USAGE = 'Usage: bash endpoints.sh [ENDPOINT [PATH_VALUES...] [NAME=VALUE...] [CURL_ARGS...]]';
+  static readonly ASSIGNABLE_NAME: RegExp = /^[^=\s-][^=\s]*$/;
 
   readonly format: ExportFormat = 'curl';
   readonly extension = 'sh';
@@ -78,7 +93,14 @@ export class CurlExporter extends BaseExporter {
   sample(endpoint: Endpoint, origin: string, rename: (name: string) => string): Samples.RequestSample {
     const site = Samples.renamePlaceholders(Samples.requestSample(endpoint, { baseUrl: '', cookie: false, pathVariables: true }), rename);
     const base = SampleText.placeholder(origin);
-    return { ...site, base, url: SampleText.concat(base, site.url), cookie: SampleText.placeholder(CurlExporter.COOKIE_NAME) };
+    const target = CurlExporter.queryVariables(endpoint, site) ? SampleText.concat(site.path, SampleText.placeholder(CurlExporter.QUERY_NAME)) : site.url;
+    return { ...site, base, url: SampleText.concat(base, target), cookie: SampleText.placeholder(CurlExporter.COOKIE_NAME) };
+  }
+
+  static queryVariables(endpoint: Endpoint, sample: Samples.RequestSample): boolean {
+    if (sample.query.length === 0 && endpoint.queryParams.length === 0) return false;
+    const submission = Samples.formSubmission(endpoint);
+    return submission?.method !== 'GET' || CharsetEncoder.for(submission.form.charset).utf8;
   }
 
   pathArguments(sample: Samples.RequestSample, rename: (name: string) => string): CurlPathArgument[] {
@@ -88,22 +110,44 @@ export class CurlExporter extends BaseExporter {
     });
   }
 
+  queryArguments(endpoint: Endpoint, sample: Samples.RequestSample, rename: (name: string) => string, path: readonly CurlPathArgument[] = []): CurlQueryArgument[] {
+    if (!CurlExporter.queryVariables(endpoint, sample)) return [];
+    const component = Samples.queryComponent(Samples.formSubmission(endpoint));
+    const taken = new Set<string>(path.map((arg) => arg.variable));
+    const out: CurlQueryArgument[] = [];
+    const add = (name: string, fallback: SampleText | undefined): void => {
+      if (out.some((arg) => arg.name === name)) return;
+      const variable = Text.uniqueName(Curl.variableName(rename(SampleText.placeholderName(name))), taken, '_');
+      out.push(fallback === undefined ? { name, key: component(name), variable } : { name, key: component(name), variable, fallback });
+    };
+    for (const entry of sample.query) add(entry.name, entry.value);
+    for (const param of endpoint.queryParams) add(param.name, undefined);
+    return out;
+  }
+
+  arguments(endpoint: Endpoint, sample: Samples.RequestSample, rename: (name: string) => string): CurlArguments {
+    const path = this.pathArguments(sample, rename);
+    return { path, query: this.queryArguments(endpoint, sample, rename, path) };
+  }
+
   script(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
     const opts = Helpers.normalizeOptions(options);
     const index = EndpointIndex.of(model);
     const origins = this.originVariables(model, endpoints);
-    const reserved = new Set<string>([...origins.values(), CurlExporter.COOKIE_NAME]);
+    const reserved = new Set<string>([...origins.values(), CurlExporter.COOKIE_NAME, CurlExporter.QUERY_NAME]);
     const rename = CurlExporter.#renamer(reserved);
     const names = this.functionNames(endpoints);
     const functions: string[] = [];
     const globals = new Set<string>();
-    const argumentsOf = new Map<Endpoint, CurlPathArgument[]>();
+    const argumentsOf = new Map<Endpoint, CurlArguments>();
     for (const endpoint of endpoints) {
       const sample = this.sample(endpoint, origins.get(endpoint.origin) ?? CurlExporter.BASE_NAME, rename);
-      const args = this.pathArguments(sample, rename);
+      const args = this.arguments(endpoint, sample, rename);
       argumentsOf.set(endpoint, args);
-      const locals = new Set(args.map((arg) => arg.variable));
-      for (const variable of Curl.placeholderNames(sample)) if (!locals.has(variable) && ![...reserved].some((name) => Curl.variableName(name) === variable)) globals.add(variable);
+      const locals = new Set([...args.path, ...args.query].map((arg) => arg.variable));
+      for (const variable of Curl.placeholderNames(sample, CurlExporter.#fallbacks(args))) {
+        if (!locals.has(variable) && ![...reserved].some((name) => Curl.variableName(name) === variable)) globals.add(variable);
+      }
       functions.push(this.#function(endpoint, names.get(endpoint) ?? endpoint.name, sample, args, rename));
     }
     const lines: string[] = [
@@ -153,41 +197,96 @@ export class CurlExporter extends BaseExporter {
     };
   }
 
-  #function(endpoint: Endpoint, name: string, sample: Samples.RequestSample, args: readonly CurlPathArgument[], rename: (name: string) => string): string {
+  #function(endpoint: Endpoint, name: string, sample: Samples.RequestSample, args: CurlArguments, rename: (name: string) => string): string {
+    const value = CurlExporter.VALUE_LOCAL;
+    const variable = (placeholder: string): string => (placeholder === CurlExporter.QUERY_NAME ? CurlExporter.QUERY_LOCAL : Curl.variableName(placeholder));
+    const assignable = args.query.filter((arg) => CurlExporter.ASSIGNABLE_NAME.test(arg.name));
+    const patterns = assignable.map((arg) => `${CurlExporter.#pattern(arg.name)}=*`);
     const lines = [`${name}() {`];
-    if (args.length > 0) lines.push(`  local ${CurlExporter.VALUE_LOCAL}`);
-    for (const arg of args) {
-      const value = CurlExporter.VALUE_LOCAL;
+    if (args.path.length > 0 || args.query.some((arg) => CurlExporter.#ownDefault(arg))) lines.push(`  local ${value}`);
+    for (const arg of args.path) {
       lines.push(`  ${value}=${Text.shellQuote(arg.fallback)}`);
       lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
-      lines.push(`  if [[ $# -gt 0 && "$1" != -* ]]; then ${value}="$1"; shift; fi`);
+      if (patterns.length === 0) lines.push(`  if [[ $# -gt 0 && "$1" != -* ]]; then ${value}="$1"; shift; fi`);
+      else lines.push(`  if [[ $# -gt 0 ]]; then case "$1" in -*|${patterns.join('|')}) ;; *) ${value}="$1"; shift ;; esac; fi`);
       if (arg.fallback === '') {
         const message = `${name}: no value for ${arg.name}. Give it as an argument or set ${arg.variable}.`;
         lines.push(`  if [[ -z "$${value}" ]]; then printf '%s\\n' ${Text.shellQuote(message)} >&2; return 2; fi`);
       }
       lines.push(`  local ${arg.variable}="$${value}"`);
     }
-    const placeholders = Curl.placeholderNames(sample);
+    const placeholders = Curl.placeholderNames(sample, CurlExporter.#fallbacks(args));
     const linked = new Set<string>();
     for (const token of endpoint.auth.csrf) {
       if (token.source !== 'cookie' || !token.sourceName) continue;
-      const variable = Curl.variableName(rename(SampleText.placeholderName(token.sourceName)));
-      if (!placeholders.includes(variable) || linked.has(variable)) continue;
-      linked.add(variable);
-      lines.push(`  local ${variable}="\${${variable}:-$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})}"`);
+      const linkedVariable = Curl.variableName(rename(SampleText.placeholderName(token.sourceName)));
+      if (!placeholders.includes(linkedVariable) || linked.has(linkedVariable)) continue;
+      linked.add(linkedVariable);
+      lines.push(`  local ${linkedVariable}="\${${linkedVariable}:-$(${CurlExporter.COOKIE_HELPER} ${Text.shellQuote(token.sourceName)})}"`);
     }
-    const command = Curl.curlCommand(sample, { variables: 'script', extraArgs: ['"$@"'] });
+    for (const arg of args.query) {
+      if (!CurlExporter.#ownDefault(arg) || arg.fallback === undefined) {
+        lines.push(`  local ${arg.variable}="\${${arg.variable}:-}"`);
+        continue;
+      }
+      lines.push(`  ${value}=${Curl.shellArg(arg.fallback, 'shell', variable)}`);
+      lines.push(`  [[ -z "\${${arg.variable}:-}" ]] || ${value}="$${arg.variable}"`);
+      lines.push(`  local ${arg.variable}="$${value}"`);
+    }
+    if (assignable.length > 0) {
+      lines.push('  while [[ $# -gt 0 ]]; do', '    case "$1" in');
+      assignable.forEach((arg, i) => lines.push(`      ${patterns[i] ?? ''}) ${arg.variable}="\${1#*=}" ;;`));
+      lines.push('      *) break ;;', '    esac', '    shift', '  done');
+    }
+    const hint = CurlExporter.#hint(args);
+    lines.push(`  if [[ $# -gt 0 && "$1" != -* ]]; then printf '%s: unexpected argument %s. %s\\n' ${Text.shellQuote(name)} "$1" ${Text.shellQuote(hint)} >&2; return 2; fi`);
+    if (args.query.length > 0) {
+      const local = CurlExporter.QUERY_LOCAL;
+      lines.push(`  local ${local}=''`);
+      for (const arg of args.query) {
+        const append = `${local}+=${Text.shellQuote(`&${arg.key}=`)}"$(${Curl.ENCODING_HELPERS.component} ${arg.variable})"`;
+        lines.push(arg.fallback === undefined ? `  [[ -z "$${arg.variable}" ]] || ${append}` : `  ${append}`);
+      }
+      lines.push(`  [[ -z "$${local}" ]] || ${local}="?\${${local}#&}"`);
+    }
+    const command = Curl.curlCommand(sample, { variables: 'script', variable, extraArgs: ['"$@"'] });
     lines.push(ShellScript.indent(command, 2), '}');
     return ShellScript.ascii(lines.join('\n'));
   }
 
-  #list(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex, names: ReadonlyMap<Endpoint, string>, args: ReadonlyMap<Endpoint, readonly CurlPathArgument[]>): string[] {
+  static #ownDefault(arg: CurlQueryArgument): boolean {
+    const fallback = arg.fallback;
+    if (fallback === undefined) return false;
+    const only = fallback.parts.length === 1 ? fallback.parts[0] : undefined;
+    return !(only?.kind === 'placeholder' && Curl.variableName(only.name) === arg.variable);
+  }
+
+  static #fallbacks(args: CurlArguments): SampleText[] {
+    return args.query.flatMap((arg) => (arg.fallback === undefined ? [] : [arg.fallback]));
+  }
+
+  static #pattern(name: string): string {
+    return Curl.SAFE_WORD.test(name) ? name : Text.shellQuote(name);
+  }
+
+  static #hint(args: CurlArguments): string {
+    const words = CurlExporter.#argumentWords(args);
+    const takes = words.length === 0 ? 'It takes no arguments' : `Arguments: ${words.join(' ')}`;
+    return `${takes}. Arguments for curl start with '-'.`;
+  }
+
+  static #argumentWords(args: CurlArguments | undefined): string[] {
+    if (!args) return [];
+    return [...args.path.map((arg) => `[${arg.name}]`), ...args.query.map((arg) => `[${Text.printable(arg.name)}=]`)];
+  }
+
+  #list(model: ApiModel, endpoints: readonly Endpoint[], index: EndpointIndex, names: ReadonlyMap<Endpoint, string>, args: ReadonlyMap<Endpoint, CurlArguments>): string[] {
     const rows = endpoints.map((endpoint) => [
       String(index.numberOf(endpoint)),
       endpoint.method,
       Text.printable(endpoint.origin === model.primaryOrigin ? endpoint.path : endpoint.origin + endpoint.path),
       names.get(endpoint) ?? endpoint.name,
-      (args.get(endpoint) ?? []).map((arg) => `[${arg.name}]`).join(' '),
+      CurlExporter.#argumentWords(args.get(endpoint)).join(' '),
     ]);
     const header = ['#', 'METHOD', 'PATH', 'FUNCTION', 'ARGUMENTS'];
     const widths = header.map((title, i) => Math.max(title.length, ...rows.map((row) => (row[i] ?? '').length)));
@@ -253,18 +352,28 @@ export class CurlExporter extends BaseExporter {
       "  cat <<'APPII_USAGE'",
       CurlExporter.USAGE,
       '',
-      'ENDPOINT is a function name or an endpoint number from the list. The list',
-      'shows the path parameters of each endpoint in the ARGUMENTS column. Give',
-      'their values in this order after ENDPOINT. If you do not give a value, the',
-      'script uses the APPII_<NAME> variable or the captured example. A value that',
-      "starts with '-' must go in the variable. All other arguments go to curl",
-      '(for example -i or -v).',
+      'ENDPOINT is a function name or an endpoint number from the list. The',
+      'ARGUMENTS column of the list shows the arguments of each endpoint.',
+      '',
+      '[NAME] is a path parameter. Give the path values in this order after',
+      'ENDPOINT. If you do not give a value, the script uses the APPII_<NAME>',
+      'variable or the captured example.',
+      '',
+      '[name=] is a query parameter. Give it as name=value after the path values,',
+      'or set the APPII_<NAME> variable. The script sends the query parameters of',
+      'the captured request with their captured values unless you change them, and',
+      'the other query parameters only when you give them a value.',
+      '',
+      "A path value that starts with '-' or with the name= of a query parameter",
+      "must go in the variable. Arguments that start with '-' go to curl (for",
+      'example -i, -v or -o FILE). The script stops with an error for any other',
+      'argument and sends no request.',
       '',
       'Environment:',
       `  ${Curl.variableName(CurlExporter.BASE_NAME)}   base URL of the API (default: the captured origin)`,
       `  ${Curl.variableName(CurlExporter.COOKIE_NAME)}     Cookie header value sent with every request`,
-      '  APPII_<NAME>     value of the placeholder or path parameter NAME, for',
-      '                   example a CSRF token',
+      '  APPII_<NAME>     value of the placeholder, path parameter or query',
+      '                   parameter NAME, for example a CSRF token',
       '',
       'The script can also be sourced to call the endpoint functions directly.',
       'APPII_USAGE',

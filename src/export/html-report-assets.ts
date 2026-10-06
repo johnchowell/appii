@@ -102,7 +102,7 @@ li.endpoint > details[open] > summary { border-bottom: 1px solid var(--border); 
 .path { font-family: var(--mono); word-break: break-all; flex: 1 1 240px; min-width: 0; }
 .path .param { color: var(--param); font-weight: 600; }
 .path .origin { color: var(--muted); }
-.name { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+.name { color: var(--muted); font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
 .badge { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .badge.auth { border-color: var(--accent); color: var(--accent); }
 .badge.csrf { border-color: var(--warning); color: var(--text); }
@@ -119,6 +119,7 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; white-space: nowrap; }
 td code { overflow-wrap: anywhere; }
+p.variables { color: var(--muted); overflow-wrap: anywhere; }
 pre { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; overflow: auto; max-height: 420px; margin: 6px 0; white-space: pre; }
 details.raw > summary { cursor: pointer; color: var(--accent); margin: 6px 0; }
 .copy-block { position: relative; }

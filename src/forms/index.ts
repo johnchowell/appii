@@ -10,6 +10,7 @@ export { HtmlDecimal } from './html-decimal.js';
 export { StepRange } from './step-range.js';
 export type { StepRangeInput } from './step-range.js';
 export { ControlRules } from './control-rules.js';
+export { SubmissionRules } from './submission-rules.js';
 export type { ButtonType, ControlAttribute } from './control-rules.js';
 export { ValueSanitizer } from './value-sanitizer.js';
 export type { SanitizeInput } from './value-sanitizer.js';

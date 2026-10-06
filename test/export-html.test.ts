@@ -99,7 +99,8 @@ describe('HtmlExporter', () => {
     assert.match(html, /<span class="badge csrf">csrf<\/span>/);
     assert.match(html, /<dt>CSRF<\/dt><dd><code>x-csrf-token<\/code> in the header, from cookie <code>csrf<\/code><\/dd>/);
     assert.match(html, /<td><code>password<\/code><\/td><td>string<\/td><td>yes<\/td><td>html password; length 8\.\.<\/td><td>Password<\/td>/);
-    assert.match(html, /<pre id="curl-4">\ncurl -sS -X POST &#39;http:\/\/127\.0\.0\.1:\d+\/api\/items&#39; \\\n {2}-H &#39;x-csrf-token: \{\{csrf\}\}&#39;/);
+    assert.match(html, /<pre id="curl-4">\ncurl -sS -X POST &#39;http:\/\/127\.0\.0\.1:\d+\/api\/items&#39; \\\n {2}-H &quot;x-csrf-token: \$\{APPII_CSRF\}&quot;/);
+    assert.match(html, /<pre id="curl-4">[^<]*<\/pre><\/div><p class="variables">Variables: (?:<code>APPII_[A-Z0-9_]+<\/code> )*<code>APPII_CSRF<\/code>/);
     assert.match(html, /<button type="button" class="copy" data-target="curl-4">Copy<\/button>/);
     assert.match(html, /<td><code>sid<\/code><\/td><td><code>127\.0\.0\.1<\/code><\/td><td><code>\/<\/code><\/td><td>session<\/td><td>yes<\/td>/);
     assert.match(html, /<td><code>form#login<\/code><\/td><td>POST<\/td>/);
@@ -205,5 +206,40 @@ describe('HTML building blocks', () => {
     assert.deepEqual(new SchemaFieldList().rows({ type: 'string' }), [{ path: '(body)', type: 'string', required: true, constraints: [] }]);
     assert.deepEqual(new SchemaFieldList().rows(undefined), []);
     assert.equal(new SchemaFieldList({ maxRows: 1 }).rows({ type: 'object', properties: { a: {}, b: {} } }).length, 1);
+  });
+});
+
+describe('HTML report at phone width (BOOKS-7)', () => {
+  let browser: Browser;
+  let dir: string;
+
+  before(async () => {
+    browser = await chromium.launch({ headless: true });
+    dir = await mkdtemp(join(tmpdir(), 'appii-html-phone-'));
+  });
+
+  after(async () => {
+    await browser?.close();
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test('long endpoint names, paths and variable names wrap instead of widening the page', async () => {
+    const name = 'getCatalogueTheNo1LadiesDetectiveAgencyNo1LadiesDetectiveAgency1176IndexHtml';
+    assert.ok(name.length >= 76);
+    const endpoint = ExportModel.endpoint({
+      method: 'GET',
+      path: '/catalogue/the-no-1-ladies-detective-agency-no-1-ladies-detective-agency-1_176/index.html',
+      name,
+      auth: { cookies: ['a_very_long_session_cookie_name_that_does_not_fit_on_a_phone'], headers: [], bearer: false, csrf: [] },
+    });
+    const file = join(dir, 'report.html');
+    await writeFile(file, new HtmlExporter().export(ExportModel.model([endpoint])).content);
+    const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
+    await page.goto(pathToFileURL(file).href);
+    assert.ok((await page.evaluate(() => document.documentElement.scrollWidth)) <= 390);
+    await page.click('#endpoint-1 summary');
+    assert.equal(await page.isVisible('#curl-1'), true);
+    assert.ok((await page.evaluate(() => document.documentElement.scrollWidth)) <= 390);
+    await page.close();
   });
 });

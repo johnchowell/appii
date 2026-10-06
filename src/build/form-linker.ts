@@ -1,13 +1,18 @@
 import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo, Exchange } from '../model/index.js';
-import { FormExtractor, FormSchemaBuilder, TokenDetector } from '../forms/index.js';
+import { FormExtractor, FormSchemaBuilder, SubmissionRules, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
 import { Json, Schema, Text } from '../shared/index.js';
+import { BodyParser } from './body-parser.js';
+import { ChoiceEvidence } from './choice-evidence.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
 import { FormCollector } from './form-collector.js';
+import { FormInventory } from './form-inventory.js';
 import { FormSchemaCombiner } from './form-schema-combiner.js';
 import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
+import { ObservedSubmissions } from './observed-submissions.js';
+import type { ObservedSubmission } from './observed-submissions.js';
 import { PageDocuments } from './page-documents.js';
 import { ParamInferrer } from './param-inferrer.js';
 import { PathTemplater } from './path-templater.js';
@@ -24,6 +29,9 @@ export interface FormLinkerDeps {
   params?: ParamInferrer;
   redactor?: Redactor;
   combiner?: FormSchemaCombiner;
+  body?: BodyParser;
+  choices?: ChoiceEvidence;
+  inventory?: FormInventory;
 }
 
 export interface FormLinkerOptions {
@@ -42,6 +50,12 @@ interface Submission {
   readonly submitter?: FormField;
   readonly target: FormTarget;
   readonly url: URL;
+  readonly observed: readonly ObservedSubmission[];
+}
+
+interface ObservedCache {
+  readonly exchanges: number;
+  readonly observed: ObservedSubmissions;
 }
 
 interface Link {
@@ -59,6 +73,7 @@ export class FormLinker {
     'text/plain': 'text',
   };
   static readonly NAVIGATION = 'document';
+  static readonly QUERY_METHOD = 'GET';
   static readonly SECRET_TYPES: ReadonlySet<string> = new Set(['password']);
   static readonly ANNOTATION_KEYS: readonly string[] = ['title', 'description'];
   static readonly ANNOTATION_PREFIX = 'x-html-';
@@ -69,6 +84,10 @@ export class FormLinker {
   readonly #params: ParamInferrer;
   readonly #redactor: Redactor;
   readonly #combiner: FormSchemaCombiner;
+  readonly #body: BodyParser;
+  readonly #choices: ChoiceEvidence;
+  readonly #inventory: FormInventory;
+  readonly #observed = new WeakMap<Capture, ObservedCache>();
 
   constructor(deps: FormLinkerDeps) {
     this.#schemas = deps.schemas;
@@ -77,6 +96,9 @@ export class FormLinker {
     this.#redactor = deps.redactor ?? Redactor.create();
     this.#params = deps.params ?? new ParamInferrer({ schemas: deps.inferrer, redactor: this.#redactor }, { maxExamples: FormLinker.DEFAULT_MAX_EXAMPLES });
     this.#combiner = deps.combiner ?? new FormSchemaCombiner();
+    this.#body = deps.body ?? new BodyParser();
+    this.#choices = deps.choices ?? new ChoiceEvidence();
+    this.#inventory = deps.inventory ?? new FormInventory();
   }
 
   static create(options: FormLinkerOptions = {}): FormLinker {
@@ -90,17 +112,19 @@ export class FormLinker {
       redactor,
       params: new ParamInferrer({ schemas: inferrer, redactor }, { maxExamples: options.maxExamples ?? FormLinker.DEFAULT_MAX_EXAMPLES }),
       combiner: new FormSchemaCombiner(),
+      body: BodyParser.create(),
+      choices: new ChoiceEvidence(),
+      inventory: new FormInventory(),
     });
   }
 
   static fieldNames(form: FormDescriptor): string[] {
-    const names = form.fields.filter((field) => !field.disabled && field.name !== '').map((field) => field.name);
-    return [...new Set(names)].sort(Text.compare);
+    return SubmissionRules.fieldNames(form).sort(Text.compare);
   }
 
   targets(capture: Capture): Map<string, PathEvidence> {
     const out = new Map<string, { forms: Set<string>; names: Set<string> }>();
-    for (const submission of this.#submissions(this.#collector.collect(capture))) {
+    for (const submission of this.#submissions(this.#collector.collect(capture), this.#observedIn(capture))) {
       const key = submission.url.origin + submission.url.pathname;
       const entry = out.get(key) ?? { forms: new Set<string>(), names: new Set<string>() };
       const names = FormLinker.fieldNames(submission.form);
@@ -118,43 +142,52 @@ export class FormLinker {
   submissionEncoding(capture: Capture): (exchange: Exchange) => string | undefined {
     const documents = this.encodings(capture);
     const forms = new Map<string, string>();
-    for (const submission of this.#submissions(this.#collector.collect(capture))) {
-      const key = FormLinker.#submissionKey(submission.form.pageUrl, submission.target.method, submission.url);
+    for (const submission of this.#submissions(this.#collector.collect(capture), this.#observedIn(capture))) {
+      const key = ObservedSubmissions.key(submission.form.pageUrl, submission.target.method, submission.url);
       if (!forms.has(key)) forms.set(key, submission.form.charset);
     }
     return (exchange) => {
       if (exchange.resourceType !== FormLinker.NAVIGATION || exchange.pageUrl === undefined) return undefined;
       const url = Helpers.httpUrl(exchange.request.url);
-      const form = url ? forms.get(FormLinker.#submissionKey(exchange.pageUrl, exchange.request.method, url)) : undefined;
+      const form = url ? forms.get(ObservedSubmissions.key(exchange.pageUrl, exchange.request.method, url)) : undefined;
       return form ?? documents.get(HtmlPages.documentKey(exchange.pageUrl));
     };
   }
 
-  static #submissionKey(pageUrl: string, method: string, url: URL): string {
-    const target = new URL(url.href);
-    target.hash = '';
-    if (method.toUpperCase() === 'GET') target.search = '';
-    return JSON.stringify([HtmlPages.documentKey(pageUrl), method.toUpperCase(), target.href]);
+  submitted(capture: Capture): (exchange: Exchange) => boolean {
+    const exchanges = new Set<string>();
+    for (const submission of this.#submissions(this.#collector.collect(capture), this.#observedIn(capture))) {
+      if (!FormLinker.#carries(submission)) continue;
+      for (const observed of submission.observed) exchanges.add(observed.exchange.id);
+    }
+    return (exchange) => exchanges.has(exchange.id);
   }
 
   link(endpoints: Endpoint[], capture: Capture): FormLinkResult {
     const forms = this.#collector.collect(capture);
+    const observed = this.#observedIn(capture);
     const matcher = new EndpointMatcher(endpoints, { paths: this.#paths });
     const links = new Map<string, Link>();
     const created: Endpoint[] = [];
     const sent = new Map<FormDescriptor, Endpoint[]>();
+    const contributing = new Set<FormDescriptor>();
     const record = (form: FormDescriptor, endpoint: Endpoint): void => {
       const list = sent.get(form) ?? [];
       if (!list.includes(endpoint)) list.push(endpoint);
       sent.set(form, list);
     };
-    for (const submission of this.#submissions(forms)) {
-      const existing = FormLinker.#find(endpoints, submission, matcher);
+    const submissions = this.#submissions(forms, observed);
+    const open = this.#choices.open(submissions);
+    for (const submission of submissions) {
+      const existing = FormLinker.#find(endpoints, submission.target.method, submission.url, matcher);
       if (existing) {
-        FormLinker.#entry(links, existing.key, () => ({ endpoint: existing, submissions: [] })).submissions.push(submission);
         record(submission.form, existing);
+        if (!FormLinker.#contributes(submission, existing)) continue;
+        FormLinker.#entry(links, existing.key, () => ({ endpoint: existing, submissions: [] })).submissions.push(submission);
+        contributing.add(submission.form);
         continue;
       }
+      if (!FormLinker.#carries(submission) || !FormLinker.#native(submission, observed)) continue;
       const path = submission.url.pathname;
       const template = this.#paths.template([path]).get(path) ?? { template: path, params: [] };
       const key = EndpointFactory.key(submission.target.method, submission.url.origin, template.template);
@@ -165,15 +198,34 @@ export class FormLinker {
       });
       link.submissions.push(submission);
       record(submission.form, link.endpoint);
+      contributing.add(submission.form);
     }
-    for (const link of links.values()) this.#apply(link);
-    const targets = new Map<FormDescriptor, readonly Endpoint[]>();
-    const described = forms.map((form) => {
-      const out = this.#redactor.form(form);
-      targets.set(out, sent.get(form) ?? []);
-      return out;
-    });
-    return { endpoints: [...endpoints, ...created], forms: described, targets };
+    const submitted = new Set(submissions.map((submission) => submission.form));
+    for (const form of forms) {
+      if (submitted.has(form)) continue;
+      const fallback = this.#submission(form, undefined, observed);
+      const endpoint = fallback ? FormLinker.#find(endpoints, fallback.target.method, fallback.url, matcher) : undefined;
+      if (!fallback || !endpoint || !FormLinker.#contributes(fallback, endpoint)) continue;
+      record(form, endpoint);
+      FormLinker.#entry(links, endpoint.key, () => ({ endpoint, submissions: [] })).submissions.push(fallback);
+    }
+    for (const form of FormLinker.#scriptOnly(submissions, contributing)) {
+      for (const script of observed.scripted(form)) {
+        const url = Helpers.httpUrl(script.request.url);
+        const endpoint = url ? FormLinker.#find(endpoints, script.request.method, url, matcher) : undefined;
+        if (!url || !endpoint) continue;
+        record(form, endpoint);
+        FormLinker.#entry(links, endpoint.key, () => ({ endpoint, submissions: [] })).submissions.push({ form, target: this.#schemas.target(form, null), url, observed: [] });
+      }
+    }
+    for (const link of links.values()) this.#apply(link, open);
+    const all = [...endpoints, ...created];
+    const sources = new Set(all.flatMap((endpoint) => (endpoint.form ? [JSON.stringify([endpoint.form.pageUrl, endpoint.form.selector])] : [])));
+    const merged = this.#inventory.merge(
+      forms.map((form) => ({ form: this.#redactor.form(form), endpoints: sent.get(form) ?? [] })),
+      { url: (value) => this.#redactor.url(value), preferred: (form) => sources.has(JSON.stringify([form.pageUrl, form.selector])) },
+    );
+    return { endpoints: all, forms: merged.map((entry) => entry.form), targets: new Map(merged.map((entry) => [entry.form, entry.endpoints])) };
   }
 
   static endpointIds(result: FormLinkResult, forms: readonly FormDescriptor[], kept: readonly Endpoint[]): FormDescriptor[] {
@@ -185,27 +237,83 @@ export class FormLinker {
     });
   }
 
-  #submissions(forms: readonly FormDescriptor[]): Submission[] {
+  #observedIn(capture: Capture): ObservedSubmissions {
+    const cached = this.#observed.get(capture);
+    if (cached && cached.exchanges === capture.exchanges.length) return cached.observed;
+    const observed = new ObservedSubmissions(capture, { body: this.#body });
+    this.#observed.set(capture, { exchanges: capture.exchanges.length, observed });
+    return observed;
+  }
+
+  #submissions(forms: readonly FormDescriptor[], observed: ObservedSubmissions): Submission[] {
     const out: Submission[] = [];
     for (const form of forms) {
-      const enabled = form.submitters.filter((submitter) => !submitter.disabled);
-      const options: (FormField | undefined)[] = enabled.length > 0 ? enabled : [undefined];
-      for (const submitter of options) {
-        const target = this.#schemas.target(form, submitter);
-        if (target.method === 'DIALOG') continue;
-        const url = Helpers.httpUrl(target.url);
-        if (!url) continue;
-        out.push(submitter ? { form, submitter, target, url } : { form, target, url });
+      const paths = SubmissionRules.paths(form);
+      for (const submitter of paths) {
+        const submission = this.#submission(form, submitter, observed);
+        if (submission) out.push(submission);
       }
+      const scripted = this.#scripted(form, paths, observed);
+      if (scripted) out.push(scripted);
     }
     return out;
   }
 
-  #apply(link: Link): void {
+  #submission(form: FormDescriptor, submitter: FormField | undefined, observed: ObservedSubmissions): Submission | undefined {
+    const target = this.#schemas.target(form, submitter ?? null);
+    if (target.method === 'DIALOG') return undefined;
+    const url = Helpers.httpUrl(target.url);
+    if (!url) return undefined;
+    const seen = observed.submissions(form, target);
+    return submitter ? { form, submitter, target, url, observed: seen } : { form, target, url, observed: seen };
+  }
+
+  #scripted(form: FormDescriptor, paths: readonly (FormField | undefined)[], observed: ObservedSubmissions): Submission | undefined {
+    const fallback = this.#submission(form, undefined, observed);
+    if (!fallback || !FormLinker.#carries(fallback)) return undefined;
+    const names = form.submitters.flatMap((submitter) => SubmissionRules.submitterNames(submitter));
+    const lacking = fallback.observed.filter((seen) => !names.some((name) => seen.entries.has(name)));
+    if (lacking.length === 0) return undefined;
+    const explained = paths.some((submitter) => {
+      if (!submitter) return true;
+      const target = this.#schemas.target(form, submitter);
+      return SubmissionRules.submitterNames(submitter).length === 0 && target.method === fallback.target.method && target.url === fallback.target.url;
+    });
+    return explained ? undefined : { ...fallback, observed: lacking };
+  }
+
+  static #carries(submission: Submission): boolean {
+    return submission.target.method !== FormLinker.QUERY_METHOD || SubmissionRules.contributes(submission.form, submission.submitter);
+  }
+
+  static #contributes(submission: Submission, endpoint: Endpoint): boolean {
+    if (submission.target.method !== FormLinker.QUERY_METHOD) return true;
+    if (!FormLinker.#carries(submission)) return false;
+    if (submission.observed.length > 0) return true;
+    const names = new Set([...SubmissionRules.fieldNames(submission.form), ...SubmissionRules.submitterNames(submission.submitter)]);
+    return endpoint.queryParams.some((param) => names.has(param.name));
+  }
+
+  static #scriptOnly(submissions: readonly Submission[], contributing: ReadonlySet<FormDescriptor>): FormDescriptor[] {
+    const forms = Helpers.distinct(submissions.map((submission) => submission.form)).filter((form) => !contributing.has(form));
+    return forms.filter((form) =>
+      submissions.every((submission) => submission.form !== form || (submission.observed.length === 0 && !SubmissionRules.explicitTarget(form, submission.submitter))),
+    );
+  }
+
+  static #native(submission: Submission, observed: ObservedSubmissions): boolean {
+    if (submission.observed.length > 0 || SubmissionRules.explicitTarget(submission.form, submission.submitter)) return true;
+    return observed.serverDocument(submission.form.pageUrl);
+  }
+
+  #apply(link: Link, open: ReadonlyMap<FormDescriptor, ReadonlyMap<string, readonly string[]>>): void {
     const { endpoint, submissions } = link;
     const first = submissions[0];
     if (!first) return;
-    const built = submissions.map((submission) => this.#schemas.build(submission.form, submission.submitter));
+    const built = submissions.map((submission) => {
+      const openChoices = open.get(submission.form);
+      return this.#schemas.build(submission.form, submission.submitter ?? null, openChoices ? { openChoices } : {});
+    });
     const primary = built[0]!;
     const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)));
     const secrets = FormLinker.#secretNames(submissions);
@@ -265,15 +373,22 @@ export class FormLinker {
   static #annotate(observed: JsonSchema | undefined, form: JsonSchema): JsonSchema | undefined {
     if (!observed) return undefined;
     const out = Json.clone(observed);
-    const formProps = new Map(Object.entries(Schema.properties(form)));
-    for (const [name, property] of Object.entries(Schema.properties(out))) {
-      const source = formProps.get(name);
-      if (!source || Schema.primaryType(source) !== Schema.primaryType(property)) continue;
-      for (const [key, value] of Object.entries(source)) {
-        if ((key.startsWith(FormLinker.ANNOTATION_PREFIX) || FormLinker.ANNOTATION_KEYS.includes(key)) && !Object.hasOwn(property, key)) Json.setOwn(property, key, Json.clone(value));
-      }
-    }
+    FormLinker.#annotateNode(out, new Map(Object.entries(Schema.properties(form))));
     return out;
+  }
+
+  static #annotateNode(node: JsonSchema, formProps: ReadonlyMap<string, JsonSchema>): void {
+    const items = Schema.items(node);
+    if (items) FormLinker.#annotateNode(items, formProps);
+    for (const [name, property] of Object.entries(Schema.properties(node))) {
+      const source = formProps.get(name);
+      if (source && Schema.primaryType(source) === Schema.primaryType(property)) {
+        for (const [key, value] of Object.entries(source)) {
+          if ((key.startsWith(FormLinker.ANNOTATION_PREFIX) || FormLinker.ANNOTATION_KEYS.includes(key)) && !Object.hasOwn(property, key)) Json.setOwn(property, key, Json.clone(value));
+        }
+      }
+      FormLinker.#annotateNode(property, formProps);
+    }
   }
 
   static secretNames(forms: readonly Pick<FormDescriptor, 'fields' | 'tokenFields'>[]): Set<string> {
@@ -294,13 +409,13 @@ export class FormLinker {
     return FormLinker.secretNames(submissions.map((submission) => submission.form));
   }
 
-  static #find(endpoints: readonly Endpoint[], submission: Submission, matcher: EndpointMatcher): Endpoint | undefined {
+  static #find(endpoints: readonly Endpoint[], method: string, url: URL, matcher: EndpointMatcher): Endpoint | undefined {
     let best: Endpoint | undefined;
     let bestParams = Number.POSITIVE_INFINITY;
     for (const endpoint of endpoints) {
-      if (endpoint.method !== submission.target.method || endpoint.origin !== submission.url.origin) continue;
+      if (endpoint.method !== method.toUpperCase() || endpoint.origin !== url.origin) continue;
       if (endpoint.kind === 'graphql' || endpoint.operationName !== undefined) continue;
-      if (!matcher.accepts(endpoint, submission.url.pathname, { byExamples: true })) continue;
+      if (!matcher.accepts(endpoint, url.pathname, { byExamples: true })) continue;
       const params = EndpointMatcher.paramCount(endpoint.path);
       if (params < bestParams) {
         best = endpoint;

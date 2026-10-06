@@ -3,6 +3,10 @@ export class TsClientRuntime {
     'HttpStatus',
     'ApiResponse',
     'ClientOptions',
+    'RedirectMode',
+    'AccessToken',
+    'ResponseFor',
+    'MissingCredentialError',
     'ValidateOptions',
     'RequestInput',
     'ValidityCode',
@@ -68,15 +72,22 @@ export interface StaleTokens {
   message: string;
 }
 
-export interface ClientOptions {
+export type RedirectMode = 'follow' | 'manual';
+
+export type ResponseFor<R extends RedirectMode, Follow, Manual> = R extends 'manual' ? Manual : Follow;
+
+export type AccessToken = string | (() => string | undefined | Promise<string | undefined>);
+
+export interface ClientOptions<R extends RedirectMode = RedirectMode> {
   baseUrl?: string;
   origins?: Record<string, string>;
   headers?: Record<string, string>;
   cookies?: string;
+  accessToken?: AccessToken;
   fetch?: typeof fetch;
   validate?: boolean;
   unsafePatterns?: boolean;
-  redirect?: 'follow' | 'manual';
+  redirect?: R;
   maxRedirects?: number;
   encoders?: Record<string, (text: string) => ArrayLike<number>>;
   registrableDomain?: (host: string) => string | undefined;
@@ -89,8 +100,10 @@ export interface ValidateOptions {
 export interface RequestInput {
   params?: object;
   query?: object;
+  contentType?: string;
   body?: unknown;
   headers?: Record<string, string | undefined>;
+  accessToken?: string;
 }
 
 export type ValidityCode =
@@ -144,6 +157,19 @@ export class MissingTokenError extends Error {
     this.name = 'MissingTokenError';
     this.response = response;
     this.missing = missing;
+  }
+}
+
+export class MissingCredentialError extends Error {
+  readonly endpoint: string;
+
+  constructor(endpoint: string) {
+    super(
+      'The endpoint ' + endpoint + ' needs a bearer token, and the client has none, so it sent no request. ' +
+        'Pass accessToken in the client options or in the request, or set the authorization header.',
+    );
+    this.name = 'MissingCredentialError';
+    this.endpoint = endpoint;
   }
 }`;
 
@@ -241,6 +267,8 @@ interface CsrfSpec {
 interface BodySpec {
   kind: string;
   mimeType: string;
+  contentType?: string;
+  jsonLines?: boolean;
   defaults?: Record<string, unknown>;
 }
 
@@ -255,6 +283,9 @@ interface EndpointSpec {
   headers: Record<string, string>;
   query: Record<string, unknown>;
   body?: BodySpec;
+  bodies?: BodySpec[];
+  bearer?: 'required' | 'optional';
+  jsonLines?: number[];
   csrf: CsrfSpec[];
   form?: FormSpec;
 }
@@ -851,9 +882,28 @@ export class CookieJar {
     }
   }
 
+  static jsonLines(bytes: Uint8Array | undefined, contentType: string): unknown {
+    if (bytes === undefined || bytes.byteLength === 0) return undefined;
+    const text = AppiiRuntime.decode(bytes, contentType);
+    const out: unknown[] = [];
+    for (const line of text.split(/\r\n|\r|\n/)) {
+      if (line.trim() === '') continue;
+      try {
+        out.push(JSON.parse(line) as unknown);
+      } catch {
+        return text;
+      }
+    }
+    return out;
+  }
+
+  static essence(contentType: string): string {
+    return (contentType.toLowerCase().split(';')[0] ?? '').trim();
+  }
+
   static data(bytes: Uint8Array | undefined, contentType: string): unknown {
     if (bytes === undefined || bytes.byteLength === 0) return undefined;
-    const essence = (contentType.toLowerCase().split(';')[0] ?? '').trim();
+    const essence = AppiiRuntime.essence(contentType);
     const json = essence === 'application/json' || essence === 'text/json' || essence.endsWith('+json');
     const textual =
       json ||
@@ -1867,7 +1917,8 @@ class AppiiHtml {
     this.#documents.clear();
   }
 
-  protected async send(spec: EndpointSpec, input: RequestInput = {}): Promise<ApiResponse> {
+  protected async send(endpoint: EndpointSpec, input: RequestInput = {}): Promise<ApiResponse> {
+    const spec = BaseApiClient.#bodyVariant(endpoint, input.contentType);
     const params: Record<string, unknown> = { ...input.params };
     const userQuery: Record<string, unknown> = { ...input.query };
     const form = spec.form;
@@ -1892,6 +1943,7 @@ class AppiiHtml {
     const page = spec.page ?? form?.page;
     const explicit = new Set<string>();
     const headers = this.#headers(spec, input, explicit);
+    await this.#authorize(spec, input, headers);
     const state: TokenState = { cached: [], missing: [] };
     const sent: unknown = AppiiRuntime.isRecord(body) ? { ...body } : body;
     for (const token of spec.csrf) await this.#fill(token, address, headers, query, sent, form, state);
@@ -1914,7 +1966,7 @@ class AppiiHtml {
       url: exchanged.url,
       redirected: exchanged.redirected,
       headers: exchanged.response.headers,
-      data: AppiiRuntime.data(bytes, type),
+      data: spec.jsonLines?.includes(status) === true ? AppiiRuntime.jsonLines(bytes, type) : AppiiRuntime.data(bytes, type),
     };
     if (status >= BaseApiClient.CLIENT_ERROR && state.missing.length > 0) throw new MissingTokenError(response, state.missing);
     if (state.cached.length > 0 && BaseApiClient.STALE_STATUSES.includes(status)) {
@@ -1922,6 +1974,33 @@ class AppiiHtml {
       for (const stale of response.staleTokens.pages) this.#documents.delete(stale);
     }
     return response;
+  }
+
+  static #bodyVariant(spec: EndpointSpec, contentType: string | undefined): EndpointSpec {
+    if (contentType === undefined || spec.bodies === undefined) return spec;
+    const wanted = AppiiRuntime.essence(contentType);
+    const body = spec.bodies.find((candidate) => AppiiRuntime.essence(candidate.contentType ?? candidate.mimeType) === wanted);
+    if (body === undefined) {
+      const known = spec.bodies.map((candidate) => AppiiRuntime.essence(candidate.contentType ?? candidate.mimeType)).join(', ');
+      throw new TypeError('The endpoint ' + spec.name + ' takes no ' + contentType + ' body. It takes ' + known + '.');
+    }
+    if (body === spec.bodies[0]) return spec;
+    const out: EndpointSpec = { ...spec, body };
+    delete out.form;
+    return out;
+  }
+
+  async #authorize(spec: EndpointSpec, input: RequestInput, headers: Record<string, string>): Promise<void> {
+    if (spec.bearer === undefined) return;
+    if (Object.keys(input.headers ?? {}).some((name) => name.toLowerCase() === 'authorization')) return;
+    const token = input.accessToken ?? (AppiiRuntime.blank(headers['authorization']) ? await this.#accessToken() : undefined);
+    if (!AppiiRuntime.blank(token)) headers['authorization'] = 'Bearer ' + token;
+    else if (AppiiRuntime.blank(headers['authorization']) && spec.bearer === 'required') throw new MissingCredentialError(spec.name);
+  }
+
+  async #accessToken(): Promise<string | undefined> {
+    const option = this.#options.accessToken;
+    return typeof option === 'function' ? await option() : option;
   }
 
   static #stale(status: number, cached: readonly PageToken[]): StaleTokens {
@@ -1980,6 +2059,10 @@ class AppiiHtml {
     if (kind === 'text' && form !== undefined && form.enctype === 'text/plain' && AppiiRuntime.isRecord(body)) {
       setType('text/plain');
       return AppiiRuntime.textPlain(AppiiForms.entries(fields, body, false), this.#encoder(form));
+    }
+    if (kind === 'json' && spec.body?.jsonLines === true && Array.isArray(body)) {
+      setType(mimeType || 'application/x-ndjson');
+      return body.map((item: unknown) => JSON.stringify(item) + '\n').join('');
     }
     if (kind === 'json' || kind === 'graphql') {
       setType(mimeType || 'application/json');

@@ -178,8 +178,11 @@ export class ModelValidator {
     this.#oneOf(problems, form, 'method', ModelValidator.FORM_METHODS, at);
     this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at);
     this.#boolean(problems, form, 'noValidate', at);
+    this.#boolean(problems, form, 'explicitAction', at, { optional: true });
     this.#fields(problems, form, at);
     this.#strings(problems, form, 'endpoints', at, { optional: true });
+    this.#number(problems, form, 'instances', at, { optional: true });
+    this.#strings(problems, form, 'pages', at, { optional: true });
   }
 
   #fields(problems: string[], holder: Fields, at: string): void {
@@ -195,6 +198,7 @@ export class ModelValidator {
     this.#number(problems, field, 'order', at);
     this.#oneOf(problems, field, 'kind', ModelValidator.FIELD_KINDS, at);
     for (const key of ['hasValueAttribute', 'checked', 'disabled', 'readOnly', 'required', 'multiple']) this.#boolean(problems, field, key, at);
+    this.#boolean(problems, field, 'explicitFormAction', at, { optional: true });
     this.#array(
       problems,
       field,

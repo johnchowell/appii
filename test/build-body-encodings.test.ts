@@ -88,7 +88,7 @@ describe('BodyParser decodes urlencoded bytes with the submission encoding (FB-2
   test('the _charset_ field of a form on a windows-1252 page is windows-1252 in the model', () => {
     const f = new CaptureFactory();
     f.exchange({ url: '/b', resourceType: 'document', status: 200, responseHeaders: { 'content-type': 'text/html' }, responseBody: '<!doctype html><meta charset="windows-1252"><form method="post" action="/post"><input type="hidden" name="_charset_"><input name="q"></form>' });
-    f.snapshot('/a', 'A', '<!doctype html><meta charset="utf-8"><form method="post" action="/other" accept-charset="ISO-8859-1"><input type="hidden" name="_charset_"></form>');
+    f.snapshot('/a', 'A', '<!doctype html><meta charset="utf-8"><form method="post" action="/other" accept-charset="ISO-8859-1"><input type="hidden" name="_charset_"><input name="q"></form>');
     const model = ModelBuilder.create({ now: new Date(0) }).build(f.capture());
     const charset = (path: string): unknown => Schema.properties(model.endpoints.find((endpoint) => endpoint.path === path)?.requestBody?.schema)._charset_?.const;
     assert.equal(charset('/post'), 'windows-1252');

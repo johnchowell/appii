@@ -1,4 +1,4 @@
-import type { BodyKind, BodyShape, Endpoint, EndpointForm, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
+import type { BodyKind, BodyShape, Endpoint, EndpointForm, EndpointSample, FormEnctype, FormField, FormMethod, JsonSchema, ParamInfo } from '../model/index.js';
 import { CharsetEncoder } from './charset.js';
 import { EndpointIndex } from './endpoints.js';
 import { mimeEssence, parseUrl } from './http.js';
@@ -22,6 +22,9 @@ export const JSON_MIME = 'application/json';
 export const BINARY_MIME = 'application/octet-stream';
 export const TEXT_PLAIN = 'text/plain';
 export const CRLF = '\r\n';
+export const LINE_FEED = '\n';
+export const SUCCESS_MIN = 200;
+export const SUCCESS_MAX = 299;
 export const NEWLINE_SOURCE = '\r\n|\r|\n';
 export const FORM_BODY_KINDS: readonly BodyKind[] = Object.freeze<BodyKind[]>(['form', 'multipart', 'text']);
 
@@ -112,10 +115,17 @@ export function capturedValue(value: unknown, key = ''): SampleValue {
 
 export function bodySample(shape: BodyShape | undefined): SampleValue | undefined {
   if (!shape || shape.kind === 'empty') return undefined;
+  if (shape.jsonLines === true) return jsonLinesSample(shape);
   const example = shape.examples[0];
   if (example !== undefined) return capturedValue(example);
   if (!shape.schema) return undefined;
   return capturedValue(sampleValue(shape.schema));
+}
+
+export function jsonLinesSample(shape: BodyShape): SampleText | undefined {
+  const items = shape.examples.length > 0 ? shape.examples : shape.schema ? [sampleValue(shape.schema)] : [];
+  if (items.length === 0) return undefined;
+  return SampleText.concat(...items.flatMap((item) => [jsonText(capturedValue(item)), LINE_FEED]));
 }
 
 export function emptyFile(): SampleRecord {
@@ -289,8 +299,7 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
   const base = typeof opts.baseUrl === 'string' || opts.baseUrl === undefined ? SampleText.literal((opts.baseUrl ?? endpoint.origin).replace(/\/+$/, '')) : opts.baseUrl;
   const { path, params } = samplePath(endpoint, opts.pathVariables === true);
   const query = sampleQuery(endpoint, submission, opts).map((entry) => ({ name: entry.name, value: link(entry.value) }));
-  const encoder = submission?.method === 'GET' ? CharsetEncoder.for(submission.form.charset) : undefined;
-  const component = (text: string): string => (encoder ? encoder.formComponent(text) : encodeURIComponent(text));
+  const component = queryComponent(submission);
   const search = query.map((entry) => SampleText.concat(`${component(entry.name)}=`, entry.value.mapLiterals(component).encoded('component')));
   const url = SampleText.concat(base, link(path), search.length > 0 ? SampleText.concat('?', SampleText.join(search, '&')) : '');
   const headers = sampleHeaders(endpoint, opts);
@@ -310,6 +319,23 @@ export function requestSample(endpoint: Endpoint, opts: SampleOptions = {}): Req
   const cookie = opts.cookie === false ? undefined : (opts.cookie ?? cookieJar(endpoint));
   const withCookie = cookie === undefined ? sample : { ...sample, cookie };
   return body ? { ...withCookie, body: { ...body, value: linkValue(body.value, link) } } : withCookie;
+}
+
+export function queryComponent(submission: FormSubmission | undefined): (text: string) => string {
+  const encoder = submission?.method === 'GET' ? CharsetEncoder.for(submission.form.charset) : undefined;
+  return (text: string): string => (encoder ? encoder.formComponent(text) : encodeURIComponent(text));
+}
+
+export function observedSample(endpoint: Endpoint): EndpointSample | undefined {
+  return endpoint.samples.find((sample) => sample.status !== undefined && sample.status >= SUCCESS_MIN && sample.status <= SUCCESS_MAX) ?? endpoint.samples[0];
+}
+
+export function observedQuery(endpoint: Endpoint): [string, string][] {
+  const sample = observedSample(endpoint);
+  const url = sample === undefined ? undefined : parseUrl(sample.url);
+  const out: [string, string][] = [];
+  if (url) for (const [name, value] of url.searchParams) if (!out.some(([known]) => known === name)) out.push([name, value]);
+  return out;
 }
 
 function paramValue(param: ParamInfo): SampleText {
@@ -362,11 +388,16 @@ function sampleQuery(endpoint: Endpoint, submission: FormSubmission | undefined,
     for (const param of endpoint.queryParams) {
       if (param.required && !formNames.has(param.name) && !entries.has(param.name)) entries.set(param.name, paramValue(param));
     }
+  } else if (submission) {
+    for (const param of endpoint.queryParams) if (param.required || !opts.requiredOnly) entries.set(param.name, paramValue(param));
+    applySubmitter(entries, submission);
   } else {
-    for (const param of endpoint.queryParams) {
-      if (param.required || (!opts.requiredOnly && (param.examples.length > 0 || submission !== undefined))) entries.set(param.name, paramValue(param));
+    const params = new Map(endpoint.queryParams.map((param) => [param.name, param]));
+    for (const [name, value] of observedQuery(endpoint)) {
+      if (opts.requiredOnly && params.get(name)?.required !== true) continue;
+      entries.set(name, isRedacted(value) ? placeholder(name) : SampleText.literal(value));
     }
-    if (submission) applySubmitter(entries, submission);
+    for (const param of endpoint.queryParams) if (param.required && !entries.has(param.name)) entries.set(param.name, paramValue(param));
   }
   for (const token of endpoint.auth.csrf) if (token.location === 'query') entries.set(token.name, placeholder(token.name));
   return [...entries].map(([name, value]) => ({ name, value: textValue(value) }));

@@ -60,7 +60,7 @@ describe('CurlExporter against the fixture site', () => {
     assert.match(content, /\nappii_default_cookie='theme=dark'\nAPPII_COOKIE="\$\{APPII_COOKIE-\$appii_default_cookie\}"\n/);
     for (const name of ['APPII_CSRF', 'APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`: "\${${name}:=}"\n`), name);
     assert.ok(!content.includes('X_CSRF_TOKEN'));
-    assert.match(content, /\ncreateItem\(\) \{\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
+    assert.match(content, /\ncreateItem\(\) \{\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_cookie 'csrf'\)\}"\n {2}if \[\[ \$# -gt 0 && "\$1" != -\* \]\]; then printf [^\n]+ >&2; return 2; fi\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
     );

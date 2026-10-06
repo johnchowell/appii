@@ -55,7 +55,10 @@ export class FormSchemaCombiner {
     const formProps = Object.entries(Schema.properties(form));
     const formNames = new Set(formProps.map(([name]) => name));
     const extra = observedProps.filter(([name]) => !formNames.has(name)).map(([name, schema]): [string, JsonSchema] => [name, Json.clone(schema)]);
-    const required = Helpers.distinct([...Schema.requiredSet(form), ...[...Schema.requiredSet(observed)].filter((name) => !formNames.has(name))]);
+    const seen = Schema.requiredSet(observed);
+    const submitters = new Set(formProps.filter(([, schema]) => FormSchemaCombiner.#submitter(schema)).map(([name]) => name));
+    const kept = [...Schema.requiredSet(form)].filter((name) => !submitters.has(name) || seen.has(name));
+    const required = Helpers.distinct([...kept, ...[...seen].filter((name) => !formNames.has(name))]);
     const { properties: _properties, required: _required, ...rest } = form;
     const out: JsonSchema = { type: 'object', ...rest, properties: Object.fromEntries([...formProps, ...extra]) };
     if (required.length > 0) out.required = required;

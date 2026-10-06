@@ -26,6 +26,7 @@ export interface SlotContext {
   validate: boolean;
   tokens: ReadonlySet<string>;
   charset?: string;
+  openChoices?: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface NamedSlot {
@@ -68,6 +69,7 @@ export class EntrySlotFactory {
   static readonly COORDINATES: readonly string[] = ['x', 'y'];
   static readonly MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/;
   static readonly NO_DEFAULT_TYPES: ReadonlySet<string> = new Set(['password', 'file']);
+  static readonly OPEN_CHOICES = 'x-appii-dynamic-options';
 
   readonly #sanitizer: ValueSanitizer;
 
@@ -198,7 +200,7 @@ export class EntrySlotFactory {
         });
       case 'select-one':
       case 'select-multiple':
-        return this.#select(field, checks);
+        return this.#select(field, checks, context.openChoices?.get(field.name));
       case 'file':
         return this.#file(field, context, checks);
       case 'hidden':
@@ -287,27 +289,45 @@ export class EntrySlotFactory {
     });
   }
 
-  #select(field: FormField, checks: boolean): EntrySlot {
+  #select(field: FormField, checks: boolean, observed: readonly string[] | undefined): EntrySlot {
     const options = field.options ?? [];
     const multiple = field.type === 'select-multiple';
     const first = options[0];
     const placeholder = !multiple && field.placeholder !== undefined && first?.value === '' ? first : undefined;
     const excluded = checks && field.required && placeholder !== undefined ? placeholder : undefined;
     const allowed = options.filter((option) => !option.disabled && option !== excluded);
+    const submitted = options.filter((option) => option.selected && !option.disabled);
+    const valid = submitted.every((option) => option !== excluded);
+    const defaults = valid ? { defaults: submitted.map((option) => option.value) } : {};
+    const required = checks && field.required;
+    if (observed !== undefined) {
+      const schema: JsonSchema = { type: 'string', [EntrySlotFactory.OPEN_CHOICES]: true };
+      if (excluded) schema.minLength = 1;
+      const examples = observed.filter((value) => value !== excluded?.value);
+      if (examples.length > 0) schema.examples = examples;
+      if (placeholder) schema['x-html-placeholder'] = placeholder.label;
+      return this.#create(field, {
+        schema: this.#annotate(field, schema),
+        min: multiple ? 0 : submitted.length > 0 ? 1 : 0,
+        max: multiple ? Number.POSITIVE_INFINITY : 1,
+        list: multiple,
+        unique: multiple,
+        required,
+        ...defaults,
+      });
+    }
     const { values, labels } = EntrySlotFactory.#choices(allowed.map((option) => ({ value: option.value, label: option.label })));
     const schema: JsonSchema = { type: 'string', enum: values };
     if (labels) schema['x-html-labels'] = labels;
     if (placeholder) schema['x-html-placeholder'] = placeholder.label;
-    const submitted = options.filter((option) => option.selected && !option.disabled);
-    const valid = submitted.every((option) => option !== excluded);
     return this.#create(field, {
       schema: this.#annotate(field, schema),
       min: multiple ? 0 : submitted.length > 0 ? 1 : 0,
       max: multiple ? allowed.length : Math.min(allowed.length, 1),
       list: multiple,
       unique: multiple && values.length === allowed.length,
-      required: checks && field.required,
-      ...(valid ? { defaults: submitted.map((option) => option.value) } : {}),
+      required,
+      ...defaults,
     });
   }
 

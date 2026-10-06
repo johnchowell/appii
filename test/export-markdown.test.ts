@@ -160,9 +160,11 @@ describe('MarkdownExporter request examples agree with the other renderers', () 
       auth: { cookies: ['csrftoken'], headers: ['authorization'], bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
     });
     const markdown = new MarkdownExporter().export(ExportModel.model([me])).content;
-    assert.ok(markdown.includes(`-H 'authorization: Bearer {{access_token}}'`), markdown);
-    assert.ok(markdown.includes(`-H 'x-csrf-token: {{csrftoken}}'`), markdown);
-    assert.ok(!markdown.includes('{{authorization}}'));
-    assert.ok(!markdown.includes('{{x_csrf_token}}'));
+    assert.ok(markdown.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), markdown);
+    assert.ok(markdown.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN}"'), markdown);
+    assert.ok(markdown.includes('Variables: `APPII_ACCESS_TOKEN` `APPII_CSRFTOKEN`'), markdown);
+    assert.ok(!markdown.includes('APPII_AUTHORIZATION'));
+    assert.ok(!markdown.includes('APPII_X_CSRF_TOKEN'));
+    assert.ok(!markdown.includes('{{'));
   });
 });

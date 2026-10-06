@@ -103,17 +103,25 @@ export class HtmlEndpointRenderer {
     out.push(`<dl class="meta">${meta.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${value}</dd>`).join('')}</dl>`);
     const params = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams];
     if (params.length > 0) out.push('<h3>Parameters</h3>', this.params(params));
-    if (endpoint.requestBody && endpoint.requestBody.kind !== 'empty') out.push(`<h3>Request body</h3>`, this.body(endpoint.requestBody, `request-${number}`));
+    Helpers.requestBodies(endpoint).forEach((shape, i) => out.push(`<h3>Request body</h3>`, this.body(shape, i === 0 ? `request-${number}` : `request-${number}-${i}`)));
     if (endpoint.responses.length > 0) {
       out.push('<h3>Responses</h3>');
       endpoint.responses.forEach((response, i) => out.push(this.response(response, `response-${number}-${i}`)));
     }
-    const curl = Curl.curlCommand(Helpers.sample(ctx.model, endpoint, ctx.options));
-    out.push(
-      '<h3>Example request</h3>',
-      `<div class="copy-block"><button type="button" class="copy" data-target="curl-${number}">Copy</button><pre id="curl-${number}">\n${esc(curl)}</pre></div>`,
-    );
+    out.push('<h3>Example request</h3>', this.example(endpoint, ctx, `curl-${number}`));
+    Helpers.bodyVariants(endpoint).forEach((variant, i) => {
+      out.push(`<h3>Example request (<code>${esc(variant.mediaType)}</code>)</h3>`, this.example(variant.endpoint, ctx, `curl-${number}-${i + 1}`));
+    });
     return out.join('');
+  }
+
+  example(endpoint: Endpoint, ctx: HtmlEndpointContext, id: string): string {
+    const esc = HtmlEndpointRenderer.esc;
+    const sample = Helpers.sample(ctx.model, endpoint, ctx.options);
+    const curl = Curl.curlCommand(sample, { variables: 'shell' });
+    const variables = Curl.placeholderNames(sample);
+    const block = `<div class="copy-block"><button type="button" class="copy" data-target="${esc(id)}">Copy</button><pre id="${esc(id)}">\n${esc(curl)}</pre></div>`;
+    return variables.length === 0 ? block : `${block}<p class="variables">${esc(Curl.VARIABLES_LABEL)} ${variables.map((name) => `<code>${esc(name)}</code>`).join(' ')}</p>`;
   }
 
   params(params: readonly ParamInfo[]): string {
@@ -127,7 +135,7 @@ export class HtmlEndpointRenderer {
 
   body(shape: BodyShape, id: string): string {
     const esc = HtmlEndpointRenderer.esc;
-    const out = [`<p><code>${esc(shape.mimeType || '(unknown type)')}</code> (${esc(shape.kind)})</p>`];
+    const out = [`<p><code>${esc(shape.mimeType || '(unknown type)')}</code> (${esc(shape.jsonLines === true ? `${shape.kind}, ${Helpers.JSON_LINES_LABEL}` : shape.kind)})</p>`];
     const fields = this.#fields.rows(shape.schema);
     if (fields.length > 0) {
       const rows = fields.map(
@@ -137,7 +145,8 @@ export class HtmlEndpointRenderer {
       out.push(`<div class="scroll"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Constraints</th><th>Label</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
     }
     if (shape.schema) out.push(`<details class="raw"><summary>JSON Schema</summary><pre id="${esc(id)}-schema">\n${esc(HtmlEndpointRenderer.#json(shape.schema))}</pre></details>`);
-    shape.examples.forEach((example, i) => {
+    const examples = shape.jsonLines === true && shape.examples.length > 0 ? [Text.truncate(Helpers.jsonLines(shape.examples), HtmlEndpointRenderer.MAX_JSON_CHARS)] : shape.examples;
+    examples.forEach((example, i) => {
       const text = typeof example === 'string' ? example : HtmlEndpointRenderer.#json(example);
       out.push(`<details class="raw"><summary>Example ${i + 1}</summary><pre id="${esc(id)}-example-${i + 1}">\n${esc(text)}</pre></details>`);
     });

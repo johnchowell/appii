@@ -243,8 +243,10 @@ describe('example requests in every format send the cookies of the endpoint', ()
     assert.match(shell, /-b "auth=\$\{APPII_AUTH\}; sid=\$\{APPII_SID\}"/);
     assert.deepEqual(Curl.placeholderNames(sample), ['APPII_AUTH', 'APPII_SID']);
     const markdown = new MarkdownExporter().export(model).content;
-    assert.ok(markdown.includes(literal), markdown);
+    assert.ok(markdown.includes(shell), markdown);
+    assert.ok(!markdown.includes('{{'), markdown);
     const html = new HtmlExporter().export(model).content;
-    assert.ok(html.includes("-b &#39;auth={{auth}}; sid={{sid}}&#39;"), html);
+    assert.ok(html.includes('-b &quot;auth=${APPII_AUTH}; sid=${APPII_SID}&quot;'), html);
+    assert.ok(!html.includes('{{auth}}'), html);
   });
 });

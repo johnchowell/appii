@@ -66,11 +66,13 @@ export class FormExtractor {
     });
     FormExtractor.#settleRadioGroups(fields);
     const acceptCharset = doc.attr(form, 'accept-charset');
+    const action = doc.attr(form, 'action');
     const descriptor: FormDescriptor = {
       index,
       selector: this.#selectors.form(doc, form),
       pageUrl: doc.url,
-      action: doc.actionUrl(doc.attr(form, 'action')),
+      action: doc.actionUrl(action),
+      explicitAction: ControlRules.explicitUrl(action),
       method: ControlRules.method(doc.attr(form, 'method')),
       enctype: ControlRules.enctype(doc.attr(form, 'enctype')),
       charset: ControlRules.submissionEncoding(acceptCharset, doc.encoding),

@@ -24,22 +24,13 @@ export type OpenApiObject = Record<string, unknown>;
 
 export class OpenApiOperationBuilder {
   static readonly IGNORED_HEADERS: ReadonlySet<string> = new Set(['accept', 'content-type', 'authorization']);
-  static readonly DEFAULT_MEDIA: Readonly<Record<BodyKind, string>> = {
-    json: 'application/json',
-    form: 'application/x-www-form-urlencoded',
-    multipart: 'multipart/form-data',
-    graphql: 'application/json',
-    html: 'text/html',
-    text: 'text/plain',
-    binary: 'application/octet-stream',
-    empty: 'application/octet-stream',
-  };
   static readonly STRING_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>(['html', 'text']);
   static readonly EXAMPLE_KINDS: ReadonlySet<BodyKind> = new Set<BodyKind>(['json', 'graphql', 'form', 'multipart']);
-  static readonly MEDIA_RANGE: RegExp = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
   static readonly SET_COOKIE_PREFIX = 'set-cookie: ';
   static readonly MARKUP: TokenSourceMarkup = Object.freeze({ text: (value: string) => value, code: (value: string) => `\`${value}\``, url: (value: string) => value });
   static readonly COMPLEX_TYPES: ReadonlySet<string> = new Set(['object', 'array']);
+  static readonly JSON_LINES_KEY = 'x-appii-json-lines';
+  static readonly JSON_LINES_NOTE = 'The body is JSON lines: one JSON value per line. The schema describes the list of these values.';
 
   readonly #schemas: OpenApiSchemaAdapter;
 
@@ -117,20 +108,33 @@ export class OpenApiOperationBuilder {
   }
 
   requestBody(endpoint: Endpoint, ctx: OperationContext): OpenApiObject | undefined {
-    const shape = endpoint.requestBody;
-    if (!shape || shape.kind === 'empty') return undefined;
+    const shapes = Helpers.requestBodies(endpoint);
+    if (shapes.length === 0) return undefined;
+    const content: OpenApiObject = {};
+    shapes.forEach((shape, i) => Json.setOwn(content, Helpers.mediaType(shape), this.#requestMedia(endpoint, shape, i === 0 ? 'request' : `request ${shape.kind}`, ctx)));
+    const out: OpenApiObject = { required: true, content };
+    if (shapes.some((shape) => shape.jsonLines === true)) out.description = OpenApiOperationBuilder.JSON_LINES_NOTE;
+    return out;
+  }
+
+  #requestMedia(endpoint: Endpoint, shape: BodyShape, label: string, ctx: OperationContext): OpenApiObject {
     const media: OpenApiObject = {};
     const form = shape.kind === 'form' || shape.kind === 'multipart';
     let schema = shape.schema ? this.#schemas.request(shape.schema, form) : OpenApiOperationBuilder.#fallback(shape.kind);
     if (schema && endpoint.kind === 'graphql') schema = this.#schemas.graphql(schema, endpoint.operationName);
-    if (schema) media.schema = this.#maybeRef(`${endpoint.name} request`, schema, ctx);
+    if (schema) media.schema = OpenApiOperationBuilder.#lines(shape, this.#maybeRef(`${endpoint.name} ${label}`, schema, ctx));
     const examples = this.#examples(shape, endpoint.kind === 'graphql' ? endpoint.operationName : undefined);
     if (examples) media.examples = examples;
     if (form && shape.schema) {
       const encoding = this.encoding(shape.schema, shape.kind === 'multipart');
       if (Object.keys(encoding).length > 0) media.encoding = encoding;
     }
-    return { required: true, content: { [OpenApiOperationBuilder.mediaType(shape)]: media } };
+    if (shape.jsonLines === true) media[OpenApiOperationBuilder.JSON_LINES_KEY] = true;
+    return media;
+  }
+
+  static #lines(shape: BodyShape, schema: JsonSchema): JsonSchema {
+    return shape.jsonLines === true ? { type: 'array', items: schema } : schema;
   }
 
   encoding(schema: JsonSchema, multipart: boolean): OpenApiObject {
@@ -159,35 +163,32 @@ export class OpenApiOperationBuilder {
     return out;
   }
 
-  static mediaType(shape: BodyShape): string {
-    const essence = Http.mimeEssence(shape.mimeType);
-    return OpenApiOperationBuilder.MEDIA_RANGE.test(essence) ? essence : OpenApiOperationBuilder.DEFAULT_MEDIA[shape.kind];
-  }
-
   static fileContentType(schema: JsonSchema): string | undefined {
     const accept = schema['x-html-accept'];
     if (typeof accept === 'string') {
       const types = accept
         .split(',')
         .map((token) => token.trim().toLowerCase())
-        .filter((token) => OpenApiOperationBuilder.MEDIA_RANGE.test(token));
+        .filter((token) => Helpers.MEDIA_RANGE.test(token));
       if (types.length > 0) return [...new Set(types)].join(', ');
     }
     return typeof schema.contentMediaType === 'string' ? schema.contentMediaType : undefined;
   }
 
   #response(endpoint: Endpoint, response: EndpointResponse, ctx: OperationContext): OpenApiObject {
-    const out: OpenApiObject = { description: Http.reasonPhrase(response.status) };
+    const body = response.body;
+    const reason = Http.reasonPhrase(response.status);
+    const out: OpenApiObject = { description: body?.jsonLines === true ? `${reason}. ${OpenApiOperationBuilder.JSON_LINES_NOTE}` : reason };
     const headers = OpenApiOperationBuilder.#headers(response.headers);
     if (Object.keys(headers).length > 0) out.headers = headers;
-    const body = response.body;
     if (body && body.kind !== 'empty') {
       const media: OpenApiObject = {};
       const schema = body.schema ? this.#schemas.response(body.schema) : OpenApiOperationBuilder.#fallback(body.kind);
-      if (schema) media.schema = this.#maybeRef(`${endpoint.name} response ${response.status}`, schema, ctx);
+      if (schema) media.schema = OpenApiOperationBuilder.#lines(body, this.#maybeRef(`${endpoint.name} response ${response.status}`, schema, ctx));
       const examples = this.#examples(body, undefined);
       if (examples) media.examples = examples;
-      out.content = { [OpenApiOperationBuilder.mediaType(body)]: media };
+      if (body.jsonLines === true) media[OpenApiOperationBuilder.JSON_LINES_KEY] = true;
+      out.content = { [Helpers.mediaType(body)]: media };
     }
     return out;
   }
@@ -195,6 +196,10 @@ export class OpenApiOperationBuilder {
   #examples(shape: BodyShape, name: string | undefined): OpenApiObject | undefined {
     if (!OpenApiOperationBuilder.EXAMPLE_KINDS.has(shape.kind) || shape.examples.length === 0) return undefined;
     const out: OpenApiObject = {};
+    if (shape.jsonLines === true) {
+      Json.setOwn(out, name ?? 'example1', { value: Json.clone(shape.examples) });
+      return out;
+    }
     shape.examples.forEach((value, i) => {
       const key = name !== undefined && shape.examples.length === 1 ? name : `${name ?? 'example'}${i + 1}`;
       Json.setOwn(out, key, { value: Json.clone(value) });

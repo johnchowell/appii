@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { BodyParser, ModelBuilder } from '../src/build/index.js';
+import { HarConverter } from '../src/capture/index.js';
 import { ExchangeSanitizer, ExporterRegistry, HarExporter } from '../src/export/index.js';
 import type { Exchange } from '../src/model/index.js';
 import { Http } from '../src/shared/index.js';
@@ -281,5 +282,79 @@ describe('HAR redaction keeps the other bytes of a body', () => {
     const out = ExchangeSanitizer.create().sanitize(exchange);
     const bytes = Buffer.from(Http.bodyBytes(out.response?.body));
     assert.equal(bytes.toString('latin1'), '<!doctype html><p>Z\u00fcrich</p><input type="hidden" name="csrf_token" value="&lt;redacted&gt;">');
+  });
+});
+
+describe('HAR postData holds the posted text and its parameters (HTTPBIN-8)', () => {
+  const boundary = '----WebKitFormBoundaryMX15VOEH8v8oGBMP';
+  const textual = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nhello world\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="count"\r\n\r\n3\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="upload"; filename="notes.txt"\r\nContent-Type: text/plain\r\n\r\nline one\nline two\n\r\n`,
+    `--${boundary}--\r\n`,
+  ].join('');
+  const png = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="a.png"\r\nContent-Type: image/png\r\n\r\n`, 'latin1'),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe]),
+    Buffer.from(`\r\n--${boundary}--\r\n`, 'latin1'),
+  ]);
+
+  function capture(): ReturnType<CaptureFactory['capture']> {
+    const f = new CaptureFactory('https://httpbin.example.com');
+    const type = `multipart/form-data; boundary=${boundary}`;
+    f.json('POST', '/post', 200, { ok: true }, { requestHeaders: { 'content-type': type }, requestBody: new Uint8Array(Buffer.from(textual, 'utf8')) });
+    f.json('POST', '/upload', 200, { ok: true }, { requestHeaders: { 'content-type': type }, requestBody: new Uint8Array(png) });
+    f.json('POST', '/form', 200, { ok: true }, { requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, requestBody: 'custname=Ada+Lovelace&topping=bacon&topping=mushroom&comments=Ring+twice.%0D%0A' });
+    return f.capture();
+  }
+
+  interface PostData {
+    mimeType: string;
+    text?: string;
+    params?: { name: string; value?: string; fileName?: string; contentType?: string }[];
+    _appiiEncoding?: string;
+  }
+
+  function postData(text: string, path: string): PostData {
+    const entries = (JSON.parse(text) as { log: { entries: { request: { url: string; postData?: PostData } }[] } }).log.entries;
+    const found = entries.find((item) => new URL(item.request.url).pathname === path)?.request.postData;
+    assert.ok(found, path);
+    return found;
+  }
+
+  test('a textual multipart body is plain text with params, and a binary one stays base64', () => {
+    const source = capture();
+    const text = HarExporter.create().export(ModelBuilder.create().build(source), { capture: source }).content;
+    const multipart = postData(text, '/post');
+    assert.equal(multipart._appiiEncoding, undefined);
+    assert.equal(multipart.text, textual);
+    assert.deepEqual(multipart.params, [
+      { name: 'title', value: 'hello world' },
+      { name: 'count', value: '3' },
+      { name: 'upload', value: 'line one\nline two\n', fileName: 'notes.txt', contentType: 'text/plain' },
+    ]);
+    const binary = postData(text, '/upload');
+    assert.equal(binary._appiiEncoding, 'base64');
+    assert.equal(binary.params, undefined);
+    assert.equal(Buffer.from(binary.text ?? '', 'base64').toString('hex'), png.toString('hex'));
+    const form = postData(text, '/form');
+    assert.equal(form.text, 'custname=Ada+Lovelace&topping=bacon&topping=mushroom&comments=Ring+twice.%0D%0A');
+    assert.deepEqual(form.params, [
+      { name: 'custname', value: 'Ada Lovelace' },
+      { name: 'topping', value: 'bacon' },
+      { name: 'topping', value: 'mushroom' },
+      { name: 'comments', value: 'Ring twice.\r\n' },
+    ]);
+  });
+
+  test('importing the exported HAR gives the same request bytes', () => {
+    const source = capture();
+    const text = HarExporter.create().export(ModelBuilder.create().build(source), { capture: source }).content;
+    const again = HarConverter.create().fromHar(text);
+    for (const path of ['/post', '/upload', '/form']) {
+      const before = source.exchanges.find((exchange) => new URL(exchange.request.url).pathname === path);
+      const after = again.exchanges.find((exchange) => new URL(exchange.request.url).pathname === path);
+      assert.equal(Buffer.from(Http.bodyBytes(after?.request.body)).toString('hex'), Buffer.from(Http.bodyBytes(before?.request.body)).toString('hex'), path);
+    }
   });
 });

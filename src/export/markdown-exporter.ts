@@ -133,7 +133,7 @@ export class MarkdownExporter extends BaseExporter {
     out.push(facts.join('\n'));
     const params = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams];
     if (params.length > 0) out.push('**Parameters**', this.#params(params));
-    if (endpoint.requestBody && endpoint.requestBody.kind !== 'empty') out.push(`**Request body** (${md.code(endpoint.requestBody.mimeType || endpoint.requestBody.kind)})`, ...this.#body(endpoint.requestBody));
+    for (const shape of Helpers.requestBodies(endpoint)) out.push(`**Request body** (${md.code(Helpers.bodyLabel(shape))})`, ...this.#body(shape));
     if (endpoint.responses.length > 0) {
       out.push(
         '**Responses**',
@@ -142,7 +142,7 @@ export class MarkdownExporter extends BaseExporter {
           endpoint.responses.map((response) => [
             md.text(`${response.status} ${Http.reasonPhrase(response.status)}`),
             String(response.count),
-            response.body && response.body.kind !== 'empty' ? md.code(response.body.mimeType || response.body.kind, true) : '',
+            response.body && response.body.kind !== 'empty' ? md.code(Helpers.bodyLabel(response.body), true) : '',
             response.headers.map((name) => md.code(name, true)).join(', '),
           ]),
         ),
@@ -154,13 +154,23 @@ export class MarkdownExporter extends BaseExporter {
       }
     }
     if (MarkdownExporter.#unsafePatterns(endpoint)) out.push(md.text(MarkdownExporter.UNSAFE_PATTERN_NOTE));
-    out.push('**Example request**', md.block(Curl.curlCommand(Helpers.sample(model, endpoint, options)), 'bash'));
+    out.push('**Example request**', ...this.#example(model, endpoint, options));
+    for (const variant of Helpers.bodyVariants(endpoint)) out.push(`**Example request** (${md.code(variant.mediaType)})`, ...this.#example(model, variant.endpoint, options));
     return out.join('\n\n');
+  }
+
+  #example(model: ApiModel, endpoint: Endpoint, options: ExportOptions): string[] {
+    const md = this.#md;
+    const sample = Helpers.sample(model, endpoint, options);
+    const out = [md.block(Curl.curlCommand(sample, { variables: 'shell' }), 'bash')];
+    const variables = Curl.placeholderNames(sample);
+    if (variables.length > 0) out.push(`${md.text(Curl.VARIABLES_LABEL)} ${variables.map((name) => md.code(name)).join(' ')}`);
+    return out;
   }
 
   static #unsafePatterns(endpoint: Endpoint): boolean {
     const schemas = [...endpoint.pathParams, ...endpoint.queryParams, ...endpoint.headerParams].map((param) => param.schema);
-    if (endpoint.requestBody?.schema) schemas.push(endpoint.requestBody.schema);
+    for (const shape of Helpers.requestBodies(endpoint)) if (shape.schema) schemas.push(shape.schema);
     return schemas.some((schema) => Schema.unsafePatterns(schema).length > 0);
   }
 
@@ -184,7 +194,8 @@ export class MarkdownExporter extends BaseExporter {
     const out: string[] = [];
     if (fields.length > 0) out.push(this.#fieldTable(fields));
     const example = shape.examples[0];
-    if (example !== undefined) out.push(this.#md.block(typeof example === 'string' ? example : Json.asciiJson(example), typeof example === 'string' ? '' : 'json'));
+    if (shape.jsonLines === true) out.push(this.#md.block(Helpers.jsonLines(shape.examples), ''));
+    else if (example !== undefined) out.push(this.#md.block(typeof example === 'string' ? example : Json.asciiJson(example), typeof example === 'string' ? '' : 'json'));
     return out;
   }
 

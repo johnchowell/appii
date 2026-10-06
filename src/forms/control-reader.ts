@@ -155,7 +155,10 @@ export class ControlReader {
     const action = doc.attr(element, 'formaction');
     const method = doc.attr(element, 'formmethod');
     const enctype = doc.attr(element, 'formenctype');
-    if (action !== undefined) field.formAction = doc.actionUrl(action);
+    if (action !== undefined) {
+      field.formAction = doc.actionUrl(action);
+      field.explicitFormAction = ControlRules.explicitUrl(action);
+    }
     if (method !== undefined) field.formMethod = ControlRules.method(method);
     if (enctype !== undefined) field.formEnctype = ControlRules.enctype(enctype);
     field.formNoValidate = doc.has(element, 'formnovalidate');

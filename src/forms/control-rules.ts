@@ -20,6 +20,10 @@ export class ControlRules {
 
   static readonly TEMPORAL_TYPES: ReadonlySet<string> = new Set(['date', 'month', 'week', 'time', 'datetime-local']);
 
+  static readonly IMPLICIT_SUBMISSION_BLOCKERS: ReadonlySet<string> = new Set([
+    'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month', 'week', 'time', 'datetime-local', 'number',
+  ]);
+
   static readonly ATTRIBUTES: Readonly<Record<ControlAttribute, ReadonlySet<string>>> = {
     required: new Set([
       'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month', 'week', 'time', 'datetime-local', 'number',
@@ -126,5 +130,13 @@ export class ControlRules {
 
   static isSubmitType(type: string): boolean {
     return ControlRules.SUBMIT_TYPES.has(type);
+  }
+
+  static explicitUrl(value: string | undefined): boolean {
+    return value !== undefined && HtmlMicrosyntax.trim(value) !== '';
+  }
+
+  static blocksImplicitSubmission(type: string): boolean {
+    return ControlRules.IMPLICIT_SUBMISSION_BLOCKERS.has(type);
   }
 }

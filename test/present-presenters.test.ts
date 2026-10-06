@@ -498,7 +498,8 @@ describe('EndpointDetailPresenter', () => {
       '  -H "x-csrf-token: ${APPII_CSRF}" \\',
       "  -H 'Content-Type: application/json' \\",
       '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF}; sid=${APPII_SID}; theme=${APPII_THEME}" \\',
-      `  --data-raw '{"name":"Thing","price":5}'`,
+      `  --data-raw '{"name":"Thing","price":5}' \\`,
+      '  --compressed',
     ]);
     assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF APPII_SID APPII_THEME');
     const argv = (script: string) =>

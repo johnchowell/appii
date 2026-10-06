@@ -37,6 +37,7 @@ test('requestSample fills path, query, csrf header and json body', () => {
     ],
     auth: { cookies: ['csrf'], headers: [], bearer: false, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }] },
     requestBody: { mimeType: 'application/json', kind: 'json', examples: [{ name: 'Thing', password: '<redacted>' }] },
+    samples: [{ exchangeId: 'e1', url: 'http://127.0.0.1:9/api/items/42?page=1&q=a+b', status: 201, startedAt: '2024-01-01T00:00:00.000Z' }],
   });
   const s = Samples.requestSample(e, { baseUrl: 'https://api.example.com/' });
   assert.equal(String(s.url), 'https://api.example.com/api/items/42?page=1&q=a%20b');

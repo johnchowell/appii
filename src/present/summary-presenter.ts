@@ -26,9 +26,11 @@ export class SummaryPresenter extends BasePresenter<ApiModel> {
   }
 
   static forms(forms: readonly FormDescriptor[]): string {
-    if (forms.length === 0 || forms.some((form) => form.endpoints === undefined)) return String(forms.length);
+    const instances = forms.reduce((sum, form) => sum + (form.instances ?? 1), 0);
+    const count = instances > forms.length ? `${forms.length} distinct, ${instances} on pages` : String(forms.length);
+    if (forms.length === 0 || forms.some((form) => form.endpoints === undefined)) return count;
     const linked = forms.filter((form) => (form.endpoints?.length ?? 0) > 0).length;
-    return `${forms.length} (${linked} linked to endpoints)`;
+    return `${count} (${linked} linked to endpoints)`;
   }
 
   render(model: ApiModel): string {

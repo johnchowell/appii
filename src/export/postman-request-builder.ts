@@ -24,13 +24,17 @@ export class PostmanRequestBuilder {
     placeholder: (name: string): string => `{{${name}}}`,
   });
 
-  item(endpoint: Endpoint, ctx: PostmanItemContext): PostmanObject {
+  items(endpoint: Endpoint, ctx: PostmanItemContext): PostmanObject[] {
+    return [this.item(endpoint, ctx), ...Helpers.bodyVariants(endpoint).map((variant) => this.item(variant.endpoint, ctx, ` (${variant.mediaType})`))];
+  }
+
+  item(endpoint: Endpoint, ctx: PostmanItemContext, suffix = ''): PostmanObject {
     const sample = Samples.requestSample(endpoint, { cookie: false });
     const request = this.request(endpoint, sample, ctx);
     const responses = endpoint.responses
       .filter((response) => Helpers.isHttpStatus(response.status))
       .map((response) => this.response(response, request));
-    return { name: Helpers.summary(endpoint), request, response: responses };
+    return { name: Helpers.summary(endpoint) + suffix, request, response: responses };
   }
 
   request(endpoint: Endpoint, sample: Samples.RequestSample, ctx: PostmanItemContext): PostmanObject {
@@ -173,6 +177,7 @@ export class PostmanRequestBuilder {
 
   static #responseBody(shape: BodyShape | undefined): string {
     if (!shape || shape.kind === 'empty') return '';
+    if (shape.jsonLines === true) return Helpers.jsonLines(shape.examples);
     const example = shape.examples[0];
     if (example !== undefined) return typeof example === 'string' ? example : Json.asciiJson(example);
     if (shape.kind === 'json' || shape.kind === 'graphql') {

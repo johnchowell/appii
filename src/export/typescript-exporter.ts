@@ -118,8 +118,8 @@ export class TypeScriptExporter extends BaseExporter {
       ...codes.map((code) => code.spec),
       ...codes.flatMap((code) => (code.validator === undefined ? [] : [code.validator])),
       [
-        `export class ${client} extends BaseApiClient {`,
-        '  constructor(options: ClientOptions = {}) {',
+        `export class ${client}<${TsEndpointWriter.CLIENT_REDIRECT_PARAMETER} extends RedirectMode = 'follow'> extends BaseApiClient {`,
+        `  constructor(options: ClientOptions<${TsEndpointWriter.CLIENT_REDIRECT_PARAMETER}> = {}) {`,
         '    super(options, PRIMARY_ORIGIN, DEFAULT_BASE_URL);',
         '  }',
         ...codes.flatMap((code) => ['', code.member]),

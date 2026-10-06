@@ -31,6 +31,8 @@ export const MULTIPART_FILE_FLAG = '-F';
 export const RAW_FLAG = '--data-raw';
 export const BINARY_FLAG = '--data-binary';
 export const HEAD_FLAG = '--head';
+export const COMPRESSED_FLAG = '--compressed';
+export const VARIABLES_LABEL = 'Variables:';
 export const HEAD_METHOD = 'HEAD';
 export const GET_METHOD = 'GET';
 export const DEFAULT_UPLOAD = 'file.bin';
@@ -157,6 +159,7 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   if (cookie) groups.push(['-b', arg(cookie)]);
   if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
   else groups.push(...bodyGroups(sample.body, arg));
+  groups.push([COMPRESSED_FLAG]);
   for (const extra of opts.extraArgs ?? []) groups.push([extra]);
   const parts = groups.map((group) => group.join(' '));
   return ShellScript.ascii(opts.multiline === false ? parts.join(' ') : parts.join(CONTINUATION));

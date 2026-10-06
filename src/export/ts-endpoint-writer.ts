@@ -1,4 +1,4 @@
-import type { ApiModel, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
+import type { ApiModel, BodyShape, CsrfToken, Endpoint, EndpointResponse, JsonSchema, ParamInfo } from '../model/index.js';
 import { CharsetEncoder, EndpointIndex, Http, Json, Samples, Schema, SingleByteIndexes, Text } from '../shared/index.js';
 import { FormRuleCompiler } from './form-rule-compiler.js';
 import type { CompiledVariant } from './form-rule-compiler.js';
@@ -23,6 +23,18 @@ export interface TsEndpointCode {
   member: string;
 }
 
+export interface TsBodyCode {
+  schema?: JsonSchema;
+  type: string;
+  required: boolean;
+}
+
+export interface TsResponseCode {
+  declarations: string[];
+  follow: string;
+  manual?: string;
+}
+
 export interface TsEndpointWriterDeps {
   types?: TsTypeWriter;
   literals?: TsLiteralWriter;
@@ -42,7 +54,12 @@ interface FormCode {
 
 export class TsEndpointWriter {
   static readonly NO_CONTENT_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
-  static readonly SKIPPED_HEADERS: ReadonlySet<string> = new Set(['cookie', 'content-type', 'content-length', 'host', 'authorization', 'origin', 'referer']);
+  static readonly SKIPPED_HEADERS: ReadonlySet<string> = new Set(['cookie', 'content-type', 'content-length', 'host', 'origin', 'referer']);
+  static readonly CREDENTIAL_HEADERS: ReadonlySet<string> = new Set(['authorization']);
+  static readonly AUTHORIZATION = 'authorization';
+  static readonly REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+  static readonly FIRST_TYPED_STATUS = 200;
+  static readonly CLIENT_REDIRECT_PARAMETER = 'R';
   static readonly GRAPHQL_DEFAULTS: readonly string[] = ['operationName', 'query', 'extensions'];
   static readonly BINARY_BODY = 'Blob | ArrayBuffer | Uint8Array | string';
   static readonly HEADER_INDEX = '[name: string]: string | undefined;';
@@ -110,28 +127,48 @@ export class TsEndpointWriter {
       declarations.push(this.#types.declaration(type, query));
       members.push({ name: 'query', type, required: Schema.requiredSet(query).size > 0 });
     }
+    const headerType = name('Headers');
+    const headers = this.#headers(endpoint);
+    declarations.push(`export interface ${headerType} ${headers.body}`);
+    const shared: RequestMember[] = [...members, { name: 'headers', type: headerType, required: headers.required }];
+    if (endpoint.auth.bearer) shared.push({ name: 'accessToken', type: 'string', required: false });
+    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : Helpers.bodyVariants(endpoint);
     const body = this.#body(endpoint);
     let bodyType: string | undefined;
+    const requestMembers = [...shared];
     if (body) {
       bodyType = name('Body');
       declarations.push(body.schema ? this.#types.declaration(bodyType, body.schema) : `export type ${bodyType} = ${body.type};`);
-      members.push({ name: 'body', type: bodyType, required: body.required });
+      if (variants.length > 0 && endpoint.requestBody) requestMembers.unshift({ name: 'contentType', type: Text.jsString(Helpers.mediaType(endpoint.requestBody)), required: false });
+      requestMembers.push({ name: 'body', type: bodyType, required: body.required });
     }
-    const headerType = name('Headers');
-    declarations.push(`export interface ${headerType} ${this.#headers(endpoint)}`);
-    members.push({ name: 'headers', type: headerType, required: false });
     const requestType = name('Request');
-    declarations.push(
-      `export interface ${requestType} {\n${members.map((member) => `  ${member.name}${member.required ? '' : '?'}: ${member.type};`).join('\n')}\n}`,
-    );
-    const responseType = name('Response');
-    declarations.push(...this.#responses(endpoint, responseType, name));
+    declarations.push(TsEndpointWriter.#interface(requestType, requestMembers));
+    const requestTypes = [requestType];
+    for (const variant of variants) {
+      const kind = TsEndpointWriter.pascal(variant.shape.kind);
+      const code = this.#body(variant.endpoint);
+      const variantMembers: RequestMember[] = [{ name: 'contentType', type: Text.jsString(variant.mediaType), required: true }, ...shared];
+      if (code) {
+        const type = name(`${kind}Body`);
+        declarations.push(code.schema ? this.#types.declaration(type, code.schema) : `export type ${type} = ${code.type};`);
+        variantMembers.push({ name: 'body', type, required: code.required });
+      }
+      const variantType = name(`${kind}Request`);
+      declarations.push(TsEndpointWriter.#interface(variantType, variantMembers));
+      requestTypes.push(variantType);
+    }
+    const responses = this.#responses(endpoint, name('Response'), name);
+    declarations.push(...responses.declarations);
     const specName = Text.uniqueName(`${Text.camelCase(pascal)}Spec`, ctx.taken);
     const spec = `const ${specName}: EndpointSpec = ${this.#literals.write(this.spec(endpoint, ctx))};`;
-    const optional = members.every((member) => !member.required);
+    const optional = requestMembers.every((member) => !member.required);
+    const result = responses.manual === undefined ? responses.follow : `ResponseFor<${TsEndpointWriter.CLIENT_REDIRECT_PARAMETER}, ${responses.follow}, ${responses.manual}>`;
+    const docs = TsEndpointWriter.#docs(endpoint);
     const member = [
-      `  async ${method}(request: ${requestType}${optional ? ' = {}' : ''}): Promise<${responseType}> {`,
-      `    return (await this.send(${specName}, request)) as ${responseType};`,
+      ...docs.map((line) => `  ${line}`),
+      `  async ${method}(request: ${requestTypes.join(' | ')}${optional ? ' = {}' : ''}): Promise<${result}> {`,
+      `    return (await this.send(${specName}, request)) as ${result};`,
       '  }',
     ].join('\n');
     const code: TsEndpointCode = { method, declarations, spec, member };
@@ -145,6 +182,32 @@ export class TsEndpointWriter {
       ].join('\n');
     }
     return code;
+  }
+
+  static #interface(name: string, members: readonly RequestMember[]): string {
+    return `export interface ${name} {\n${members.map((member) => `  ${member.name}${member.required ? '' : '?'}: ${member.type};`).join('\n')}\n}`;
+  }
+
+  static #bodyless(endpoint: Endpoint): boolean {
+    const method = endpoint.method.toUpperCase();
+    return method === 'GET' || method === 'HEAD';
+  }
+
+  static #docs(endpoint: Endpoint): string[] {
+    const lines: string[] = [];
+    if (endpoint.auth.bearer) {
+      lines.push(
+        endpoint.auth.anonymous === true
+          ? 'Sends a bearer token when the client has one: accessToken in the client options or in the request.'
+          : 'Needs a bearer token: accessToken in the client options or in the request, or the authorization header. Without one it throws MissingCredentialError.',
+      );
+    }
+    const redirects = TsEndpointWriter.#typedStatuses(endpoint).filter((status) => TsEndpointWriter.REDIRECT_STATUSES.has(status));
+    if (redirects.length > 0) {
+      lines.push(`The server answered ${redirects.join(', ')} with a redirect. The client follows it and returns the final response; with redirect: 'manual' it returns the ${redirects.length === 1 ? 'redirect' : 'redirects'}.`);
+    }
+    if (lines.length === 0) return [];
+    return ['/**', ...lines.map((line) => ` * ${line}`), ' */'];
   }
 
   spec(endpoint: Endpoint, ctx: TsEndpointContext): Record<string, unknown> {
@@ -166,13 +229,25 @@ export class TsEndpointWriter {
     const shape = endpoint.requestBody;
     if (shape && shape.kind !== 'empty') {
       const body: Record<string, unknown> = { kind: shape.kind, mimeType: shape.mimeType };
+      if (shape.jsonLines === true) body.jsonLines = true;
       const defaults = form && httpMethod !== 'GET' ? form.defaults : this.#graphqlDefaults(endpoint);
       if (defaults && Object.keys(defaults).length > 0) body.defaults = defaults;
       spec.body = body;
     }
+    const variants = TsEndpointWriter.#bodyless(endpoint) ? [] : Helpers.bodyVariants(endpoint);
+    if (variants.length > 0 && shape) spec.bodies = [shape, ...variants.map((variant) => variant.shape)].map((each) => TsEndpointWriter.#bodySpec(each));
+    if (endpoint.auth.bearer) spec.bearer = endpoint.auth.anonymous === true ? 'optional' : 'required';
+    const lines = endpoint.responses.filter((response) => response.body?.jsonLines === true).map((response) => response.status);
+    if (lines.length > 0) spec.jsonLines = lines;
     spec.csrf = endpoint.auth.csrf.map((token) => this.#csrf(token, endpoint, ctx));
     if (form) spec.form = form.spec;
     return spec;
+  }
+
+  static #bodySpec(shape: BodyShape): Record<string, unknown> {
+    const out: Record<string, unknown> = { kind: shape.kind, mimeType: shape.mimeType, contentType: Helpers.mediaType(shape) };
+    if (shape.jsonLines === true) out.jsonLines = true;
+    return out;
   }
 
   static page(endpoint: Endpoint): string | undefined {
@@ -299,7 +374,7 @@ export class TsEndpointWriter {
     const out: [string, string][] = [];
     for (const param of endpoint.headerParams) {
       const lower = param.name.toLowerCase();
-      if (!param.required || csrf.has(lower) || TsEndpointWriter.SKIPPED_HEADERS.has(lower)) continue;
+      if (!param.required || csrf.has(lower) || TsEndpointWriter.SKIPPED_HEADERS.has(lower) || TsEndpointWriter.CREDENTIAL_HEADERS.has(lower)) continue;
       const example = param.examples.find((value) => !Samples.isRedacted(value));
       if (example !== undefined) out.push([lower, example]);
     }
@@ -343,10 +418,13 @@ export class TsEndpointWriter {
     return endpoint.form?.enctype === TsEndpointWriter.TEXT_PLAIN && shape?.kind === 'text' && Schema.primaryType(shape.schema) === 'object';
   }
 
-  #body(endpoint: Endpoint): { schema?: JsonSchema; type: string; required: boolean } | undefined {
+  #body(endpoint: Endpoint): TsBodyCode | undefined {
     const shape = endpoint.requestBody;
-    const method = endpoint.method.toUpperCase();
-    if (!shape || shape.kind === 'empty' || method === 'GET' || method === 'HEAD') return undefined;
+    if (!shape || shape.kind === 'empty' || TsEndpointWriter.#bodyless(endpoint)) return undefined;
+    if (shape.jsonLines === true) {
+      const schema: JsonSchema = { type: 'array', items: shape.schema ?? {} };
+      return { schema, type: this.#types.type(schema), required: true };
+    }
     const textPlain = TsEndpointWriter.#textPlainForm(endpoint);
     if ((shape.kind === 'text' || shape.kind === 'html') && !textPlain) return { type: 'string', required: true };
     if (shape.kind === 'binary') return { type: TsEndpointWriter.BINARY_BODY, required: true };
@@ -365,16 +443,22 @@ export class TsEndpointWriter {
     return { schema, type: this.#types.type(schema), required: objectLike ? required.length > 0 : true };
   }
 
-  #headers(endpoint: Endpoint): string {
+  #headers(endpoint: Endpoint): { body: string; required: boolean } {
     const csrf = new Set(endpoint.auth.csrf.filter((token) => token.location === 'header').map((token) => token.name.toLowerCase()));
     const defaults = this.#headerDefaults(endpoint);
     const lines: string[] = [];
     const seen = new Set<string>();
+    let anyRequired = false;
+    if (endpoint.auth.bearer) {
+      seen.add(TsEndpointWriter.AUTHORIZATION);
+      lines.push(`  ${TsEndpointWriter.AUTHORIZATION}?: string;`);
+    }
     for (const param of endpoint.headerParams) {
       const lower = param.name.toLowerCase();
       if (seen.has(lower) || TsEndpointWriter.SKIPPED_HEADERS.has(lower)) continue;
       seen.add(lower);
       const required = param.required && !csrf.has(lower) && defaults[lower] === undefined;
+      anyRequired = anyRequired || required;
       lines.push(`  ${Text.propertyKey(lower)}${required ? '' : '?'}: string;`);
     }
     for (const name of csrf) {
@@ -383,28 +467,47 @@ export class TsEndpointWriter {
       lines.push(`  ${Text.propertyKey(name)}?: string;`);
     }
     lines.push(`  ${TsEndpointWriter.HEADER_INDEX}`);
-    return `{\n${lines.join('\n')}\n}`;
+    return { body: `{\n${lines.join('\n')}\n}`, required: anyRequired };
   }
 
-  #responses(endpoint: Endpoint, typeName: string, name: (suffix: string) => string): string[] {
+  static #typedStatuses(endpoint: Endpoint): number[] {
+    return EndpointIndex.statuses(endpoint).filter((status) => Helpers.isHttpStatus(status) && status >= TsEndpointWriter.FIRST_TYPED_STATUS);
+  }
+
+  #responses(endpoint: Endpoint, typeName: string, name: (suffix: string) => string): TsResponseCode {
     const declarations: string[] = [];
     const head = endpoint.method.toUpperCase() === 'HEAD';
-    const statuses: number[] = [];
-    const members: string[] = [];
-    for (const response of endpoint.responses) {
-      if (!Helpers.isHttpStatus(response.status) || response.status < 200 || statuses.includes(response.status)) continue;
-      statuses.push(response.status);
-      const data = head ? 'undefined' : this.#dataType(response, () => name(`Response${response.status}`), declarations);
-      members.push(`ApiResponse<${response.status}, ${data}>`);
+    const members = new Map<number, string>();
+    for (const status of TsEndpointWriter.#typedStatuses(endpoint)) {
+      const response = endpoint.responses.find((candidate) => candidate.status === status);
+      if (!response) continue;
+      const data = head ? 'undefined' : this.#dataType(response, () => name(`Response${status}`), declarations);
+      members.set(status, `ApiResponse<${status}, ${data}>`);
     }
-    members.push(statuses.length > 0 ? `ApiResponse<Exclude<HttpStatus, ${statuses.join(' | ')}>, unknown>` : 'ApiResponse<HttpStatus, unknown>');
-    declarations.push(`export type ${typeName} =\n${members.map((member) => `  | ${member}`).join('\n')};`);
-    return declarations;
+    const union = (statuses: readonly number[]): string => {
+      const typed = statuses.map((status) => members.get(status) ?? '');
+      typed.push(statuses.length > 0 ? `ApiResponse<Exclude<HttpStatus, ${statuses.join(' | ')}>, unknown>` : 'ApiResponse<HttpStatus, unknown>');
+      return typed.map((member) => `  | ${member}`).join('\n');
+    };
+    const all = [...members.keys()];
+    const final = all.filter((status) => !TsEndpointWriter.REDIRECT_STATUSES.has(status));
+    if (final.length === all.length) {
+      declarations.push(`export type ${typeName} =\n${union(all)};`);
+      return { declarations, follow: typeName };
+    }
+    const manual = name('ManualResponse');
+    declarations.push(`export type ${typeName} =\n${union(final)};`, `export type ${manual} =\n${union(all)};`);
+    return { declarations, follow: typeName, manual };
   }
 
   #dataType(response: EndpointResponse, name: () => string, declarations: string[]): string {
     const body = response.body;
     if (!body) return TsEndpointWriter.NO_CONTENT_STATUSES.has(response.status) ? 'undefined' : 'unknown';
+    if (body.jsonLines === true) {
+      const declared = name();
+      declarations.push(this.#types.declaration(declared, { type: 'array', items: body.schema ?? {} }));
+      return declared;
+    }
     switch (body.kind) {
       case 'empty':
         return 'undefined';
