@@ -69,6 +69,7 @@ export interface CdpResponseReceived {
 export interface CdpDataReceived {
   requestId: string;
   dataLength: number;
+  encodedDataLength?: number;
   data?: string;
 }
 

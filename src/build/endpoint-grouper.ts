@@ -207,7 +207,9 @@ export class EndpointGrouper {
   }
 
   #endpoint(bucket: Bucket): Endpoint {
-    const { signature, template, members } = bucket;
+    const { signature, template } = bucket;
+    const recorded = bucket.members.filter((member) => !Http.isProbe(member.exchange));
+    const members = recorded.length > 0 ? recorded : bucket.members;
     const responses = members.map((member) => member.response);
     const kinds = new Set(members.map((member, i) => this.#kind(member, responses[i])));
     const kind = EndpointGrouper.KIND_PRIORITY.find((candidate) => kinds.has(candidate)) ?? 'other';
@@ -236,8 +238,14 @@ export class EndpointGrouper {
     if (otherRequestBodies.length > 0) endpoint.otherRequestBodies = otherRequestBodies;
     endpoint.responses = this.#responses(members, responses);
     endpoint.resourceTypes = Helpers.distinct(members.map((member) => member.exchange.resourceType));
-    endpoint.samples = this.#samples(served.length > 0 ? served : members);
+    endpoint.samples = this.#samples(served.length > 0 ? served : recorded);
     endpoint.count = served.length;
+    return recorded.length > 0 ? endpoint : EndpointGrouper.#shapeOnly(endpoint);
+  }
+
+  static #shapeOnly(endpoint: Endpoint): Endpoint {
+    for (const param of [...endpoint.pathParams, ...endpoint.queryParams]) param.examples = [];
+    for (const body of [...(endpoint.requestBody ? [endpoint.requestBody] : []), ...(endpoint.otherRequestBodies ?? [])]) body.examples = [];
     return endpoint;
   }
 

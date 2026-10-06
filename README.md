@@ -231,11 +231,28 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
   A value that a page load, a sign-out or any other response set is an
   anonymous session, so an endpoint called with it is public. A value that
   was never set in the capture (a preloaded session) counts as a login.
+- A cookie whose name says nothing about its role (`ledger_sid`,
+  `wordpress_logged_in_<hash>`, `SSESS<hash>`,
+  `.AspNetCore.Identity.Application`) becomes a session cookie
+  (`role: session`) by what the login and the server do with it: a credential
+  submission that was not refused (a password field, an OAuth callback code,
+  or an `Authorization` header that later requests do not send again) set it
+  to a new value, a later request sent that value, and the server kept it
+  (its answer did not replace it). Without a recorded login, a request refused
+  with one value and accepted with another (same method and path) is enough
+  when that cookie is the only one that differs between the two requests. The
+  login then issues the cookie (`login.issues`, `issuedBy`), the logout
+  revokes it (`revokedBy`), its value is redacted, and endpoints called with
+  it count as seen logged in. A cookie that the server sends again with a new
+  value in every answer (a load balancer cookie), a cookie that a failed login
+  set, a cookie that only a page script made, and a cookie whose name says
+  CSRF, analytics or preference never become credentials this way.
 - A cookie whose value the page created with `document.cookie`, that the
   server never set, that is not HttpOnly and that no response ever contained
   is an analytics id, not a session (`role: tracking`). Analytics, preference
   and other cookies are never credentials, unless the same endpoint answered
-  401, 403 or a redirect to the login page without them.
+  401, 403 or a redirect to the login page without them and the server kept
+  their values.
 - `Authorization: Basic ...` maps to the OpenAPI `http`/`basic` scheme, and
   the example uses `curl -u "${APPII_USERNAME}:${APPII_PASSWORD}"`. Other
   schemes keep their name (`http`/`bearer`, `http`/`digest`).
@@ -273,6 +290,23 @@ submits, is never the login; when no request of the form was recorded,
 `list` names the form instead (see list). A page such as `/logout` that only
 starts a sign-out request is a page, not the logout: the logout is the request
 that revoked the credential.
+
+When a script of the form, not the form itself, sent the request (the request
+carries the form fields but not to the form's own action, method or enctype),
+the endpoint has `form.submittedBy: script` and its request body keeps the
+type that the script sent (such as `application/json`). The form's own
+`action`, `method` and `enctype` stay in `form` as facts about the form, but
+they are not how the endpoint is called.
+
+A request that appii stopped while it probed a login form with placeholder
+values (an exchange with `source: probe`, which has no response because it
+never left the browser) only gives the endpoint its method, URL, request body
+shape and content type, and links the form (`submittedBy: script` when a
+script sent it). It is never a hit, a sample, an example, a credential
+submission, a secret, or evidence of anonymous or logged-in access, and its
+placeholder values appear nowhere. So an anonymous capture of a script login
+already has the login endpoint: 0 hits, `login.evidence: form` and
+`auth.anonymous: untested`, until a real login is recorded.
 
 #### Redaction
 
@@ -440,7 +474,11 @@ media type) with one example curl command per media type, marks a JSON lines
 body, says where a redirect leads, and splits the cookies the endpoint needs
 from the other cookies the browser sent. A form
 field whose `<select>` options change with the page state shows
-`options vary by page state` with the options seen.
+`options vary by page state` with the options seen. Its `Form source` block
+names the page, the form and its fields; for a request that a script of the
+form sent (`submittedBy: script`) it says `Sent by: a script of the form, not
+the form itself` and `Sent as:` the type the script sent, instead of the
+form's own enctype and submit buttons.
 
 Terminal output is ASCII: text from the site that is not ASCII appears as
 `\u` escapes, so an accented name prints as `Andr\u00e9 Gide`. Add `--unicode`

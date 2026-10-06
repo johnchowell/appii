@@ -1,4 +1,4 @@
-import type { Capture, ResourceType } from '../model/index.js';
+import type { Capture, Exchange, ResourceType } from '../model/index.js';
 import { Http, Text } from '../shared/index.js';
 import { BasePresenter } from './presenter.js';
 import { SummaryPresenter } from './summary-presenter.js';
@@ -14,10 +14,12 @@ export interface CaptureSummaryInput {
 export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> {
   static readonly API_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>(['fetch', 'xhr']);
   static readonly OPAQUE_ORIGIN = 'null';
+  static readonly PROBED = 'stopped in the browser while probing the login form; not sent';
 
   static origins(capture: Capture): string[] {
     const origins = new Set<string>();
     for (const exchange of capture.exchanges) {
+      if (Http.isProbe(exchange)) continue;
       let origin: string;
       try {
         origin = Http.originOf(exchange.request.url);
@@ -39,7 +41,8 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
   }
 
   #facts(capture: Capture): Definition[] {
-    const exchanges = capture.exchanges;
+    const exchanges = capture.exchanges.filter((exchange) => !Http.isProbe(exchange));
+    const probes = capture.exchanges.filter((exchange) => Http.isProbe(exchange));
     const documents = exchanges.filter((exchange) => exchange.resourceType === 'document').length;
     const api = exchanges.filter((exchange) => CaptureSummaryPresenter.API_TYPES.has(exchange.resourceType)).length;
     const failed = exchanges.filter((exchange) => exchange.response === undefined).length;
@@ -66,6 +69,12 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
       ],
       ['WebSockets', capture.websockets.length === 0 ? '0' : `${capture.websockets.length} (${Text.plural(messages, 'message')})`],
     );
+    if (probes.length > 0) facts.push(['Probed', `${probes.map((exchange) => this.ansi.clean(CaptureSummaryPresenter.#request(exchange))).join(', ')} (${CaptureSummaryPresenter.PROBED})`]);
     return facts;
+  }
+
+  static #request(exchange: Exchange): string {
+    const url = Http.parseUrl(exchange.request.url);
+    return `${exchange.request.method} ${url ? url.pathname : exchange.request.url}`;
   }
 }

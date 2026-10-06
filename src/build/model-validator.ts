@@ -8,6 +8,7 @@ import {
   FIELD_KINDS,
   FORM_ENCTYPES,
   FORM_METHODS,
+  FORM_SUBMITTERS,
   LOGIN_EVIDENCE,
   MODEL_VERSION,
   PARAM_LOCATIONS,
@@ -46,6 +47,7 @@ export class ModelValidator {
   static readonly SAME_SITE: ReadonlySet<string> = new Set(SAME_SITE_VALUES);
   static readonly FORM_METHODS: ReadonlySet<string> = new Set(FORM_METHODS);
   static readonly FORM_ENCTYPES: ReadonlySet<string> = new Set(FORM_ENCTYPES);
+  static readonly FORM_SUBMITTERS: ReadonlySet<string> = new Set(FORM_SUBMITTERS);
   static readonly FIELD_KINDS: ReadonlySet<string> = new Set(FIELD_KINDS);
   static readonly RESOURCE_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
 
@@ -154,6 +156,7 @@ export class ModelValidator {
         this.#string(problems, form, 'action', at + 'form.');
         this.#oneOf(problems, form, 'method', ModelValidator.FORM_METHODS, at + 'form.');
         this.#oneOf(problems, form, 'enctype', ModelValidator.FORM_ENCTYPES, at + 'form.');
+        this.#oneOf(problems, form, 'submittedBy', ModelValidator.FORM_SUBMITTERS, at + 'form.', { optional: true });
         this.#string(problems, form, 'charset', at + 'form.');
         this.#fields(problems, form, at + 'form.');
       }

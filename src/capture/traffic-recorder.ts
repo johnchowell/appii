@@ -19,8 +19,11 @@ export interface TrafficRecorderOptions {
   maxTotalBodyBytes?: number;
   maxExchanges?: number;
   readTimeoutMs?: number;
+  quietMs?: number;
   serviceWorkers?: boolean;
 }
+
+export type SettleListener = (request: Request, settled: boolean) => void;
 
 export type WorkerSetup = (channel: TargetChannel) => Promise<unknown>;
 
@@ -53,6 +56,7 @@ interface PendingRequest {
   response?: Response;
   reads?: ResponseReads;
   finish?: () => void;
+  settled?: boolean;
 }
 
 interface Tapped {
@@ -109,6 +113,7 @@ export class TrafficRecorder {
   readonly #builds = new Set<Promise<void>>();
   readonly #loading = new Set<Promise<void>>();
   readonly #listeners = new Set<(e: Exchange) => void>();
+  readonly #settleListeners = new Set<SettleListener>();
   readonly #workerSetups = new Set<WorkerSetup>();
   readonly #pages = new Map<Page, TrackedPage>();
   readonly #opened = new Map<Page, PageNetworkTap>();
@@ -142,6 +147,8 @@ export class TrafficRecorder {
       resourceBufferBytes,
       bodies: this.#captureBodies,
       streamBytes: this.#maxBodyBytes,
+      ...(options.quietMs === undefined ? {} : { quietMs: options.quietMs }),
+      onSettle: (tap, record) => this.#onSettle(tap, record),
       ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#onWorker(channel) }),
     };
     this.#openTap = deps.tap ?? PageNetworkTap.open;
@@ -231,6 +238,13 @@ export class TrafficRecorder {
     };
   }
 
+  onSettled(listener: SettleListener): () => void {
+    this.#settleListeners.add(listener);
+    return () => {
+      this.#settleListeners.delete(listener);
+    };
+  }
+
   async settled(): Promise<void> {
     while (this.#builds.size > 0 || this.#loading.size > 0 || this.#workers.busy) {
       await Promise.allSettled([...this.#builds, ...this.#loading, this.#workers.settled()]);
@@ -278,7 +292,33 @@ export class TrafficRecorder {
     });
     const loading: Promise<void> = Helpers.withTimeout(done, this.#readTimeoutMs, () => undefined).finally(() => this.#loading.delete(loading));
     this.#loading.add(loading);
+    const page = TrafficRecorder.#pageOf(response.request());
+    const record = page ? this.#opened.get(page)?.peek(TrafficRecorder.#query(response.request())) : undefined;
+    if (record?.settled === true) this.#settled(response.request(), entry, true);
   };
+
+  #onSettle(tap: PageNetworkTap, record: TapRecord): void {
+    for (const [request, entry] of this.#pending) {
+      if (!entry.response) continue;
+      const page = TrafficRecorder.#pageOf(request);
+      if (!page || this.#opened.get(page) !== tap || tap.peek(TrafficRecorder.#query(request)) !== record) continue;
+      this.#settled(request, entry, record.settled);
+      return;
+    }
+  }
+
+  #settled(request: Request, entry: PendingRequest, settled: boolean): void {
+    if ((entry.settled ?? false) === settled) return;
+    entry.settled = settled;
+    if (settled) entry.finish?.();
+    for (const listener of [...this.#settleListeners]) {
+      try {
+        listener(request, settled);
+      } catch {
+        continue;
+      }
+    }
+  }
 
   readonly #onFinished = (request: Request): void => {
     this.#prefetch(request);
@@ -392,13 +432,17 @@ export class TrafficRecorder {
     };
   }
 
-  async #build(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number): Promise<void> {
-    const incomplete = outcome.kind === 'incomplete';
+  async #build(request: Request, entry: PendingRequest, reported: Outcome, reportedAt: number): Promise<void> {
+    const incomplete = reported.kind === 'incomplete';
     const wait = incomplete ? TrafficRecorder.FLUSH_TIMEOUT_MS : this.#readTimeoutMs;
     let response = entry.response;
     if (!response && !incomplete) response = (await Helpers.settle(request.response(), wait)) ?? undefined;
     const reads = entry.reads ?? (response ? this.#startReads(request, response) : undefined);
     const tapped = await this.#claim(request);
+    if (reported.kind === 'failed' && tapped?.record.state === 'loading') await Helpers.settle(tapped.record.ended, PageNetworkTap.SESSION_LAG_MS);
+    const arrived = TrafficRecorder.#arrived(reported, response, tapped);
+    const outcome: Outcome = arrived ? { kind: 'finished' } : reported;
+    const endedAt = arrived ? Math.min(reportedAt, tapped?.record.arrivedAt ?? reportedAt) : reportedAt;
     const [requestHeaders, responseHeaders, body, remoteAddress] = await Promise.all([
       reads ? Helpers.settle(reads.requestHeaders, wait) : incomplete ? Promise.resolve(undefined) : Helpers.settle(request.headersArray(), wait),
       reads ? Helpers.settle(reads.responseHeaders, wait) : Promise.resolve(undefined),
@@ -428,7 +472,7 @@ export class TrafficRecorder {
       if (responseBody) capturedResponse.body = responseBody;
       if (remoteAddress && !fromWorker && cacheKind === undefined) capturedResponse.remoteAddress = remoteAddress;
     }
-    const finished = outcome.kind === 'finished' || outcome.kind === 'downloaded';
+    const finished = (outcome.kind === 'finished' && !arrived) || outcome.kind === 'downloaded';
     const timing = TrafficRecorder.#timing(request, entry, finished, endedAt);
     const exchange: Exchange = {
       id: entry.id,
@@ -476,8 +520,14 @@ export class TrafficRecorder {
     return true;
   }
 
+  static #arrived(outcome: Outcome, response: Response | undefined, tapped: Tapped | undefined): boolean {
+    if (outcome.kind !== 'failed' && outcome.kind !== 'incomplete') return false;
+    return response !== undefined && tapped?.record.settled === true;
+  }
+
   async #responseBytes(request: Request, response: Response | undefined, tapped: Tapped | undefined, outcome: Outcome): Promise<TapBody | undefined> {
     if (outcome.kind === 'downloaded') return outcome.body ? { bytes: outcome.body.bytes, text: false } : undefined;
+    if (response && tapped && this.#captureBodies && (outcome.kind === 'failed' || outcome.kind === 'incomplete')) return tapped.tap.partialBody(tapped.record);
     if (!response || outcome.kind !== 'finished' || !this.#captureBodies) return undefined;
     if (request.method().toUpperCase() === 'HEAD' || TrafficRecorder.REDIRECT_STATUSES.has(response.status())) return undefined;
     if (!tapped) return (await this.#documentBytes(request)) ?? this.#sessionBody(request, response);
@@ -504,8 +554,9 @@ export class TrafficRecorder {
     if (read && read.bytes.length > 0) {
       const body = this.#budget.of(read.bytes, contentType, undefined, read.text);
       const total = outcome.kind === 'downloaded' && outcome.body ? outcome.body.size : Helpers.fullBodySize(headers, tapped?.record.dataLength ?? 0);
-      if (body && total > body.size) {
-        body.size = total;
+      const partial = outcome.kind === 'failed' || outcome.kind === 'incomplete';
+      if (body && (partial || total > body.size)) {
+        body.size = Math.max(total, body.size);
         body.truncated = true;
       }
       return body;

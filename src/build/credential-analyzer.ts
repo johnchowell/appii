@@ -51,6 +51,9 @@ interface FieldEntry {
 export class CredentialAnalyzer {
   static readonly SIGN_OUT: RegExp = /(?:^|[^a-z])(?:log|sign)[-_.]?(?:out|off)(?:[^a-z]|$)/i;
   static readonly CLIENT_ROLE: CookieRole = 'tracking';
+  static readonly PRIOR_ROLE: CookieRole = 'unknown';
+  static readonly EVIDENCED_ROLE: CookieRole = 'session';
+  static readonly NEVER_CREDENTIAL_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['preference', 'tracking', 'csrf']);
   static readonly FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json', 'graphql']);
   static readonly SCHEME_HEADERS: ReadonlySet<string> = new Set(['authorization']);
   static readonly MIN_ECHO_LENGTH = 8;
@@ -112,9 +115,15 @@ export class CredentialAnalyzer {
     return url !== undefined && CredentialAnalyzer.SIGN_OUT.test(Http.decodeComponent(url.pathname));
   }
 
+  static keeps(exchange: Exchange, name: string, value: string): boolean {
+    if (!Http.reachedServer(exchange) || !exchange.response) return false;
+    if (!CredentialAnalyzer.sent(exchange).some((cookie) => cookie.name === name && cookie.value === value)) return false;
+    return !CredentialAnalyzer.setCookies(exchange).some((cookie) => cookie.name === name && cookie.value !== value);
+  }
+
   analyze(capture: Pick<Capture, 'exchanges' | 'cookies'>, input: CredentialInput = {}): CredentialEvidence {
     const ordered = CredentialAnalyzer.ordered(capture.exchanges);
-    const roles = this.#roles(capture, ordered);
+    const roles = this.#roles(capture, ordered, input);
     const classify = (name: string): CookieRole => this.#cookies.classify(name);
     const role = (name: string): CookieRole => roles.get(name) ?? classify(name);
     const positions = new Map(ordered.map((exchange, at) => [exchange, at]));
@@ -123,9 +132,16 @@ export class CredentialAnalyzer {
   }
 
   isCredentialSubmission(exchange: Exchange, input: CredentialInput = {}): boolean {
-    for (const header of exchange.request.headers) {
-      if (header.value.trim() !== '' && (CredentialAnalyzer.SCHEME_HEADERS.has(header.name.toLowerCase()) || this.#headers.isAuth(header.name))) return true;
-    }
+    return this.#headerCredentials(exchange).length > 0 || this.#fieldCredential(exchange, input);
+  }
+
+  #headerCredentials(exchange: Exchange): string[] {
+    return exchange.request.headers
+      .filter((header) => header.value.trim() !== '' && (CredentialAnalyzer.SCHEME_HEADERS.has(header.name.toLowerCase()) || this.#headers.isAuth(header.name)))
+      .map((header) => CredentialEvidence.key(header.name.toLowerCase(), header.value.trim()));
+  }
+
+  #fieldCredential(exchange: Exchange, input: CredentialInput): boolean {
     const url = Http.parseUrl(exchange.request.url);
     if (url) {
       for (const [name, value] of url.searchParams) {
@@ -217,22 +233,70 @@ export class CredentialAnalyzer {
     return (typeof value === 'string' && value !== '') || typeof value === 'number';
   }
 
-  #roles(capture: Pick<Capture, 'exchanges' | 'cookies'>, ordered: readonly Exchange[]): Map<string, CookieRole> {
+  #roles(capture: Pick<Capture, 'exchanges' | 'cookies'>, ordered: readonly Exchange[], input: CredentialInput): Map<string, CookieRole> {
     const names = new Set<string>(capture.cookies.map((cookie) => cookie.name));
     for (const exchange of ordered) for (const cookie of CredentialAnalyzer.sent(exchange)) names.add(cookie.name);
-    const roles = new Map<string, CookieRole>();
+    const roles = new Map<string, CookieRole>([...names].map((name) => [name, this.#cookies.classify(name)]));
     let texts: string[] | undefined;
-    for (const name of names) {
-      const role = this.#cookies.classify(name);
-      roles.set(name, role);
-      if (!CredentialEvidence.CREDENTIAL_ROLES.has(role)) continue;
-      if (!this.#clientCreated(name, capture, ordered)) continue;
+    const scripted = (name: string): boolean => {
+      if (!this.#clientCreated(name, capture, ordered)) return false;
       texts ??= CredentialAnalyzer.#responseTexts(ordered);
       const values = new Set([...capture.cookies.filter((cookie) => cookie.name === name).map((cookie) => cookie.value), ...ordered.flatMap((exchange) => CredentialAnalyzer.sent(exchange).filter((cookie) => cookie.name === name).map((cookie) => cookie.value))]);
-      const echoed = [...values].some((value) => value.length < CredentialAnalyzer.MIN_ECHO_LENGTH || texts!.some((text) => text.includes(value)));
-      if (!echoed) roles.set(name, CredentialAnalyzer.CLIENT_ROLE);
-    }
+      return ![...values].some((value) => value.length < CredentialAnalyzer.MIN_ECHO_LENGTH || texts!.some((text) => text.includes(value)));
+    };
+    for (const [name, role] of roles) if (CredentialEvidence.CREDENTIAL_ROLES.has(role) && scripted(name)) roles.set(name, CredentialAnalyzer.CLIENT_ROLE);
+    for (const name of this.#evidenced(ordered, roles, input)) if (roles.get(name) === CredentialAnalyzer.PRIOR_ROLE && !scripted(name)) roles.set(name, CredentialAnalyzer.EVIDENCED_ROLE);
     return roles;
+  }
+
+  #evidenced(ordered: readonly Exchange[], roles: ReadonlyMap<string, CookieRole>, input: CredentialInput): Set<string> {
+    const pages = input.loginPages ?? new Set<string>();
+    const out = this.#attributed(ordered, roles, pages);
+    ordered.forEach((exchange, at) => {
+      const set = CredentialAnalyzer.setCookies(exchange).filter((cookie) => cookie.value !== '' && roles.get(cookie.name) === CredentialAnalyzer.PRIOR_ROLE);
+      if (set.length === 0 || !Http.reachedServer(exchange) || CredentialAnalyzer.#refused(exchange, pages)) return;
+      const later = ordered.slice(at + 1);
+      if (!this.#exchangesCredential(exchange, later, input)) return;
+      const sent = new Map(CredentialAnalyzer.sent(exchange).map((cookie) => [cookie.name, cookie.value]));
+      for (const cookie of set) {
+        if (sent.get(cookie.name) !== cookie.value && later.some((other) => CredentialAnalyzer.keeps(other, cookie.name, cookie.value))) out.add(cookie.name);
+      }
+    });
+    return out;
+  }
+
+  #exchangesCredential(exchange: Exchange, later: readonly Exchange[], input: CredentialInput): boolean {
+    if (this.#fieldCredential(exchange, input)) return true;
+    const presented = new Set(this.#headerCredentials(exchange));
+    return presented.size > 0 && !later.some((other) => this.#headerCredentials(other).some((entry) => presented.has(entry)));
+  }
+
+  #attributed(ordered: readonly Exchange[], roles: ReadonlyMap<string, CookieRole>, pages: ReadonlySet<string>): Set<string> {
+    const targets = new Map<string, { refused: Exchange[]; accepted: Exchange[] }>();
+    for (const exchange of ordered) {
+      const url = Http.parseUrl(exchange.request.url);
+      if (!url || !Http.reachedServer(exchange) || !exchange.response) continue;
+      const refused = CredentialEvidence.failed(exchange, pages);
+      if (!refused && !CredentialEvidence.isSuccess(exchange)) continue;
+      const key = `${exchange.request.method} ${url.origin}${url.pathname}`;
+      const target = targets.get(key) ?? { refused: [], accepted: [] };
+      (refused ? target.refused : target.accepted).push(exchange);
+      targets.set(key, target);
+    }
+    const eligible = (name: string): boolean => !CredentialAnalyzer.NEVER_CREDENTIAL_ROLES.has(roles.get(name) ?? CredentialAnalyzer.PRIOR_ROLE);
+    const out = new Set<string>();
+    for (const { refused, accepted } of targets.values()) {
+      for (const success of accepted) {
+        const kept = CredentialAnalyzer.sent(success).filter((cookie) => cookie.value !== '' && eligible(cookie.name) && CredentialAnalyzer.keeps(success, cookie.name, cookie.value));
+        for (const failure of refused) {
+          const before = new Map(CredentialAnalyzer.sent(failure).map((cookie) => [cookie.name, cookie.value]));
+          const explaining = kept.filter((cookie) => before.get(cookie.name) !== cookie.value);
+          const only = explaining.length === 1 ? explaining[0] : undefined;
+          if (only && accepted.every((other) => CredentialAnalyzer.sent(other).some((cookie) => cookie.name === only.name && cookie.value !== ''))) out.add(only.name);
+        }
+      }
+    }
+    return out;
   }
 
   #clientCreated(name: string, capture: Pick<Capture, 'exchanges' | 'cookies'>, ordered: readonly Exchange[]): boolean {

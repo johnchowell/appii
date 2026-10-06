@@ -39,7 +39,7 @@ export class CaptureRunner {
   static session(options: CaptureSessionOptions): CaptureSession {
     return new CaptureSession(options, {
       launcher: new CliBrowserLauncher(options),
-      recorder: new TrafficRecorder(options.recorder),
+      recorder: new TrafficRecorder(CaptureSession.recorderOptions(options)),
       cookies: new CookieParser(),
     });
   }

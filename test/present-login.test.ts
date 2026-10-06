@@ -2,7 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModelBuilder } from '../src/build/index.js';
 import type { ApiModel, Capture, Endpoint } from '../src/model/index.js';
-import { CookieListPresenter, EndpointDetailPresenter, EndpointListPresenter, SummaryPresenter } from '../src/present/index.js';
+import { CaptureSummaryPresenter, CookieListPresenter, EndpointDetailPresenter, EndpointListPresenter, SummaryPresenter } from '../src/present/index.js';
 import { Ansi, EndpointIndex } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
@@ -156,5 +156,24 @@ describe('list summary, AUTH marks, --show and --cookies for login and logout (L
   test('summary helpers describe what a login issues', () => {
     assert.equal(EndpointListPresenter.issued({ evidence: 'observed', password: 'p', issues: { cookies: ['sid'], tokens: ['data.accessToken'] } }), 'cookie sid and bearer token from data.accessToken');
     assert.equal(EndpointListPresenter.loginSummary({ evidence: 'form', password: 'p', issues: { cookies: [], tokens: [] } }, true), 'with p, submitted, but no credential was issued');
+  });
+});
+
+describe('the capture summary keeps requests that appii stopped while probing a login form apart (LV2-4)', () => {
+  test('a probe is not counted as a request or a failure and is named on its own line', () => {
+    const f = new CaptureFactory(ORIGIN);
+    f.document('/login', CaptureFactory.page('Login', '<form id="login"><input name="username"><input type="password" name="password"><button>Log in</button></form>'));
+    const stopped = f.exchange({
+      method: 'POST',
+      url: 'https://api.quotes.example/v1/session',
+      pageUrl: f.url('/login'),
+      requestHeaders: { 'content-type': 'application/json' },
+      requestBody: { json: { username: 'probe-user', password: 'probe-pass' } },
+      error: 'net::ERR_BLOCKED_BY_CLIENT',
+    });
+    stopped.source = 'probe';
+    const text = Ansi.strip(new CaptureSummaryPresenter({ width: 160 }).render({ capture: f.capture({ startUrl: `${ORIGIN}/login` }) }));
+    assert.match(text, /\nRequests: +1 \(1 page, 0 fetch\/XHR, 0 other\) to 1 origin\n/);
+    assert.match(text, /\nProbed: +POST \/v1\/session \(stopped in the browser while probing the login form; not sent\)/);
   });
 });

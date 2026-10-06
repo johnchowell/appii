@@ -1,5 +1,5 @@
 import { SEEN_STATES } from '../model/index.js';
-import type { AnonymousAccess, Capture, Cookie, CookieRole, CsrfToken, Endpoint, Exchange, SeenState } from '../model/index.js';
+import type { AnonymousAccess, Capture, Cookie, CsrfToken, Endpoint, Exchange, SeenState } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, TokenDetector } from '../forms/index.js';
 import { Credentials, Http, Json, Text } from '../shared/index.js';
@@ -55,7 +55,6 @@ export class AuthDetector {
   static readonly BEARER: RegExp = /^bearer[ \t]+\S/i;
   static readonly BODY_FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
   static readonly PROXY_AUTHORIZATION = 'proxy-authorization';
-  static readonly EVIDENCE_EXCLUDED_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['preference', 'tracking', 'csrf']);
   static readonly LOGIN_ROLE = 'login';
   static readonly ALLOWED: AnonymousAccess = 'allowed';
   static readonly REFUSED: AnonymousAccess = 'refused';
@@ -187,7 +186,8 @@ export class AuthDetector {
     const failed = new Set(failures.flatMap((exchange) => CredentialAnalyzer.sent(exchange).map((cookie) => CredentialEvidence.key(cookie.name, cookie.value))));
     const candidate = (cookie: { name: string; value: string }, exchange: Exchange): boolean =>
       cookie.value !== '' &&
-      !AuthDetector.EVIDENCE_EXCLUDED_ROLES.has(evidence.role(cookie.name)) &&
+      !CredentialAnalyzer.NEVER_CREDENTIAL_ROLES.has(evidence.role(cookie.name)) &&
+      CredentialAnalyzer.keeps(exchange, cookie.name, cookie.value) &&
       evidence.generation(cookie.name, cookie.value, exchange) !== 'anonymous' &&
       !failed.has(CredentialEvidence.key(cookie.name, cookie.value));
     const names = new Set(successes.flatMap((exchange) => CredentialAnalyzer.sent(exchange).filter((cookie) => candidate(cookie, exchange)).map((cookie) => cookie.name)));

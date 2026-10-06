@@ -1,5 +1,5 @@
 import type { ApiModel, BodyKind, BodyShape, CsrfToken, Endpoint, EndpointResponse, FormField, ParamInfo } from '../model/index.js';
-import { Ansi, Credentials, Curl, EndpointIndex, Json, RequestBodies, Samples, Schema, Text } from '../shared/index.js';
+import { Ansi, Credentials, Curl, EndpointIndex, FormSource, Json, RequestBodies, Samples, Schema, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { SessionGuide } from '../export/index.js';
 import { EndpointFormatter } from './endpoint-formatter.js';
@@ -159,15 +159,20 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     const form = endpoint.form;
     if (!form) return undefined;
     const names = [...new Set(form.fields.map((field) => field.name).filter((name) => name !== ''))];
+    const script = FormSource.isScript(form);
+    const type = FormSource.contentType(endpoint);
+    const sending: Definition[] = script
+      ? [['Sent by', FormSource.SCRIPT_SENDER], ...(type !== undefined ? [['Sent as', this.ansi.clean(type)] as Definition] : [])]
+      : [['Enctype', this.ansi.clean(form.enctype)]];
     const entries: Definition[] = [
       ['Page', this.ansi.clean(form.pageUrl)],
       ['Selector', this.ansi.clean(form.selector)],
-      ['Enctype', this.ansi.clean(form.enctype)],
+      ...sending,
       ['Fields', names.length > 0 ? this.ansi.clean(names.join(', ')) : 'none'],
       ['Token fields', form.tokenFields.length > 0 ? this.ansi.clean(form.tokenFields.join(', ')) : 'none'],
     ];
-    if (form.submitters.length === 0) entries.push(['Submitters', 'none (implicit submission)']);
-    form.submitters.forEach((submitter, i) => entries.push([`Submitter ${i + 1}`, EndpointDetailPresenter.submitter(submitter, this.ansi)]));
+    if (!script && form.submitters.length === 0) entries.push(['Submitters', 'none (implicit submission)']);
+    if (!script) form.submitters.forEach((submitter, i) => entries.push([`Submitter ${i + 1}`, EndpointDetailPresenter.submitter(submitter, this.ansi)]));
     return [this.heading('Form source'), ...this.definitions(entries)];
   }
 

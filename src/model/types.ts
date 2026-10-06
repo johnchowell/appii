@@ -10,6 +10,7 @@ import type {
   FIELD_KINDS,
   FORM_ENCTYPES,
   FORM_METHODS,
+  FORM_SUBMITTERS,
   LOGIN_EVIDENCE,
   MODEL_VERSION,
   PARAM_LOCATIONS,
@@ -141,6 +142,8 @@ export interface SelectOption {
 export type FieldKind = (typeof FIELD_KINDS)[number];
 
 export type FormMethod = (typeof FORM_METHODS)[number];
+
+export type FormSubmitter = (typeof FORM_SUBMITTERS)[number];
 
 export type FormEnctype = (typeof FORM_ENCTYPES)[number];
 
@@ -279,6 +282,7 @@ export interface EndpointForm {
   fields: FormField[];
   submitters: FormField[];
   tokenFields: string[];
+  submittedBy?: FormSubmitter;
 }
 
 export type EndpointKind = (typeof ENDPOINT_KINDS)[number];

@@ -113,7 +113,7 @@ export class CaptureSession {
   static create(options: CaptureSessionOptions = {}): CaptureSession {
     return new CaptureSession(options, {
       launcher: new BrowserLauncher(options),
-      recorder: new TrafficRecorder(options.recorder),
+      recorder: new TrafficRecorder(CaptureSession.recorderOptions(options)),
       cookies: new CookieParser(),
       snapshots: () => new PageSnapshotter(),
       state: () => new BrowserStateTracker(),
@@ -121,6 +121,10 @@ export class CaptureSession {
       identity: (identity) => new UserAgentOverride(identity),
       login: () => LoginSubmitter.create(),
     });
+  }
+
+  static recorderOptions(options: CaptureSessionOptions): TrafficRecorderOptions {
+    return { quietMs: options.idleMs ?? CaptureSession.DEFAULT_IDLE_MS, ...options.recorder };
   }
 
   get stopped(): boolean {
@@ -181,6 +185,7 @@ export class CaptureSession {
     context.on('close', onLost);
     const onExchange = this.#options.onExchange;
     const unsubscribe = onExchange ? this.recorder.onExchange(onExchange) : undefined;
+    const unsettle = this.recorder.onSettled((request, settled) => run.idle.settle(request, settled));
     const workerIdentity = identity ? this.recorder.onServiceWorker((channel) => identity.applyToWorker(channel)) : undefined;
     let failure: unknown;
     try {
@@ -198,6 +203,7 @@ export class CaptureSession {
     browser.off('disconnected', onLost);
     context.off('close', onLost);
     unsubscribe?.();
+    unsettle();
     workerIdentity?.();
     const capture = this.#assemble(startedAt, final);
     if (failure === undefined && run.browserLost) failure = new AppiiError('BROWSER', CaptureSession.BROWSER_LOST);

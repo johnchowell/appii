@@ -1,4 +1,4 @@
-import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, JsonSchema, ParamInfo, Exchange } from '../model/index.js';
+import type { BodyKind, Capture, Endpoint, EndpointForm, FormDescriptor, FormEnctype, FormField, FormSubmitter, JsonSchema, ParamInfo, Exchange } from '../model/index.js';
 import { FormExtractor, FormSchemaBuilder, LoginFormDetector, SubmissionRules, TokenDetector } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
 import { Json, Schema, Text } from '../shared/index.js';
@@ -51,6 +51,7 @@ interface Submission {
   readonly target: FormTarget;
   readonly url: URL;
   readonly observed: readonly ObservedSubmission[];
+  readonly by?: FormSubmitter;
 }
 
 interface ObservedCache {
@@ -77,6 +78,7 @@ export class FormLinker {
   static readonly SECRET_TYPES: ReadonlySet<string> = new Set(['password']);
   static readonly ANNOTATION_KEYS: readonly string[] = ['title', 'description'];
   static readonly ANNOTATION_PREFIX = 'x-html-';
+  static readonly SCRIPT: FormSubmitter = 'script';
 
   readonly #schemas: FormSchemaBuilder;
   readonly #paths: PathTemplater;
@@ -254,7 +256,7 @@ export class FormLinker {
         if (!url || !endpoint) continue;
         record(form, endpoint);
         scripted.add(form);
-        FormLinker.#entry(links, endpoint.key, () => ({ endpoint, submissions: [] })).submissions.push({ form, target: this.#schemas.target(form, null), url, observed: [] });
+        FormLinker.#entry(links, endpoint.key, () => ({ endpoint, submissions: [] })).submissions.push({ form, target: this.#schemas.target(form, null), url, observed: [], by: FormLinker.SCRIPT });
       }
     }
     for (const [form, targets] of native) {
@@ -364,7 +366,7 @@ export class FormLinker {
     const primary = built[0]!;
     const secrets = FormLinker.#secretNames(submissions);
     const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)), secrets);
-    if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), primary.mimeType);
+    if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), primary.mimeType, first.by);
     if (link.template) endpoint.pathParams = this.#params.path(link.template, submissions.map((submission) => submission.url.pathname));
     if (endpoint.method === 'GET') {
       this.#mergeQuery(endpoint, schema, secrets);
@@ -491,7 +493,7 @@ export class FormLinker {
     return value;
   }
 
-  static #endpointForm(form: FormDescriptor, enctype: FormEnctype): EndpointForm {
+  static #endpointForm(form: FormDescriptor, enctype: FormEnctype, by: FormSubmitter | undefined): EndpointForm {
     return {
       pageUrl: form.pageUrl,
       selector: form.selector,
@@ -502,6 +504,7 @@ export class FormLinker {
       fields: Json.clone(form.fields),
       submitters: Json.clone(form.submitters),
       tokenFields: [...form.tokenFields],
+      ...(by === FormLinker.SCRIPT ? { submittedBy: by } : {}),
     };
   }
 }

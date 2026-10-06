@@ -1,10 +1,11 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ModelBuilder, ModelValidator } from '../src/build/index.js';
-import type { ApiModel, Endpoint } from '../src/model/index.js';
-import { EndpointListPresenter } from '../src/present/index.js';
-import { Ansi, EndpointIndex } from '../src/shared/index.js';
+import type { ApiModel, Endpoint, Exchange } from '../src/model/index.js';
+import { EndpointDetailPresenter, EndpointListPresenter } from '../src/present/index.js';
+import { Ansi, EndpointIndex, FormSource } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
+import type { ExchangeSpec } from './helpers/capture-factory.js';
 
 const ORIGIN = 'https://notes.example.test';
 const TOKEN = 'tok7f3a9c2e8b1d4f6a0c5e9b2d7f1a3c8e';
@@ -104,6 +105,139 @@ describe('the page load of a login form that a script submits is not the login e
     assert.equal(login.role, 'login');
     assert.equal(login.login?.password, 'user.password');
     assert.equal(endpoint(model, 'GET', '/login').role, undefined);
+  });
+});
+
+const PROBE = { username: 'probe-user-7d1c', password: 'probe-pass-7d1c', client: 'probe-client-7d1c' };
+
+function probe(f: CaptureFactory, spec: Partial<ExchangeSpec> = {}): Exchange {
+  const exchange = f.exchange({
+    method: 'POST',
+    url: '/api/auth/login',
+    resourceType: 'fetch',
+    pageUrl: `${ORIGIN}/login`,
+    requestHeaders: { 'content-type': 'application/json' },
+    requestBody: { json: PROBE },
+    error: 'net::ERR_BLOCKED_BY_CLIENT',
+    ...spec,
+  });
+  exchange.source = 'probe';
+  return exchange;
+}
+
+function detail(model: ApiModel, found: Endpoint): string {
+  return Ansi.strip(new EndpointDetailPresenter({ width: 160 }).render({ model, ref: found.id }));
+}
+
+describe('a login request that a script of the form sends is not described as the form submitting it (LV2-5)', () => {
+  test('the endpoint records that a script sent it and keeps the observed JSON type; the detail view leaves out the form enctype and submitters', () => {
+    const f = new CaptureFactory(ORIGIN);
+    anonymous(f);
+    signIn(f);
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/api/auth/login');
+    assert.equal(login.form?.submittedBy, 'script');
+    assert.equal(login.requestBody?.mimeType, 'application/json');
+    assert.equal(FormSource.contentType(login), 'application/json');
+    assert.equal(FormSource.describe(login, (text) => `\`${text}\``), `Sent by a script of the form \`${login.form?.selector}\` on ${ORIGIN}/login as application/json.`);
+    const out = detail(model, login);
+    assert.match(out, /Sent by: +a script of the form, not the form itself/);
+    assert.match(out, /Sent as: +application\/json/);
+    assert.doesNotMatch(out, /Enctype:|Submitter|implicit submission/);
+  });
+
+  test('a form the browser submits itself has no submittedBy and is described with its enctype', () => {
+    const f = new CaptureFactory(ORIGIN);
+    const html = CaptureFactory.page('Login', '<form method="post" action="/session"><input name="username"><input type="password" name="password"><button>Go</button></form>');
+    f.document('/login', html);
+    f.snapshot('/login', 'Login', html);
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/session');
+    assert.equal(login.role, 'login');
+    assert.equal(login.form?.submittedBy, undefined);
+    assert.equal(FormSource.describe(login), `Submitted by the form ${login.form?.selector} on ${ORIGIN}/login (application/x-www-form-urlencoded).`);
+    assert.match(detail(model, login), /Enctype: +application\/x-www-form-urlencoded/);
+  });
+
+  test('the model validator accepts form and script as submittedBy and rejects other values', () => {
+    const f = new CaptureFactory(ORIGIN);
+    anonymous(f);
+    signIn(f);
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/api/auth/login');
+    const at = `endpoints[${model.endpoints.indexOf(login)}].form`;
+    login.form!.submittedBy = 'form';
+    assert.deepEqual(new ModelValidator().validate(model), []);
+    (login.form as unknown as { submittedBy: string }).submittedBy = 'page';
+    assert.deepEqual(new ModelValidator().validate(model), [`${at}.submittedBy: expected one of form, script`]);
+  });
+});
+
+describe('a request that appii stopped while it probed the login form gives the login endpoint its shape, never evidence (LV2-4)', () => {
+  test('anonymously, the script login is known from the form with the probed body shape and content type, 0 hits and anonymous access not tested', () => {
+    const f = new CaptureFactory(ORIGIN);
+    anonymous(f);
+    probe(f);
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/api/auth/login');
+    assert.equal(login.role, 'login');
+    assert.deepEqual(login.login, { evidence: 'form', identifier: 'username', password: 'password', issues: { cookies: [], tokens: [] } });
+    assert.equal(login.form?.submittedBy, 'script');
+    assert.equal(login.requestBody?.mimeType, 'application/json');
+    assert.deepEqual(Object.keys(login.requestBody?.schema?.properties ?? {}).sort(), ['client', 'password', 'username']);
+    assert.deepEqual(login.requestBody?.examples, []);
+    assert.deepEqual(login.resourceTypes, ['fetch']);
+    assert.equal(login.count, 0);
+    assert.deepEqual(login.samples, []);
+    assert.deepEqual(login.responses, []);
+    assert.equal(login.auth.anonymous, 'untested');
+    assert.equal(login.auth.seen, undefined);
+    assert.equal(model.source.exchanges, f.exchanges.length - 1);
+    assert.deepEqual(model.forms.map((form) => form.endpoints), [[login.id]]);
+    const text = JSON.stringify(model);
+    for (const value of Object.values(PROBE)) assert.ok(!text.includes(value), `${value} reached the model`);
+    const lines = summary(model);
+    assert.ok(lines.some((line) => new RegExp(`^Login: +#${EndpointIndex.of(model).numberOf(login)} POST /api/auth/login with username and password, known from a form; not submitted yet$`).test(line)), lines.join('\n'));
+  });
+
+  test('after logging in, the recorded request is the evidence and the probe adds no hit, sample or example', () => {
+    const f = new CaptureFactory(ORIGIN);
+    anonymous(f);
+    probe(f);
+    signIn(f);
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/api/auth/login');
+    assert.equal(login.login?.evidence, 'observed');
+    assert.equal(login.count, 1);
+    assert.deepEqual(login.samples.map((sample) => sample.status), [200]);
+    assert.equal(login.auth.anonymous, 'allowed');
+    assert.deepEqual(login.auth.seen, ['anonymous']);
+    assert.deepEqual(Object.keys(login.requestBody?.schema?.properties ?? {}).sort(), ['password', 'username']);
+    const text = JSON.stringify(model);
+    for (const value of Object.values(PROBE)) assert.ok(!text.includes(value), `${value} reached the model`);
+  });
+
+  test('a probed native form submission links the form to its action without counting as a loaded page or a hit', () => {
+    const f = new CaptureFactory(ORIGIN);
+    const html = CaptureFactory.page('Login', '<form method="post" action="/session"><input name="username"><input type="password" name="password"><button>Go</button></form>');
+    f.document('/login', html);
+    f.snapshot('/login', 'Login', html);
+    probe(f, {
+      url: '/session',
+      resourceType: 'document',
+      requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' },
+      requestBody: `username=${PROBE.username}&password=${PROBE.password}`,
+    });
+    const model = build(f);
+    const login = endpoint(model, 'POST', '/session');
+    assert.equal(login.role, 'login');
+    assert.equal(login.login?.evidence, 'form');
+    assert.equal(login.form?.submittedBy, undefined);
+    assert.equal(login.count, 0);
+    assert.equal(login.auth.anonymous, 'untested');
+    assert.deepEqual(login.requestBody?.examples, []);
+    const text = JSON.stringify(model);
+    for (const value of [PROBE.username, PROBE.password]) assert.ok(!text.includes(value), `${value} reached the model`);
   });
 });
 

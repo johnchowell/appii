@@ -27,5 +27,7 @@ export { RequestBodies } from './request-bodies.js';
 export type { RequestBodyVariant } from './request-bodies.js';
 export { Credentials } from './credentials.js';
 export type { CookieRoles, Credential, CredentialKind } from './credentials.js';
+export { FormSource } from './form-source.js';
+export type { FormSourceEndpoint } from './form-source.js';
 export { AppiiError, isAppiiError } from './errors.js';
 export type { AppiiErrorCode } from './errors.js';

@@ -16,7 +16,7 @@ export const RESOURCE_TYPES = Object.freeze([
   'other',
 ] as const);
 
-export const CAPTURE_SOURCES = Object.freeze(['browser', 'har'] as const);
+export const CAPTURE_SOURCES = Object.freeze(['browser', 'har', 'probe'] as const);
 
 export const SERVED_BY_VALUES = Object.freeze(['service-worker', 'cache'] as const);
 
@@ -27,6 +27,8 @@ export const SAME_SITE_VALUES = Object.freeze(['Strict', 'Lax', 'None'] as const
 export const FIELD_KINDS = Object.freeze(['input', 'select', 'textarea', 'button'] as const);
 
 export const FORM_METHODS = Object.freeze(['GET', 'POST', 'DIALOG'] as const);
+
+export const FORM_SUBMITTERS = Object.freeze(['form', 'script'] as const);
 
 export const FORM_ENCTYPES = Object.freeze(['application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'] as const);
 

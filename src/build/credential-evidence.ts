@@ -80,12 +80,16 @@ export class CredentialEvidence {
     return CredentialEvidence.loginPage(url, this.#data.loginPages);
   }
 
-  isFailure(exchange: Exchange): boolean {
+  static failed(exchange: Exchange, pages: ReadonlySet<string>): boolean {
     const response = exchange.response;
     if (!response) return false;
     if (CredentialEvidence.FAILURE_STATUSES.has(response.status)) return true;
     const target = CredentialEvidence.redirectTarget(exchange);
     const source = Http.parseUrl(exchange.request.url);
-    return target !== undefined && this.isLoginPage(target) && !(source !== undefined && this.isLoginPage(source));
+    return target !== undefined && CredentialEvidence.loginPage(target, pages) && !(source !== undefined && CredentialEvidence.loginPage(source, pages));
+  }
+
+  isFailure(exchange: Exchange): boolean {
+    return CredentialEvidence.failed(exchange, this.#data.loginPages);
   }
 }

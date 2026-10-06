@@ -16,6 +16,7 @@ export class NetworkIdleMonitor {
 
   readonly #stalledAfterMs: number;
   readonly #busy = new Map<Request, NodeJS.Timeout>();
+  readonly #settled = new Set<Request>();
   readonly #waiters = new Set<IdleWaiter>();
   #context: BrowserContext | undefined;
 
@@ -24,7 +25,7 @@ export class NetworkIdleMonitor {
   }
 
   get inflight(): number {
-    return this.#busy.size;
+    return this.#busy.size - this.#settled.size;
   }
 
   attach(context: BrowserContext): void {
@@ -45,8 +46,16 @@ export class NetworkIdleMonitor {
     this.#context = undefined;
     for (const timer of this.#busy.values()) clearTimeout(timer);
     this.#busy.clear();
+    this.#settled.clear();
     for (const waiter of this.#waiters) clearTimeout(waiter.timer);
     this.#waiters.clear();
+  }
+
+  settle(request: Request, settled = true): void {
+    if (!this.#busy.has(request) || this.#settled.has(request) === settled) return;
+    if (settled) this.#settled.add(request);
+    else this.#settled.delete(request);
+    this.#update();
   }
 
   waitForIdle(idleMs: number): Promise<void> {
@@ -70,11 +79,12 @@ export class NetworkIdleMonitor {
     if (timer === undefined) return;
     clearTimeout(timer);
     this.#busy.delete(request);
+    this.#settled.delete(request);
     this.#update();
   };
 
   #update(): void {
-    const idle = this.#busy.size === 0;
+    const idle = this.inflight === 0;
     for (const waiter of this.#waiters) {
       if (!idle) {
         clearTimeout(waiter.timer);

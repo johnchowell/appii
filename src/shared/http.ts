@@ -14,6 +14,7 @@ export const ASCII_MAX = 0x7f;
 export const SECURE_SCHEMES: readonly string[] = Object.freeze(['https:', 'wss:']);
 export const LOOPBACK_NAMES: readonly string[] = Object.freeze(['localhost', 'localhost.']);
 export const IDENTITY_ENCODING = 'identity';
+export const PROBE_SOURCE = 'probe';
 
 export function newId(prefix = ''): string {
   return prefix + randomUUID();
@@ -321,8 +322,12 @@ export function parseCookieHeader(header: string | undefined): { name: string; v
   return out;
 }
 
-export function reachedServer(exchange: Pick<Exchange, 'servedBy'>): boolean {
-  return exchange.servedBy === undefined;
+export function isProbe(exchange: Partial<Pick<Exchange, 'source'>>): boolean {
+  return exchange.source === PROBE_SOURCE;
+}
+
+export function reachedServer(exchange: Pick<Exchange, 'servedBy'> & Partial<Pick<Exchange, 'source'>>): boolean {
+  return exchange.servedBy === undefined && !isProbe(exchange);
 }
 
 export function isWorkerResponse(exchange: Pick<Exchange, 'servedBy'>): boolean {

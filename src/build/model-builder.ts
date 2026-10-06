@@ -146,16 +146,22 @@ export class ModelBuilder {
     return url.origin;
   }
 
+  static #recorded(capture: Capture): Capture {
+    const exchanges = capture.exchanges.filter((exchange) => !Http.isProbe(exchange));
+    return exchanges.length === capture.exchanges.length ? capture : { ...capture, exchanges };
+  }
+
   build(capture: Capture): ApiModel {
     const forms = this.#parts.forms;
+    const recorded = ModelBuilder.#recorded(capture);
     const input: CredentialInput = {
       passwordFields: forms.passwordFields(capture),
       loginPages: forms.loginPages(capture),
       identifierFields: forms.identifierFields(capture),
       personalFields: forms.personalFields(capture),
     };
-    const evidence = this.#credentials.analyze(capture, input);
-    this.#redactor.useValues(this.#secrets.collect(capture, forms.secretFields(capture), evidence, input));
+    const evidence = this.#credentials.analyze(recorded, input);
+    this.#redactor.useValues(this.#secrets.collect(recorded, forms.secretFields(capture), evidence, input));
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
@@ -168,13 +174,13 @@ export class ModelBuilder {
     const grouped = this.#parts.grouper.group(exchanges, context);
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
-    this.#roles.detect(endpoints, capture, { evidence, input, forms: linked.targets, credentials: context.credentials });
-    this.#parts.auth.detect(endpoints, capture, evidence);
+    this.#roles.detect(endpoints, recorded, { evidence, input, forms: linked.targets, credentials: context.credentials });
+    this.#parts.auth.detect(endpoints, recorded, evidence);
     endpoints.sort(ModelBuilder.#compare);
     this.#parts.namer.name(endpoints);
     const domains = OriginSelector.referenceDomains(capture);
     for (const endpoint of endpoints) endpoint.firstParty = OriginSelector.isFirstParty(endpoint.origin, domains);
-    const cookies = this.#parts.cookies.build(capture, endpoints, chosen, evidence);
+    const cookies = this.#parts.cookies.build(recorded, endpoints, chosen, evidence);
     const primaryOrigin = OriginSelector.primary(capture, chosen);
     const shown = linked.forms.filter((form) => allowed.has(Helpers.originOf(form.pageUrl) ?? '') || allowed.has(Helpers.originOf(form.action) ?? ''));
     const described = FormLinker.endpointIds(linked, shown, endpoints);
@@ -184,10 +190,10 @@ export class ModelBuilder {
       generatedAt: (this.#options.now ?? new Date()).toISOString(),
       source: {
         ...(capture.startUrl !== undefined ? { startUrl: capture.startUrl } : {}),
-        exchanges: capture.exchanges.length,
+        exchanges: recorded.exchanges.length,
         capturedFrom: capture.startedAt,
         capturedTo: capture.endedAt,
-        ...ModelBuilder.#present('skipped', this.#skipped(capture, allowed, context)),
+        ...ModelBuilder.#present('skipped', this.#skipped(recorded, allowed, context)),
       },
       primaryOrigin,
       origins: [...chosen],

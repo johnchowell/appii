@@ -1,7 +1,7 @@
 import type { Capture, Exchange, FormDescriptor, ResourceType } from '../model/index.js';
 import { SubmissionRules } from '../forms/index.js';
 import type { FormTarget } from '../forms/index.js';
-import { Json } from '../shared/index.js';
+import { Http, Json } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
 import type { ParsedBody } from './body-parser.js';
 import { Helpers } from './helpers.js';
@@ -36,8 +36,10 @@ export class ObservedSubmissions {
       const url = Helpers.httpUrl(exchange.request.url);
       if (!url) continue;
       if (exchange.resourceType === ObservedSubmissions.NAVIGATION) {
-        this.#documents.add(HtmlPages.documentKey(exchange.request.url));
-        if (exchange.request.method.toUpperCase() === ObservedSubmissions.QUERY_METHOD) this.#pages.add(url.origin + url.pathname);
+        if (!Http.isProbe(exchange)) {
+          this.#documents.add(HtmlPages.documentKey(exchange.request.url));
+          if (exchange.request.method.toUpperCase() === ObservedSubmissions.QUERY_METHOD) this.#pages.add(url.origin + url.pathname);
+        }
         if (exchange.pageUrl === undefined || exchange.redirectedFrom !== undefined) continue;
         ObservedSubmissions.#push(this.#navigations, ObservedSubmissions.key(exchange.pageUrl, exchange.request.method, url), exchange);
       } else if (ObservedSubmissions.SCRIPT_TYPES.has(exchange.resourceType) && exchange.pageUrl !== undefined) {

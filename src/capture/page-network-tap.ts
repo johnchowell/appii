@@ -52,6 +52,12 @@ export interface TapRecord {
   body: Promise<TapBody | undefined> | undefined;
   postData: Promise<string | undefined> | undefined;
   stream: TapStream | undefined;
+  declared: number | undefined;
+  contentEncoded: boolean;
+  wireLength: number;
+  arrivedAt: number | undefined;
+  settled: boolean;
+  partial: TapBody | undefined;
 }
 
 export interface TapStream {
@@ -89,7 +95,9 @@ export interface PageNetworkTapOptions {
   bodies?: boolean;
   streamBytes?: number;
   holdLimitMs?: number;
+  quietMs?: number;
   onWorker?: (channel: TargetChannel) => Promise<void>;
+  onSettle?: (tap: PageNetworkTap, record: TapRecord) => void;
 }
 
 export interface RootConnection extends NetworkConnection {
@@ -141,6 +149,7 @@ export class PageNetworkTap {
   static readonly PREPARE_TIMEOUT_MS = 5000;
   static readonly SESSION_LAG_MS = 2000;
   static readonly HOLD_LIMIT_MS = 5000;
+  static readonly QUIET_MS = 1500;
   static readonly SERVICE_WORKER = 'service_worker';
   static readonly WORKER = 'worker';
   static readonly SCRIPT_PARSED = 'Debugger.scriptParsed';
@@ -164,6 +173,7 @@ export class PageNetworkTap {
   readonly #channels = new Set<TargetChannel>();
   readonly #preparing = new Set<Promise<void>>();
   readonly #waiters: ClaimWaiter[] = [];
+  readonly #quiet = new Map<TapRecord, NodeJS.Timeout>();
   #closed = false;
 
   constructor(root: RootConnection, options: PageNetworkTapOptions = {}, deps: PageNetworkTapDeps = {}) {
@@ -251,6 +261,10 @@ export class PageNetworkTap {
     return candidates.length === 1 ? candidates[0] : undefined;
   }
 
+  peek(query: TapQuery): TapRecord | undefined {
+    return this.#choose(query);
+  }
+
   claim(query: TapQuery): TapRecord | undefined {
     const chosen = this.#choose(query);
     if (!chosen) return undefined;
@@ -307,6 +321,7 @@ export class PageNetworkTap {
   async responseBody(record: TapRecord): Promise<TapBody | undefined> {
     const prefetched = record.body === undefined ? undefined : await record.body;
     if (prefetched) return prefetched;
+    if (record.state === 'loading' && record.settled) return PageNetworkTap.#streamed(record);
     if (record.state === 'loading' && !record.responded) {
       const caughtUp = await Helpers.settle(record.ended.then(() => true), PageNetworkTap.SESSION_LAG_MS);
       if (caughtUp !== true) return this.#closed ? undefined : this.#workerScript(record);
@@ -316,6 +331,11 @@ export class PageNetworkTap {
     if (record.state !== 'finished') return undefined;
     const body = await (record.body ?? (this.#closed ? Promise.resolve(undefined) : this.#read(record)));
     return body ?? (this.#closed ? undefined : this.#workerScript(record));
+  }
+
+  partialBody(record: TapRecord): TapBody | undefined {
+    if (record.partial !== undefined || record.state !== 'loading') return record.partial;
+    return PageNetworkTap.#bytesOf(record.stream);
   }
 
   async documentBody(url: string): Promise<TapBody | undefined> {
@@ -337,6 +357,8 @@ export class PageNetworkTap {
     if (this.#closed) return;
     this.#closed = true;
     for (const waiter of [...this.#waiters]) waiter.arrive(undefined);
+    for (const timer of this.#quiet.values()) clearTimeout(timer);
+    this.#quiet.clear();
     for (const live of this.#live.values()) live.end();
     this.#live.clear();
     this.#kept.length = 0;
@@ -381,7 +403,10 @@ export class PageNetworkTap {
           const record = this.#record(connection, event.requestId);
           if (!record) break;
           record.dataLength += event.dataLength;
+          record.wireLength += event.encodedDataLength ?? 0;
+          record.arrivedAt = Date.now();
           if (record.stream && event.data !== undefined) this.#append(record.stream, Buffer.from(event.data, 'base64'));
+          this.#progress(record);
           break;
         }
         case 'Fetch.requestPaused':
@@ -467,7 +492,10 @@ export class PageNetworkTap {
   async #onPaused(connection: NetworkConnection, event: CdpRequestPaused): Promise<void> {
     try {
       const record = event.networkId === undefined ? undefined : this.#liveById(event.networkId);
-      if (record && this.#streamable(record, event)) await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
+      if (record && this.#streamable(record, event)) {
+        PageNetworkTap.#expect(record, event.responseHeaders ?? []);
+        await Helpers.settle(this.#stream(record), this.#options.holdLimitMs ?? PageNetworkTap.HOLD_LIMIT_MS);
+      }
     } finally {
       const response = event.responseStatusCode !== undefined && event.responseErrorReason === undefined;
       await connection.send(response ? 'Fetch.continueResponse' : 'Fetch.continueRequest', { requestId: event.requestId }).catch(() => undefined);
@@ -496,9 +524,35 @@ export class PageNetworkTap {
     try {
       const result = await record.connection.send<CdpStreamedContent>('Network.streamResourceContent', { requestId: record.requestId });
       this.#append(stream, Buffer.from(result.bufferedData, 'base64'));
+      this.#progress(record);
     } catch {
       if (record.stream === stream) record.stream = undefined;
     }
+  }
+
+  #progress(record: TapRecord): void {
+    if (this.#closed || record.stream === undefined || record.state !== 'loading' || !record.responded) return;
+    const declared = record.declared;
+    if (declared !== undefined) {
+      if ((record.contentEncoded ? record.wireLength : record.dataLength) >= declared) this.#settle(record, true);
+      return;
+    }
+    if (record.dataLength === 0) return;
+    this.#settle(record, false);
+    const timer = setTimeout(() => {
+      this.#quiet.delete(record);
+      this.#settle(record, true);
+    }, this.#options.quietMs ?? PageNetworkTap.QUIET_MS);
+    timer.unref();
+    this.#quiet.set(record, timer);
+  }
+
+  #settle(record: TapRecord, settled: boolean): void {
+    clearTimeout(this.#quiet.get(record));
+    this.#quiet.delete(record);
+    if (record.settled === settled || record.state !== 'loading') return;
+    record.settled = settled;
+    this.#options.onSettle?.(this, record);
   }
 
   #append(stream: TapStream, bytes: Buffer): void {
@@ -528,7 +582,10 @@ export class PageNetworkTap {
 
   #onResponse(connection: NetworkConnection, event: CdpResponseReceived): void {
     const record = this.#record(connection, event.requestId);
-    if (record) PageNetworkTap.#respond(record, event.response);
+    if (!record) return;
+    PageNetworkTap.#respond(record, event.response);
+    record.arrivedAt = Date.now();
+    this.#progress(record);
   }
 
   #record(connection: NetworkConnection, requestId: string): TapRecord | undefined {
@@ -554,8 +611,13 @@ export class PageNetworkTap {
     if (!found) return;
     const { key, live } = found;
     this.#live.delete(key);
-    live.record.state = state;
-    if (state === 'finished' && this.#wantsBody(live.record)) live.record.body = PageNetworkTap.#streamed(live.record) ?? this.#readOnce(live.record);
+    clearTimeout(this.#quiet.get(live.record));
+    this.#quiet.delete(live.record);
+    const arrived = state === 'finished' || (state === 'failed' && live.record.settled);
+    live.record.state = arrived ? 'finished' : state;
+    live.record.settled = arrived;
+    if (arrived && this.#wantsBody(live.record)) live.record.body = PageNetworkTap.#streamed(live.record) ?? this.#readOnce(live.record);
+    if (state === 'failed' && !arrived) live.record.partial = PageNetworkTap.#bytesOf(live.record.stream);
     live.record.stream = undefined;
     live.end();
     if (live.record.claimed) return;
@@ -609,7 +671,16 @@ export class PageNetworkTap {
   static #streamed(record: TapRecord): Promise<TapBody | undefined> | undefined {
     const stream = record.stream;
     if (!stream || stream.received < record.dataLength) return undefined;
-    return Promise.resolve(stream.kept > 0 ? { bytes: Buffer.concat(stream.chunks), text: false } : undefined);
+    return Promise.resolve(PageNetworkTap.#bytesOf(stream));
+  }
+
+  static #bytesOf(stream: TapStream | undefined): TapBody | undefined {
+    return stream !== undefined && stream.kept > 0 ? { bytes: Buffer.concat(stream.chunks), text: false } : undefined;
+  }
+
+  static #expect(record: TapRecord, headers: { name: string; value: string }[]): void {
+    record.declared = Helpers.contentLength(headers);
+    record.contentEncoded = Http.isContentEncoded(Http.getHeader(headers, 'content-encoding'));
   }
 
   static #respond(record: TapRecord, response: CdpResponse): void {
@@ -682,6 +753,12 @@ export class PageNetworkTap {
       body: undefined,
       postData: undefined,
       stream: undefined,
+      declared: undefined,
+      contentEncoded: false,
+      wireLength: 0,
+      arrivedAt: undefined,
+      settled: false,
+      partial: undefined,
     };
     return { record, end };
   }
