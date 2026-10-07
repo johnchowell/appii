@@ -81,12 +81,7 @@ export class Helpers {
   }
 
   static formSource(endpoint: Endpoint, markup: TokenSourceMarkup): string | undefined {
-    const form = endpoint.form;
-    if (!form) return undefined;
-    const where = `${markup.code(form.selector)} on ${markup.url(form.pageUrl)}`;
-    const type = FormSource.contentType(endpoint);
-    if (FormSource.isScript(form)) return `Sent by a script of the form ${where}${type ? ` as ${markup.text(type)}` : ''}.`;
-    return `Submitted by the form ${where} (${markup.text(form.enctype)}).`;
+    return FormSource.describe(endpoint, markup.code, markup.url, markup.text);
   }
 
   static formFacts(endpoint: Endpoint): Record<string, unknown> | undefined {

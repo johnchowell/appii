@@ -98,8 +98,7 @@ export class HtmlExporter extends BaseExporter {
     const index = EndpointIndex.of(model);
     const code = (value: string): string => `<code>${esc(value)}</code>`;
     const link = (endpoint: Endpoint): string => `<a href="#endpoint-${index.numberOf(endpoint)}">#${index.numberOf(endpoint)} ${esc(`${endpoint.method} ${endpoint.path}`)}</a>`;
-    for (const login of guide.logins(endpoints)) facts.push(['Login', `${link(login)}: ${guide.describe(login, code) ?? ''}`]);
-    for (const logout of guide.logouts(endpoints)) facts.push(['Logout', `${link(logout)}: ${guide.describe(logout, code) ?? ''}`]);
+    for (const endpoint of [...guide.logins(endpoints), ...guide.logouts(endpoints)]) facts.push([LoginGuide.roleLabel(endpoint), `${link(endpoint)}: ${guide.summary(endpoint, code) ?? ''}`]);
     const stats: [number, string][] = [
       [endpoints.length, endpoints.length === model.endpoints.length ? 'endpoints' : `of ${model.endpoints.length} endpoints`],
       [source.exchanges, 'exchanges'],

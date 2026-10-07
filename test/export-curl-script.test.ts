@@ -154,7 +154,7 @@ describe('the curl script sends what the browser sends', () => {
     const text = new CurlExporter().export(model).content;
     for (const match of text.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)) {
       const name = match[1] ?? '';
-      assert.ok(/^(?:APPII_[A-Z0-9_]+|appii_[a-z0-9_]+|BASH_SOURCE|pair|name|wanted|pairs|command|byte|out|1)$/.test(name), name);
+      assert.ok(/^(?:APPII_[A-Z0-9_]+|appii_[a-z0-9_]+|BASH_SOURCE|pair|name|wanted|pairs|command|byte|line|1)$/.test(name), name);
     }
     const file = await script(model, 'env.sh');
     const leak = { AWS_SECRET_ACCESS_KEY: 'leak', HOME: '/leak', COOKIE: 'leak=1', BASE_URL: 'http://leak.invalid' };

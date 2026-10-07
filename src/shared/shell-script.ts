@@ -21,6 +21,8 @@ export class ShellScript {
     'time', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'until', 'wait', 'while',
   ]);
   static readonly EXPANSION_SAFE: RegExp = /^[A-Za-z0-9 ._:/;,=?&%+@()#-]$/;
+  static readonly OPEN_WORDS: ReadonlySet<string> = new Set(['{', 'do', 'then', 'else', 'in', ';;', '|', '&&', '||']);
+  static readonly STATEMENT_SEPARATOR = '; ';
 
   static functionName(name: string, reserved: ReadonlySet<string> = ShellScript.RESERVED_NAMES): string {
     let base = name.replace(/[^A-Za-z0-9_]/g, '_');
@@ -79,6 +81,17 @@ export class ShellScript {
       if (escaped) out = state === 'double' ? out + '\\' : out.slice(0, -1);
       const encoded = ShellScript.bytes(ch);
       out += state === 'single' ? `'${encoded}'` : state === 'double' ? `"${encoded}"` : encoded;
+    }
+    return out;
+  }
+
+  static oneLine(lines: readonly string[]): string {
+    let out = '';
+    for (const line of lines) {
+      const text = line.trim();
+      if (text === '') continue;
+      if (out !== '') out += ShellScript.OPEN_WORDS.has(out.split(' ').pop() ?? '') ? ' ' : ShellScript.STATEMENT_SEPARATOR;
+      out += text;
     }
     return out;
   }

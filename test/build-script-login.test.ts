@@ -44,8 +44,8 @@ function endpoint(model: ApiModel, method: string, path: string): Endpoint {
   return found;
 }
 
-function summary(model: ApiModel): string[] {
-  return Ansi.strip(new EndpointListPresenter({ width: 200 }).render(model)).split('\n');
+function summary(model: ApiModel, width = 300): string[] {
+  return Ansi.strip(new EndpointListPresenter({ width }).render(model)).split('\n');
 }
 
 describe('the page load of a login form that a script submits is not the login endpoint (LL-4)', () => {
@@ -60,8 +60,16 @@ describe('the page load of a login form that a script submits is not the login e
     assert.deepEqual(page.queryParams, []);
     assert.equal(model.endpoints.some((candidate) => candidate.role === 'login'), false);
     const lines = summary(model);
-    assert.ok(lines.some((line) => /^Login form: +on \/login \(username, password\) has no action, so a script probably sends it; log in with --login to record its request$/.test(line)), lines.join('\n'));
+    assert.ok(
+      lines.some((line) => line.replace(/^Login form: +/, '') === `on /login (username, password) has no action, so a script probably sends it; record its request without an account with appii capture ${ORIGIN}/login --headless --probe-login, or log in with --login`),
+      lines.join('\n'),
+    );
     assert.ok(!lines.some((line) => line.startsWith('Login: ')), lines.join('\n'));
+    const narrow = summary(model, 80);
+    assert.ok(narrow.every((line) => line.length <= 80 && /^[\x20-\x7e]*$/.test(line)), narrow.join('\n'));
+    const start = narrow.findIndex((line) => line.startsWith('Login form:'));
+    const wrapped = narrow.slice(start, start + 4).map((line) => line.trim()).join(' ');
+    assert.ok(wrapped.includes(`appii capture ${ORIGIN}/login --headless --probe-login, or log in with --login`), wrapped);
   });
 
   test('after logging in, only the request the script sent is the login, and the form names it as its endpoint', () => {
@@ -89,7 +97,11 @@ describe('the page load of a login form that a script submits is not the login e
     const page = endpoint(model, 'GET', '/login');
     assert.equal(page.role, undefined);
     assert.deepEqual(model.forms.map((form) => form.endpoints), [[page.id]]);
-    assert.ok(summary(model).some((line) => /^Login form: +on \/login \(username, password\) submits to GET \/login, but no request with its password was recorded; log in with --login to record its request$/.test(line)));
+    assert.ok(
+      summary(model).some(
+        (line) => line.replace(/^Login form: +/, '') === `on /login (username, password) submits to GET /login, but no request with its password was recorded; record its request without an account with appii capture ${ORIGIN}/login --headless --probe-login, or log in with --login`,
+      ),
+    );
   });
 
   test('a script login form whose request is nested JSON still gives the login role to that request', () => {

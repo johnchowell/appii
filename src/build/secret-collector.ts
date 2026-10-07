@@ -170,6 +170,7 @@ export class SecretCollector {
         continue;
       }
       if (SecretValues.worthHiding(value)) out.set(value, { label: name, strong: true, personal: true });
+      else if (SecretValues.worthHidingWhole(value)) derived.add(value);
       const local = SecretCollector.localPart(value);
       if (local !== undefined) derived.add(local);
     }

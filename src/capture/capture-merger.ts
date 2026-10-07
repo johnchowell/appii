@@ -1,4 +1,4 @@
-import { AppiiError, Json, Meta } from '../shared/index.js';
+import { AppiiError, Http, Json, Meta } from '../shared/index.js';
 import type { Capture, Cookie, Exchange, PageSnapshot, SourceCapture, StorageSnapshot, WebSocketCapture } from '../model/index.js';
 import { CaptureStore } from './capture-store.js';
 import { CookieParser } from './cookie-parser.js';
@@ -36,7 +36,7 @@ export class CaptureMerger {
       ...(capture.startUrl === undefined ? {} : { startUrl: capture.startUrl }),
       capturedFrom: capture.startedAt,
       capturedTo: capture.endedAt,
-      exchanges: capture.exchanges.length,
+      exchanges: Http.recorded(capture.exchanges).length,
     };
   }
 

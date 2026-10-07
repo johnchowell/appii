@@ -41,7 +41,7 @@ export class CaptureSummaryPresenter extends BasePresenter<CaptureSummaryInput> 
   }
 
   #facts(capture: Capture): Definition[] {
-    const exchanges = capture.exchanges.filter((exchange) => !Http.isProbe(exchange));
+    const exchanges = Http.recorded(capture.exchanges);
     const probes = capture.exchanges.filter((exchange) => Http.isProbe(exchange));
     const documents = exchanges.filter((exchange) => exchange.resourceType === 'document').length;
     const api = exchanges.filter((exchange) => CaptureSummaryPresenter.API_TYPES.has(exchange.resourceType)).length;

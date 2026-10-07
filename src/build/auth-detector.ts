@@ -1,5 +1,5 @@
 import { SEEN_STATES } from '../model/index.js';
-import type { AnonymousAccess, Capture, Cookie, CsrfToken, Endpoint, Exchange, SeenState } from '../model/index.js';
+import type { AnonymousAccess, Capture, Cookie, CookieRole, CsrfToken, Endpoint, Exchange, SeenState } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, TokenDetector } from '../forms/index.js';
 import { Credentials, Http, Json, Text } from '../shared/index.js';
@@ -45,6 +45,11 @@ interface EndpointAuthState {
   readonly csrf: Map<string, CsrfToken>;
 }
 
+interface CookiePair {
+  readonly name: string;
+  readonly value: string;
+}
+
 interface CredentialSets {
   readonly sets: string[][];
   readonly anonymous: AnonymousAccess;
@@ -59,6 +64,7 @@ export class AuthDetector {
   static readonly ALLOWED: AnonymousAccess = 'allowed';
   static readonly REFUSED: AnonymousAccess = 'refused';
   static readonly UNTESTED: AnonymousAccess = 'untested';
+  static readonly UNBOUND_ROLES: ReadonlySet<CookieRole> = new Set<CookieRole>(['tracking', 'preference']);
 
   readonly #tokens: TokenDetector;
   readonly #body: BodyParser;
@@ -116,8 +122,8 @@ export class AuthDetector {
       for (const exchange of exchanges) this.#observe(state, exchange, resolve, evidence);
       const predicted = exchanges.length === 0 ? this.#predicted(endpoint, capture, jar) : [];
       for (const cookie of predicted.flat()) state.cookies.add(cookie.name);
-      const sessions = exchanges.length > 0 ? exchanges.flatMap((exchange) => CredentialAnalyzer.sent(exchange)) : predicted.flat();
-      this.#formTokens(state, endpoint, Helpers.distinct(sessions.filter((cookie) => evidence.isCredentialRole(cookie.name)).map((cookie) => cookie.name)).sort(Text.compare), resolve);
+      const sent = exchanges.length > 0 ? exchanges.flatMap((exchange) => CredentialAnalyzer.sent(exchange)) : predicted.flat();
+      this.#formTokens(state, endpoint, sent, resolve, evidence);
       const found = exchanges.length > 0 ? this.#credentialSets(exchanges, evidence) : AuthDetector.#predictedSets(predicted, evidence);
       endpoint.auth = {
         cookies: [...state.cookies].sort(Text.compare),
@@ -227,7 +233,7 @@ export class AuthDetector {
     const form = endpoint.form;
     if (!form) return [];
     const page = HtmlPages.documentKey(form.pageUrl);
-    const documents = [...this.#documents.of(capture).filter((document) => document.page.source === 'snapshot'), ...this.#documents.served(capture)];
+    const documents = this.#documents.all(capture);
     const times = documents
       .filter((document) => HtmlPages.documentKey(this.#redactor.url(document.page.url)) === page && document.forms.some((candidate) => candidate.selector === form.selector))
       .map((document) => document.page.at)
@@ -253,7 +259,6 @@ export class AuthDetector {
     const headers = exchange.request.headers;
     const sent = CredentialAnalyzer.sent(exchange);
     for (const cookie of sent) state.cookies.add(cookie.name);
-    const sessions = Helpers.distinct(sent.filter((cookie) => evidence.isCredentialRole(cookie.name)).map((cookie) => cookie.name)).sort(Text.compare);
     const candidates: TokenCandidate[] = [];
     for (const header of headers) {
       const name = header.name.toLowerCase();
@@ -280,7 +285,7 @@ export class AuthDetector {
       if (existing && existing.source !== 'unknown') continue;
       const origin: TokenOrigin = candidate.value === '' ? { source: 'unknown' } : resolve().resolve(candidate.value, exchange);
       if (candidate.evidence && !this.#pageEvidence(candidate.name, origin)) continue;
-      state.csrf.set(key, this.#token(candidate, origin, sessions));
+      state.csrf.set(key, this.#token(candidate, origin, AuthDetector.#sessions(origin, sent, evidence)));
     }
   }
 
@@ -304,7 +309,22 @@ export class AuthDetector {
     return token;
   }
 
-  #formTokens(state: EndpointAuthState, endpoint: Endpoint, sessions: readonly string[], resolve: () => CsrfSourceResolver): void {
+  static #sessions(origin: TokenOrigin, sent: readonly CookiePair[], evidence: CredentialEvidence): string[] {
+    const credentials = sent.filter((cookie) => evidence.isCredentialRole(cookie.name)).map((cookie) => cookie.name);
+    return Helpers.distinct([...credentials, ...AuthDetector.#bound(origin, sent, evidence)]).sort(Text.compare);
+  }
+
+  static #bound(origin: TokenOrigin, sent: readonly CookiePair[], evidence: CredentialEvidence): string[] {
+    const source = origin.exchange;
+    if (source === undefined || !Http.reachedServer(source)) return [];
+    const issued = [...CredentialAnalyzer.setCookies(source), ...CredentialAnalyzer.sent(source).filter((cookie) => CredentialAnalyzer.keeps(source, cookie.name, cookie.value))];
+    const carried = new Set(sent.map((cookie) => CredentialEvidence.key(cookie.name, cookie.value)));
+    return issued
+      .filter((cookie) => cookie.value !== '' && carried.has(CredentialEvidence.key(cookie.name, cookie.value)) && !AuthDetector.UNBOUND_ROLES.has(evidence.role(cookie.name)))
+      .map((cookie) => cookie.name);
+  }
+
+  #formTokens(state: EndpointAuthState, endpoint: Endpoint, sent: readonly CookiePair[], resolve: () => CsrfSourceResolver, evidence: CredentialEvidence): void {
     const form = endpoint.form;
     if (!form) return;
     const location: CsrfToken['location'] = endpoint.method === 'GET' ? 'query' : 'body';
@@ -315,7 +335,7 @@ export class AuthDetector {
       const existing = state.csrf.get(key);
       if (existing && existing.source !== 'unknown') continue;
       const origin = resolve().formToken(name, onPage) ?? { source: 'hidden-field', sourceName: name, sourceUrl: form.pageUrl };
-      state.csrf.set(key, this.#token({ location, name, value: '', evidence: false }, origin, sessions));
+      state.csrf.set(key, this.#token({ location, name, value: '', evidence: false }, origin, AuthDetector.#sessions(origin, sent, evidence)));
     }
   }
 }

@@ -1,6 +1,7 @@
 import type { Capture, FormDescriptor } from '../model/index.js';
 import { Http, Json } from '../shared/index.js';
 import { PageDocuments } from './page-documents.js';
+import type { PageDocument } from './page-documents.js';
 
 export interface FormCollectorDeps {
   documents: PageDocuments;
@@ -25,6 +26,10 @@ export class FormCollector {
 
   encodings(capture: Capture): Map<string, string> {
     return this.#documents.encodings(capture);
+  }
+
+  pages(capture: Capture): readonly PageDocument[] {
+    return this.#documents.all(capture);
   }
 
   collect(capture: Capture): FormDescriptor[] {

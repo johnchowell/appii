@@ -2,7 +2,8 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CaptureMerger, CaptureStore, CaptureValidator, HarConverter } from '../src/capture/index.js';
 import type { Capture, Cookie } from '../src/model/index.js';
-import { AppiiError } from '../src/shared/index.js';
+import { ModelBuilder } from '../src/build/index.js';
+import { AppiiError, Http } from '../src/shared/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
 
 const HOUR = 3_600_000;
@@ -172,6 +173,27 @@ describe('CaptureMerger', () => {
     );
     assert.equal(capture.endedAt, long.endedAt);
     assert.equal(capture.startedAt, early.startedAt);
+  });
+
+  test('a probe exchange is counted the same way in each listed input and in the model, so the inputs add up (QL3-2)', () => {
+    const probed = anonymous();
+    probed.exchanges.push({ ...probed.exchanges[0]!, id: 'probe-login', source: Http.PROBE_SOURCE, request: { method: 'POST', url: 'https://shop.example.com/login', headers: [] } });
+    delete probed.exchanges[probed.exchanges.length - 1]!.response;
+    const authed = authenticated();
+    const { capture, sources } = CaptureMerger.create().merge([
+      { capture: probed, file: 'probe.json' },
+      { capture: authed, file: 'authed.json' },
+    ]);
+    assert.deepEqual(
+      sources.map((source) => source.exchanges),
+      [probed.exchanges.length - 1, authed.exchanges.length],
+    );
+    const model = ModelBuilder.create({ now: new Date(CaptureFactory.EPOCH) }).build(capture);
+    assert.equal(
+      sources.reduce((sum, source) => sum + source.exchanges, 0),
+      model.source.exchanges,
+    );
+    assert.equal(CaptureMerger.source({ capture: probed }).exchanges, ModelBuilder.create({ now: new Date(CaptureFactory.EPOCH) }).build(probed).source.exchanges);
   });
 
   test('a single input is returned unchanged and no input is an error', () => {

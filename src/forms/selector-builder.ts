@@ -1,4 +1,5 @@
 import type { HtmlDocument, HtmlElement, HtmlNode } from './html-document.js';
+import { FormSource } from '../shared/index.js';
 import { HtmlMicrosyntax } from './html-microsyntax.js';
 
 interface SelectorIndex {
@@ -10,6 +11,8 @@ interface SelectorIndex {
 
 export class SelectorBuilder {
   static readonly ROOT = ':root';
+  static readonly CHILD = ' > ';
+  static readonly SHADOW = FormSource.SHADOW;
 
   readonly #indexes = new WeakMap<HtmlDocument, SelectorIndex>();
 
@@ -38,41 +41,45 @@ export class SelectorBuilder {
       if (code === 0) out += SelectorBuilder.#codePoint(0xfffd);
       else if ((code >= 0x01 && code <= 0x1f) || code === 0x7f || code >= 0x80) out += SelectorBuilder.#codePoint(code);
       else if (ch === '"' || ch === '\\') out += `\\${ch}`;
+      else if (ch === '>') out += SelectorBuilder.#codePoint(code);
       else out += ch;
     }
     return `${out}"`;
   }
 
   form(doc: HtmlDocument, form: HtmlElement): string {
-    const live = doc.liveSelector(form);
+    const live = doc.inDocumentTree(form) ? doc.liveSelector(form) : undefined;
     if (live !== undefined) return live;
     const index = this.#index(doc);
     const id = doc.attr(form, 'id');
-    if (id && index.formIds.get(HtmlMicrosyntax.asciiLower(id)) === 1) return `form#${SelectorBuilder.escapeIdentifier(id)}`;
+    if (id && index.formIds.get(HtmlMicrosyntax.asciiLower(id)) === 1) return this.#scoped(doc, form, `form#${SelectorBuilder.escapeIdentifier(id)}`);
     const name = doc.attr(form, 'name');
-    if (name && index.formNames.get(name) === 1) return `form[name=${SelectorBuilder.escapeString(name)}]`;
+    if (name && index.formNames.get(name) === 1) return this.#scoped(doc, form, `form[name=${SelectorBuilder.escapeString(name)}]`);
     return this.path(doc, form);
   }
 
   path(doc: HtmlDocument, element: HtmlElement): string {
     const index = this.#index(doc);
     const steps: string[] = [];
-    for (let current: HtmlElement | null = element; current; ) {
-      const parent: HtmlElement | null = doc.parentElement(current) ?? doc.shadowHost(current) ?? null;
-      if (!parent) {
-        steps.unshift(SelectorBuilder.ROOT);
-        break;
-      }
+    for (let current: HtmlElement = element; ; ) {
+      const parent = doc.parentElement(current);
+      const up = parent ?? doc.shadowHost(current);
+      if (!up) return [SelectorBuilder.ROOT, ...steps].join(SelectorBuilder.CHILD);
       const id = doc.attr(current, 'id');
       if (current !== element && id && index.ids.get(HtmlMicrosyntax.asciiLower(id)) === 1) {
-        steps.unshift(`#${SelectorBuilder.escapeIdentifier(id)}`);
-        break;
+        return this.#scoped(doc, current, [`#${SelectorBuilder.escapeIdentifier(id)}`, ...steps].join(SelectorBuilder.CHILD));
       }
-      const position = index.positions.get(current) ?? 0;
-      steps.unshift(`${SelectorBuilder.escapeIdentifier(current.name)}:nth-child(${position})`);
+      steps.unshift(`${SelectorBuilder.escapeIdentifier(current.name)}:nth-child(${index.positions.get(current) ?? 0})`);
+      if (parent === null) return this.path(doc, up) + SelectorBuilder.SHADOW + steps.join(SelectorBuilder.CHILD);
       current = parent;
     }
-    return steps.join(' > ');
+  }
+
+  #scoped(doc: HtmlDocument, element: HtmlElement, selector: string): string {
+    let top = element;
+    for (let parent = doc.parentElement(top); parent; parent = doc.parentElement(top)) top = parent;
+    const host = doc.shadowHost(top);
+    return host ? this.path(doc, host) + SelectorBuilder.SHADOW + selector : selector;
   }
 
   #index(doc: HtmlDocument): SelectorIndex {

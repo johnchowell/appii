@@ -83,8 +83,7 @@ export class MarkdownExporter extends BaseExporter {
     ];
     const link = (endpoint: Endpoint): string => `[${md.text(`#${index.numberOf(endpoint)} ${endpoint.method} ${endpoint.path}`)}](#${MarkdownExporter.anchor(index.numberOf(endpoint), endpoint)})`;
     const code = (value: string): string => md.code(value);
-    for (const login of guide.logins(endpoints)) rows.push(['Login', `${link(login)}: ${guide.describe(login, code) ?? ''}`]);
-    for (const logout of guide.logouts(endpoints)) rows.push(['Logout', `${link(logout)}: ${guide.describe(logout, code) ?? ''}`]);
+    for (const endpoint of [...guide.logins(endpoints), ...guide.logouts(endpoints)]) rows.push([LoginGuide.roleLabel(endpoint), `${link(endpoint)}: ${guide.summary(endpoint, code) ?? ''}`]);
     for (const capture of source.captures ?? []) {
       rows.push(['Capture', md.text(`${capture.file ?? capture.startUrl ?? ''}: ${Text.plural(capture.exchanges, 'exchange')} between ${capture.capturedFrom} and ${capture.capturedTo}${capture.file !== undefined && capture.startUrl !== undefined ? ` from ${capture.startUrl}` : ''}`)]);
     }

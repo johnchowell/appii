@@ -45,7 +45,11 @@ export abstract class BasePresenter<T> implements Presenter<T> {
 
   static fileArgument(file: string | undefined, ansi: Ansi = Ansi.plain): string {
     if (file === undefined || file === '') return BasePresenter.FILE_PLACEHOLDER;
-    const clean = ansi.clean(file);
+    return BasePresenter.shellWord(file, ansi);
+  }
+
+  static shellWord(value: string, ansi: Ansi = Ansi.plain): string {
+    const clean = ansi.clean(value);
     return BasePresenter.SAFE_SHELL_WORD.test(clean) ? clean : Text.shellQuote(clean);
   }
 

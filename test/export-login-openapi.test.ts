@@ -57,6 +57,26 @@ describe('OpenAPI documents the login and logout and the anonymous state (L3, QL
     assert.match(scheme.description, new RegExp(`The logout operation ${logout} \\(GET /logout\\) revokes it\\.`));
   });
 
+  test('every operation a security scheme names is an operationId of the document with its METHOD and path, never a model id (QL3-3)', () => {
+    for (const [model, names] of [[LoginModels.form(ORIGIN), true], [LoginModels.anonymous(ORIGIN), false], [LoginModels.bearer(ORIGIN), true]] as const) {
+      const doc = openapi(model);
+      const operations = new Map<string, string>();
+      for (const [path, item] of Object.entries(doc.paths)) for (const [method, operation] of Object.entries(item)) operations.set(operation.operationId, `${method.toUpperCase()} ${path}`);
+      const schemes = Object.values(doc.components?.securitySchemes ?? {});
+      let named = 0;
+      for (const scheme of schemes) {
+        for (const match of scheme.description.matchAll(/([A-Za-z_][A-Za-z0-9_]*) \(([A-Z]+) ([^)\s]+)\)/g)) {
+          assert.equal(operations.get(match[1] ?? ''), `${match[2]} ${match[3]}`, scheme.description);
+          named++;
+        }
+        for (const endpoint of model.endpoints) assert.doesNotMatch(scheme.description, new RegExp(`(^|[ ,])${endpoint.id}([ ,.]|$)`), scheme.description);
+      }
+      assert.equal(named > 0, names);
+    }
+    const scheme = openapi(LoginModels.form(ORIGIN)).components?.securitySchemes?.sessionCookie;
+    assert.match(scheme?.description ?? '', /^Session cookie session \(HttpOnly\), set by getLoginPage \(GET \/login\), postLogin \(POST \/login\), getLogout \(GET \/logout\)\. /);
+  });
+
   test('an endpoint never requested without the credential offers {} and says that anonymous access was not tested; a refused one is strict', () => {
     const doc = openapi(LoginModels.form(ORIGIN));
     const page = op(doc, '/page/{page}/', 'get');

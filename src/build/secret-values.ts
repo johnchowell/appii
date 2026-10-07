@@ -121,7 +121,7 @@ export class SecretValues {
   }
 
   scrubDeep(value: unknown): unknown {
-    if (this.#values.size === 0) return value;
+    if (this.size === 0) return value;
     if (typeof value === 'string') return this.scrub(value);
     if (Array.isArray(value)) return value.map((item) => this.scrubDeep(item));
     if (Json.isPlainObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.scrubDeep(item)]));

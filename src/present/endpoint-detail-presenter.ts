@@ -26,6 +26,8 @@ export interface EndpointDetailPresenterDeps {
 
 export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> {
   static readonly JSON_LINES = ', JSON lines: one value per line';
+  static readonly SELECTOR_NOTATION = 'Notation';
+  static readonly FOUND_AFTER_LOGIN = 'its form was found only on pages loaded while logged in';
   static readonly PARAM_COLUMNS: readonly TableColumn[] = [
     { header: 'NAME', flex: true, minWidth: 12 },
     { header: 'REQ' },
@@ -167,6 +169,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     const entries: Definition[] = [
       ['Page', this.ansi.clean(form.pageUrl)],
       ['Selector', this.ansi.clean(form.selector)],
+      ...EndpointDetailPresenter.#selectorNote(form.selector),
       ...sending,
       ['Fields', names.length > 0 ? this.ansi.clean(names.join(', ')) : 'none'],
       ['Token fields', form.tokenFields.length > 0 ? this.ansi.clean(form.tokenFields.join(', ')) : 'none'],
@@ -174,6 +177,11 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     if (!script && form.submitters.length === 0) entries.push(['Submitters', 'none (implicit submission)']);
     if (!script) form.submitters.forEach((submitter, i) => entries.push([`Submitter ${i + 1}`, EndpointDetailPresenter.submitter(submitter, this.ansi)]));
     return [this.heading('Form source'), ...this.definitions(entries)];
+  }
+
+  static #selectorNote(selector: string): Definition[] {
+    const note = FormSource.selectorNote(selector);
+    return note === undefined ? [] : [[EndpointDetailPresenter.SELECTOR_NOTATION, note]];
   }
 
   static refusedExample(refusals: readonly number[]): string {
@@ -190,9 +198,10 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return endpoint.count === 0 ? `${label}, no request was observed` : `${label}, every request seen carried credentials`;
   }
 
-  static seen(endpoint: Endpoint): string {
+  static seen(endpoint: Endpoint, model?: Pick<ApiModel, 'endpoints' | 'forms'>): string {
     const seen = endpoint.auth.seen ?? [];
-    return seen.length > 0 ? seen.join(', ') : 'not observed';
+    if (seen.length > 0) return seen.join(', ');
+    return model !== undefined && Credentials.foundAfterLogin(model, endpoint) ? `not observed; ${EndpointDetailPresenter.FOUND_AFTER_LOGIN}` : 'not observed';
   }
 
   static role(endpoint: Endpoint): string | undefined {
@@ -227,7 +236,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
         ...this.#session(model, endpoint),
         ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles)) || 'none'],
         ['Anonymous', EndpointDetailPresenter.anonymous(endpoint, roles)],
-        ['Seen', EndpointDetailPresenter.seen(endpoint)],
+        ['Seen', EndpointDetailPresenter.seen(endpoint, model)],
         ['Credential cookies', credentialCookies.size > 0 ? this.ansi.clean([...credentialCookies].join(', ')) : 'none'],
         ['Other cookies', others.length > 0 ? this.ansi.clean(others.join(', ')) + ' (sent by the browser; not credentials)' : 'none'],
         ['Bearer', auth.bearer ? 'yes' : 'no'],

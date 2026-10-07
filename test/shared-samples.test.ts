@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { Curl, SampleText, Samples, Text } from '../src/shared/index.js';
 import type { Endpoint, FormField } from '../src/model/index.js';
 
@@ -52,15 +52,60 @@ test('requestSample fills path, query, csrf header and json body', () => {
   const literal = Curl.curlCommand(s);
   assert.match(literal, /^curl -sS -X POST 'https:\/\/api\.example\.com\/api\/items\/42\?page=1&q=a%20b' \\\n  -H 'x-csrf-token: \{\{csrf\}\}'/);
   const shell = Curl.curlCommand(s, { variables: 'shell', cookie: SampleText.placeholder('cookie'), multiline: false });
+  assert.ok(shell.startsWith('curl -sS '), shell);
   assert.ok(shell.includes(`-H "x-csrf-token: \${APPII_CSRF:?}"`), shell);
-  assert.ok(shell.includes(`--data-raw '{"name":"Thing","password":"'"\${APPII_PASSWORD}"'"}'`), shell);
+  assert.ok(shell.includes(`--data-binary @<(${Curl.encoderDefinition('json')}; printf -- '{"name":"Thing","password":"'; appii_json APPII_PASSWORD; printf -- '"}')`), shell);
   assert.ok(shell.includes(`-b "\${APPII_COOKIE}"`), shell);
   assert.deepEqual(Curl.placeholderNames(s), ['APPII_CSRF', 'APPII_PASSWORD']);
   assert.equal(String(s.cookie), 'csrf={{csrf}}');
-  const out = execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; }; APPII_CSRF=t1 APPII_PASSWORD='p "q' APPII_COOKIE='sid=1'; ${shell}`]).toString();
+  const out = execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; for a; do if [[ $a == @/dev/fd/* ]]; then cat "\${a#@}"; fi; done; }; APPII_CSRF=t1 APPII_PASSWORD='p "q\\' APPII_COOKIE='sid=1'; ${shell}`]).toString();
   assert.ok(out.includes('x-csrf-token: t1'));
-  assert.ok(out.includes('{"name":"Thing","password":"p "q"}'));
+  assert.ok(out.endsWith('\n{"name":"Thing","password":"p \\"q\\\\"}'), out);
+  assert.deepEqual(JSON.parse(out.slice(out.lastIndexOf('\n') + 1)), { name: 'Thing', password: 'p "q\\' });
   assert.ok(out.includes('sid=1'));
+});
+
+test('JSON placeholders in a shell example are escaped like appii_json, and their guards stop the command before curl runs (LV3-5)', () => {
+  const login = endpoint({ method: 'POST', path: '/api/login', requestBody: { mimeType: 'application/json', kind: 'json', examples: [{ user: 'nora' }] } });
+  const value = 'q"b\\s\nn\tt\r\u00e9\u007f\u0001';
+  const pass = SampleText.placeholder('pass').withMissing(new Map([['pass', 'the pass of GET /x']])).encoded('json');
+  const body = SampleText.concat('{"user":"', SampleText.required('user', 'the user name').encoded('json'), '","pass":"', pass, '","note":"', SampleText.placeholder('note', 'json'), '"}');
+  const sample = { ...Samples.requestSample(login), body: { kind: 'json' as const, mimeType: 'application/json', value: body } };
+  const command = Curl.curlCommand(sample, { variables: 'shell' });
+  assert.ok(command.startsWith(`: "\${APPII_USER:?}" "\${APPII_PASS:?}" && curl -sS -X POST `), command);
+  assert.ok(command.includes(`--data-binary @<(${Curl.encoderDefinition('json')}; printf -- '{"user":"'; appii_json APPII_USER; printf -- '","pass":"'; appii_json APPII_PASS;`), command);
+  assert.ok(!command.includes('$('), command);
+  assert.ok(Text.isAscii(command), command);
+  const send = (text: string, env: Record<string, string>) =>
+    spawnSync('bash', ['-c', `curl() { for a; do if [[ $a == @/dev/fd/* ]]; then cat "\${a#@}"; fi; done; }; ${text}`], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...env }, encoding: 'utf8' });
+  const sent = send(command, { APPII_USER: value, APPII_PASS: value, APPII_NOTE: value });
+  assert.equal(sent.status, 0, sent.stderr);
+  assert.deepEqual(JSON.parse(sent.stdout), { user: value, pass: value, note: value });
+  assert.ok(!/[\x00-\x1f\x7f]/.test(sent.stdout), sent.stdout);
+  assert.ok(sent.stdout.includes('\\u000a') && sent.stdout.includes('\\u007f') && sent.stdout.includes('\\"') && sent.stdout.includes('\\\\'), sent.stdout);
+  const plain = send(command, { APPII_USER: 'nora', APPII_PASS: 'p' });
+  assert.deepEqual(JSON.parse(plain.stdout), { user: 'nora', pass: 'p', note: '' });
+  const explained = Curl.curlCommand(sample, { variables: 'shell', explain: true });
+  assert.ok(explained.startsWith(`: "\${APPII_USER:?}" "\${APPII_PASS:?the pass of GET /x}" && curl`), explained);
+  for (const [env, name] of [[{ APPII_PASS: 'p' }, /APPII_USER: parameter null or not set/], [{ APPII_USER: 'nora' }, /APPII_PASS: the pass of GET \/x/]] as const) {
+    const stopped = send(explained.replace(/ && curl /, ' && printf ran && curl '), env);
+    assert.notEqual(stopped.status, 0);
+    assert.equal(stopped.stdout, '');
+    assert.match(stopped.stderr, name);
+  }
+});
+
+test('a raw body keeps its guards outside the process substitution, so an unset value stops curl', () => {
+  const upload = endpoint({ method: 'POST', path: '/upload', kind: 'form' });
+  const value = SampleText.concat('--b\r\nContent-Disposition: form-data; name="a\u0000"\r\n\r\n', SampleText.required('token', 'the token'), '\r\n--b--\r\n');
+  const sample = { ...Samples.requestSample(upload), body: { kind: 'text' as const, mimeType: 'multipart/form-data; boundary=b', value } };
+  const command = Curl.curlCommand(sample, { variables: 'shell' });
+  assert.ok(command.startsWith(`: "\${APPII_TOKEN:?}" && curl -sS -X POST `), command);
+  assert.match(command, /--data-binary @<\(printf -- '[^']*' "\$\{APPII_TOKEN\}"/);
+  const run = spawnSync('bash', ['-c', `curl() { printf 'ran\\n'; }; ${command}`], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, encoding: 'utf8' });
+  assert.notEqual(run.status, 0);
+  assert.equal(run.stdout, '');
+  assert.match(run.stderr, /APPII_TOKEN/);
 });
 
 test('form and multipart samples become curl field flags', () => {

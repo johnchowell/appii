@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AuthDetector, BodyParser, CredentialAnalyzer, CsrfSourceResolver, EndpointFactory, EndpointGrouper, HtmlPages, ModelBuilder, ModelValidator, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
+import { AuthDetector, BodyParser, CredentialAnalyzer, CsrfSourceResolver, EndpointFactory, EndpointGrouper, FormLinker, HtmlPages, ModelBuilder, ModelValidator, PageDocuments, PathTemplater, Redactor, SchemaInferrer } from '../src/build/index.js';
 import { FormExtractor, TokenDetector } from '../src/forms/index.js';
 import type { Capture, Endpoint } from '../src/model/index.js';
 import { Samples, Schema } from '../src/shared/index.js';
@@ -214,7 +214,7 @@ describe('AuthDetector evidence of requests without credentials (EXP2-8, QL-4, Q
     f.json('GET', '/api/missing', 404, { error: 'not found' });
     const capture = f.capture();
     const endpoints = group(capture);
-    const evidence = CredentialAnalyzer.create().analyze(capture, { loginPages: new Set([`${ORIGIN}/signin`]) });
+    const evidence = CredentialAnalyzer.create().analyze(capture, { loginPages: FormLinker.create().loginPages(capture) });
     detector().detect(endpoints, capture, evidence);
     assert.equal(find(endpoints, `GET ${ORIGIN}/members`).auth.anonymous, 'refused');
     assert.equal(find(endpoints, `GET ${ORIGIN}/go`).auth.anonymous, 'allowed');

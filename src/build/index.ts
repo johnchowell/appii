@@ -42,6 +42,7 @@ export { PageDocuments } from './page-documents.js';
 export type { PageDocument, PageDocumentsDeps } from './page-documents.js';
 export { CsrfSourceResolver } from './csrf-source-resolver.js';
 export type { CsrfSourceResolverDeps, PageField, TokenOrigin } from './csrf-source-resolver.js';
+export { LoginPages } from './login-pages.js';
 export { CredentialEvidence } from './credential-evidence.js';
 export type { CookieGeneration, CredentialEvidenceData, GenerationEvent } from './credential-evidence.js';
 export { CredentialAnalyzer } from './credential-analyzer.js';

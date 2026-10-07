@@ -18,6 +18,7 @@ export interface TokenOrigin {
   sourceUrl?: string;
   sourceMethod?: string;
   page?: PageField;
+  exchange?: Exchange;
 }
 
 export interface CsrfSourceResolverDeps {
@@ -33,6 +34,7 @@ interface PageToken {
   readonly url: string;
   readonly at: number;
   readonly served: boolean;
+  readonly exchange?: Exchange;
 }
 
 interface Position {
@@ -63,6 +65,7 @@ interface ResponseToken {
   readonly method: string;
   readonly start: number;
   readonly index: number;
+  readonly exchange: Exchange;
 }
 
 export class CsrfSourceResolver {
@@ -76,13 +79,15 @@ export class CsrfSourceResolver {
 
   constructor(capture: Capture, deps: CsrfSourceResolverDeps) {
     const headers = deps.headers ?? new HeaderPolicy({ tokens: deps.tokens });
-    const snapshots = deps.documents.of(capture).filter((document) => document.page.source === 'snapshot');
-    for (const { page, doc, forms } of [...snapshots, ...deps.documents.served(capture)]) {
+    const byId = new Map(capture.exchanges.map((exchange) => [exchange.id, exchange]));
+    for (const { page, doc, forms } of deps.documents.all(capture)) {
       const served = page.source === 'response';
-      for (const [name, value] of Object.entries(deps.tokens.documentTokens(doc))) this.#metas.push({ name, value, url: page.url, at: page.at, served });
+      const exchange = page.exchange === undefined ? undefined : byId.get(page.exchange);
+      const at = { url: page.url, at: page.at, served, ...(exchange === undefined ? {} : { exchange }) };
+      for (const [name, value] of Object.entries(deps.tokens.documentTokens(doc))) this.#metas.push({ name, value, ...at });
       for (const form of forms) {
         for (const field of form.fields) {
-          if (field.type === 'hidden' && field.name !== '' && field.value !== '') this.#hidden.push({ name: field.name, value: field.value, url: page.url, at: page.at, served });
+          if (field.type === 'hidden' && field.name !== '' && field.value !== '') this.#hidden.push({ name: field.name, value: field.value, ...at });
         }
       }
     }
@@ -94,7 +99,7 @@ export class CsrfSourceResolver {
       const start = Helpers.startMs(exchange);
       const record = (value: string, name: string): void => {
         if (value.length < CsrfSourceResolver.MIN_TOKEN_LENGTH) return;
-        const token: ResponseToken = { name, url: exchange.request.url, method: exchange.request.method.toUpperCase(), start, index };
+        const token: ResponseToken = { name, url: exchange.request.url, method: exchange.request.method.toUpperCase(), start, index, exchange };
         const list = this.#responses.get(value);
         if (list) list.push(token);
         else this.#responses.set(value, [token]);
@@ -169,11 +174,11 @@ export class CsrfSourceResolver {
     const meta = CsrfSourceResolver.#pick(metas, lookup.page);
     const field = CsrfSourceResolver.#pick(hidden, lookup.page);
     const page: PageField | undefined = meta ? { kind: 'meta', name: meta.name } : field ? { kind: 'hidden-field', name: field.name } : undefined;
-    return { source: 'response', sourceName: response.name, sourceUrl: response.url, sourceMethod: response.method, ...(page ? { page } : {}) };
+    return { source: 'response', sourceName: response.name, sourceUrl: response.url, sourceMethod: response.method, ...(page ? { page } : {}), exchange: response.exchange };
   }
 
   static #page(kind: PageField['kind'], token: PageToken): TokenOrigin {
-    return { source: kind, sourceName: token.name, sourceUrl: token.url, page: { kind, name: token.name } };
+    return { source: kind, sourceName: token.name, sourceUrl: token.url, page: { kind, name: token.name }, ...(token.exchange === undefined ? {} : { exchange: token.exchange }) };
   }
 
   static #documentOf(exchange: Exchange): string | undefined {

@@ -1,6 +1,6 @@
 import type { ApiModel, Endpoint, EndpointLogin, FormDescriptor } from '../model/index.js';
 import { LoginFormDetector } from '../forms/index.js';
-import { Ansi, Credentials, EndpointIndex, Http, Text } from '../shared/index.js';
+import { Ansi, Credentials, EndpointIndex, Http, Meta, Text } from '../shared/index.js';
 import type { CookieRoles } from '../shared/index.js';
 import { BarChart } from './bar-chart.js';
 import { CookieListPresenter } from './cookie-list-presenter.js';
@@ -33,10 +33,12 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   static readonly NOT_SUBMITTED = 'known from a form; not submitted yet';
   static readonly NOTHING_ISSUED = 'submitted, but no credential was issued';
   static readonly AUTHENTICATED_ONLY = 'seen only with a logged-in credential';
+  static readonly FOUND_AFTER_LOGIN = 'found only on pages loaded while logged in; no request observed';
   static readonly REFUSED_ONLY = 'refused requests without credentials';
   static readonly SCRIPTED_FORM = 'has no action, so a script probably sends it';
   static readonly UNRECORDED_FORM = 'no request with its password was recorded';
-  static readonly RECORD_LOGIN = 'log in with --login to record its request';
+  static readonly LOG_IN = 'or log in with --login';
+  static readonly PROBE_FLAGS = '--headless --probe-login';
   static readonly REFUSED_HINT = `a status such as 401${Credentials.UNKNOWN_MARK} means the endpoint refused a request without credentials and the credential it expects was not captured`;
 
   readonly #format: EndpointFormatter;
@@ -176,8 +178,13 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     const fields = LoginFormDetector.detect(form);
     const names = [fields?.identifier, fields?.password].filter((name): name is string => name !== undefined && name !== '');
     const where = `on ${EndpointListPresenter.#place(model, form.pageUrl)}${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
-    if (form.explicitAction === false) return `${where} ${EndpointListPresenter.SCRIPTED_FORM}; ${EndpointListPresenter.RECORD_LOGIN}`;
-    return `${where} submits to ${form.method} ${EndpointListPresenter.#place(model, form.action)}, but ${EndpointListPresenter.UNRECORDED_FORM}; ${EndpointListPresenter.RECORD_LOGIN}`;
+    const record = EndpointListPresenter.recordLogin(form.pageUrl);
+    if (form.explicitAction === false) return `${where} ${EndpointListPresenter.SCRIPTED_FORM}; ${record}`;
+    return `${where} submits to ${form.method} ${EndpointListPresenter.#place(model, form.action)}, but ${EndpointListPresenter.UNRECORDED_FORM}; ${record}`;
+  }
+
+  static recordLogin(pageUrl: string): string {
+    return `record its request without an account with ${Meta.APP_NAME} capture ${BasePresenter.shellWord(pageUrl)} ${EndpointListPresenter.PROBE_FLAGS}, ${EndpointListPresenter.LOG_IN}`;
   }
 
   static #place(model: ApiModel, value: string): string {
@@ -205,8 +212,13 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     }
     const refused = endpoints.filter((endpoint) => endpoint.auth.anonymous === 'refused').map((endpoint) => index.numberOf(endpoint));
     if (refused.length > 0) entries.push(['Login needed', `${CookieListPresenter.ranges(refused)} (${EndpointListPresenter.REFUSED_ONLY})`]);
-    const authenticated = endpoints.filter((endpoint) => endpoint.auth.seen?.length === 1 && endpoint.auth.seen[0] === 'authenticated').map((endpoint) => index.numberOf(endpoint));
-    if (authenticated.length > 0) entries.push(['After login', `${CookieListPresenter.ranges(authenticated)} (${EndpointListPresenter.AUTHENTICATED_ONLY})`]);
+    const authenticated = endpoints.filter((endpoint) => Credentials.authenticatedOnly(endpoint)).map((endpoint) => index.numberOf(endpoint));
+    const found = endpoints.filter((endpoint) => Credentials.foundAfterLogin(model, endpoint)).map((endpoint) => index.numberOf(endpoint));
+    const after = [
+      ...(authenticated.length > 0 ? [`${CookieListPresenter.ranges(authenticated)} (${EndpointListPresenter.AUTHENTICATED_ONLY})`] : []),
+      ...(found.length > 0 ? [`${CookieListPresenter.ranges(found)} (${EndpointListPresenter.FOUND_AFTER_LOGIN})`] : []),
+    ];
+    if (after.length > 0) entries.push(['After login', after.join('; ')]);
     return entries.length > 0 ? this.definitions(entries) : undefined;
   }
 

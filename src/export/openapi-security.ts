@@ -89,12 +89,21 @@ export class OpenApiSecurity {
       : [];
     const role = info?.role ?? 'session';
     const kind = role === 'auth' ? 'Authentication' : role === 'session' ? 'Session' : 'Credential';
-    const lines = [`${kind} cookie ${name}${flags.length > 0 ? ` (${flags.join(', ')})` : ''}${info && info.setBy.length > 0 ? `, set by ${info.setBy.join(', ')}` : ''}.`];
+    const setters = this.#names(info?.setBy ?? []);
+    const lines = [`${kind} cookie ${name}${flags.length > 0 ? ` (${flags.join(', ')})` : ''}${setters.length > 0 ? `, set by ${setters.join(', ')}` : ''}.`];
     const issuers = this.#endpoints(this.#model.cookies.filter((cookie) => cookie.name === name).flatMap((cookie) => cookie.issuedBy ?? []));
     const revokers = this.#endpoints(this.#model.cookies.filter((cookie) => cookie.name === name).flatMap((cookie) => cookie.revokedBy ?? []));
     lines.push(...this.#login(issuers));
     if (revokers.length > 0) lines.push(`The logout ${revokers.length === 1 ? 'operation' : 'operations'} ${revokers.map((endpoint) => this.operation(endpoint)).join(', ')} ${revokers.length === 1 ? 'revokes' : 'revoke'} it.`);
     return this.#components.scheme(`cookie:${name}`, `${name} cookie`, { type: 'apiKey', in: 'cookie', name, description: lines.join(' ') });
+  }
+
+  #names(ids: readonly string[]): string[] {
+    const names = ids.map((id) => {
+      const endpoint = this.#guide.endpoint(id);
+      return endpoint === undefined ? id : this.operation(endpoint);
+    });
+    return [...new Set(names)];
   }
 
   #endpoints(ids: readonly string[]): Endpoint[] {

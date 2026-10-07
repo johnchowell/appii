@@ -68,6 +68,8 @@ export const FIRST_PRINTABLE = 0x20;
 export const LAST_PRINTABLE = 0x7e;
 export const ARGUMENT_HELPER = 'appii_curl_args';
 export const REQUIRED_OPERATOR = ':?';
+export const GUARD_COMMAND = ':';
+export const GUARD_JOIN = '&&';
 export const VALUE_OPTIONS: readonly string[] = Object.freeze([
   '--abstract-unix-socket', '--alt-svc', '--aws-sigv4', '--cacert', '--capath', '--cert', '--cert-type', '--ciphers', '--config', '--connect-timeout',
   '--connect-to', '--continue-at', '--cookie', '--cookie-jar', '--create-file-mode', '--crlfile', '--curves', '--data', '--data-ascii', '--data-binary',
@@ -104,16 +106,20 @@ export const HELPER_FUNCTIONS: readonly string[] = Object.freeze([
 export function encoderHelper(encoding: PlaceholderEncoding): string[] {
   return [
     `${ENCODING_HELPERS[encoding]}() {`,
-    "  local byte out=''",
-    `  for byte in $(printf '%s' "\${!1-}" | od -An -v -tx1); do`,
-    '    case $byte in',
-    ...ENCODER_CASES[encoding].map((line) => `      ${line}`),
-    '    esac',
-    '    out+=$byte',
+    `  printf '%s' "\${!1-}" | od -An -v -tx1 | while read -r line; do`,
+    '    for byte in $line; do',
+    '      case $byte in',
+    ...ENCODER_CASES[encoding].map((line) => `        ${line}`),
+    '      esac',
+    `      printf '%s' "$byte"`,
+    '    done',
     '  done',
-    `  printf '%s' "$out"`,
     '}',
   ];
+}
+
+export function encoderDefinition(encoding: PlaceholderEncoding): string {
+  return ShellScript.oneLine(encoderHelper(encoding));
 }
 
 export function argumentHelper(): string[] {
@@ -156,9 +162,13 @@ export function variableName(name: string): string {
 export function variableReference(name: string, part: PlaceholderPart, variables: VariableMode, variable: (name: string) => string = variableName, explain: (variable: string) => boolean = () => false): string {
   const helper = variables === 'script' && part.encoding !== undefined ? ENCODING_HELPERS[part.encoding] : undefined;
   if (helper !== undefined) return `$(${helper} ${variable(name)})`;
-  if (variables !== 'shell' || (part.required === undefined && part.missing === undefined)) return `\${${variable(name)}}`;
+  if (variables !== 'shell' || !guarded(part)) return `\${${variable(name)}}`;
   const message = part.required === undefined && part.missing !== undefined && explain(variable(name)) ? ShellScript.expansionWord(part.missing) : '';
   return `\${${variable(name)}${REQUIRED_OPERATOR}${message}}`;
+}
+
+export function guarded(part: PlaceholderPart): boolean {
+  return part.required !== undefined || part.missing !== undefined;
 }
 
 export function firstUse(enabled: boolean): (variable: string) => boolean {
@@ -226,24 +236,50 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   const variable = opts.variable ?? variableName;
   const explain = firstUse(opts.explain === true);
   const arg = (text: SampleTextInput): string => shellArg(text, vars, variable, explain);
+  const raw = rawBody(sample.body) ?? (vars === 'shell' ? encodedBody(sample.body) : undefined);
+  const guards = vars === 'shell' && raw ? rawGuards(raw, variable, explain) : [];
   const head: string[] = ['curl', '-sS'];
   if (sample.method === HEAD_METHOD) head.push(HEAD_FLAG);
   else if (sample.method !== GET_METHOD || sample.body) head.push('-X', shellWord(sample.method));
   head.push(arg(sample.url));
   const groups: string[][] = [head];
-  const raw = rawBody(sample.body);
   for (const header of sample.headers) groups.push(['-H', arg(SampleText.concat(`${header.name}: `, header.value))]);
   if (raw?.contentType !== undefined) groups.push(['-H', arg(`Content-Type: ${raw.contentType}`)]);
   if (sample.user) groups.push([USER_FLAG, arg(sample.user)]);
   const cookie = opts.cookie ?? sample.cookie;
   if (cookie) groups.push(['-b', arg(cookie)]);
   if (opts.jar !== undefined) groups.push(['-b', opts.jar, '-c', opts.jar]);
-  if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable, explain)})`]);
+  if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
   else groups.push(...bodyGroups(sample.body, arg, vars));
   groups.push([COMPRESSED_FLAG]);
   for (const extra of opts.extraArgs ?? []) groups.push([extra]);
   const parts = groups.map((group) => group.join(' '));
-  return ShellScript.ascii(opts.multiline === false ? parts.join(' ') : parts.join(CONTINUATION));
+  const command = opts.multiline === false ? parts.join(' ') : parts.join(CONTINUATION);
+  return ShellScript.ascii(guards.length > 0 ? `${GUARD_COMMAND} ${guards.join(' ')} ${GUARD_JOIN} ${command}` : command);
+}
+
+export function encodedBody(body: SampleBody | undefined): RawBody | undefined {
+  const text = bodyText(body);
+  if (!body || !text || !text.parts.some((part) => part.kind === 'placeholder' && part.encoding !== undefined)) return undefined;
+  return { chunks: [{ kind: 'text', text, ...(body.charset === undefined ? {} : { charset: body.charset }) }] };
+}
+
+export function bodyText(body: SampleBody | undefined): SampleText | undefined {
+  if (!body || body.value === undefined) return undefined;
+  if ((body.kind === 'form' || body.kind === 'multipart') && isRecord(body.value)) return undefined;
+  return body.value instanceof SampleText ? body.value : jsonText(body.value);
+}
+
+function rawGuards(raw: RawBody, variable: (name: string) => string, explain: (variable: string) => boolean): string[] {
+  const guards = new Map<string, string>();
+  for (const chunk of raw.chunks) {
+    if (chunk.kind !== 'text') continue;
+    for (const part of chunk.text.parts) {
+      if (part.kind !== 'placeholder' || !guarded(part) || guards.has(variable(part.name))) continue;
+      guards.set(variable(part.name), `"${variableReference(part.name, { ...part, encoding: undefined }, 'shell', variable, explain)}"`);
+    }
+  }
+  return [...guards.values()];
 }
 
 function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) => string, vars: VariableMode): string[][] {
@@ -261,7 +297,8 @@ function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) =
   if (body.kind === 'multipart' && isRecord(body.value)) {
     return formEntries(body.value).map((entry) => (entry.file ? [MULTIPART_FILE_FLAG, arg(fileField(entry))] : [MULTIPART_TEXT_FLAG, arg(SampleText.concat(`${entry.name}=`, entry.value))]));
   }
-  return [[RAW_FLAG, arg(body.value instanceof SampleText ? body.value : jsonText(body.value))]];
+  const text = bodyText(body);
+  return text ? [[RAW_FLAG, arg(text)]] : [];
 }
 
 function fileField(entry: FormEntry): SampleTextInput {
@@ -292,8 +329,9 @@ function multipartBody(entries: readonly FormEntry[], charset: string | undefine
   return { contentType: MULTIPART_CONTENT_TYPE + mark, chunks };
 }
 
-function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: string) => string, explain: (variable: string) => boolean): string {
+function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: string) => string): string {
   const commands: string[] = [];
+  const encodings = new Set<PlaceholderEncoding>();
   let format = '';
   let args: string[] = [];
   const flush = (): void => {
@@ -312,14 +350,19 @@ function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: strin
     for (const part of chunk.text.parts) {
       if (part.kind === 'literal') format += printfFormat(encoder.encode(part.text));
       else if (vars === 'literal') format += printfFormat(new TextEncoder().encode(SampleText.DISPLAY.placeholder(part.name, part)));
-      else {
+      else if (part.encoding !== undefined) {
+        flush();
+        commands.push(`${ENCODING_HELPERS[part.encoding]} ${variable(part.name)}`);
+        encodings.add(part.encoding);
+      } else {
         format += PRINTF_PLACEHOLDER;
-        args.push(`"${variableReference(part.name, { ...part, encoding: undefined }, vars, variable, explain)}"`);
+        args.push(`"\${${variable(part.name)}}"`);
       }
     }
   }
   flush();
-  return commands.join('; ');
+  const helpers = vars === 'shell' ? [...encodings].map((encoding) => encoderDefinition(encoding)) : [];
+  return [...helpers, ...commands].join('; ');
 }
 
 function printfFormat(bytes: Uint8Array): string {

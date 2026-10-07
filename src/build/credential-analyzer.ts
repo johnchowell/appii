@@ -8,6 +8,7 @@ import { CookieInventory } from './cookie-inventory.js';
 import { CredentialEvidence } from './credential-evidence.js';
 import type { GenerationEvent } from './credential-evidence.js';
 import { HeaderPolicy } from './header-policy.js';
+import { LoginPages } from './login-pages.js';
 import { Redactor } from './redactor.js';
 
 export interface CredentialAnalyzerDeps {
@@ -19,7 +20,7 @@ export interface CredentialAnalyzerDeps {
 
 export interface CredentialInput {
   passwordFields?: ReadonlySet<string>;
-  loginPages?: ReadonlySet<string>;
+  loginPages?: LoginPages;
   identifierFields?: ReadonlySet<string>;
   personalFields?: ReadonlySet<string>;
 }
@@ -128,7 +129,7 @@ export class CredentialAnalyzer {
     const role = (name: string): CookieRole => roles.get(name) ?? classify(name);
     const positions = new Map(ordered.map((exchange, at) => [exchange, at]));
     const generations = this.#generations(ordered, role, input);
-    return new CredentialEvidence({ roles, generations, positions, loginPages: input.loginPages ?? new Set(), classify });
+    return new CredentialEvidence({ roles, generations, positions, loginPages: input.loginPages ?? LoginPages.none(), classify });
   }
 
   isCredentialSubmission(exchange: Exchange, input: CredentialInput = {}): boolean {
@@ -208,11 +209,10 @@ export class CredentialAnalyzer {
     return typeof value === 'number' ? [String(value)] : [];
   }
 
-  static #refused(exchange: Exchange, loginPages: ReadonlySet<string>): boolean {
+  static #refused(exchange: Exchange, pages: LoginPages): boolean {
     const status = exchange.response?.status;
     if (status !== undefined && status >= CredentialAnalyzer.CLIENT_ERROR_MIN && status <= CredentialAnalyzer.CLIENT_ERROR_MAX) return true;
-    const target = CredentialEvidence.redirectTarget(exchange);
-    return target !== undefined && CredentialEvidence.loginPage(target, loginPages);
+    return pages.ledTo(exchange);
   }
 
   #hasPassword(value: unknown, input: CredentialInput): boolean {
@@ -250,7 +250,7 @@ export class CredentialAnalyzer {
   }
 
   #evidenced(ordered: readonly Exchange[], roles: ReadonlyMap<string, CookieRole>, input: CredentialInput): Set<string> {
-    const pages = input.loginPages ?? new Set<string>();
+    const pages = input.loginPages ?? LoginPages.none();
     const out = this.#attributed(ordered, roles, pages);
     ordered.forEach((exchange, at) => {
       const set = CredentialAnalyzer.setCookies(exchange).filter((cookie) => cookie.value !== '' && roles.get(cookie.name) === CredentialAnalyzer.PRIOR_ROLE);
@@ -271,7 +271,7 @@ export class CredentialAnalyzer {
     return presented.size > 0 && !later.some((other) => this.#headerCredentials(other).some((entry) => presented.has(entry)));
   }
 
-  #attributed(ordered: readonly Exchange[], roles: ReadonlyMap<string, CookieRole>, pages: ReadonlySet<string>): Set<string> {
+  #attributed(ordered: readonly Exchange[], roles: ReadonlyMap<string, CookieRole>, pages: LoginPages): Set<string> {
     const targets = new Map<string, { refused: Exchange[]; accepted: Exchange[] }>();
     for (const exchange of ordered) {
       const url = Http.parseUrl(exchange.request.url);
@@ -331,7 +331,7 @@ export class CredentialAnalyzer {
       const set = CredentialAnalyzer.setCookies(exchange).filter((cookie) => cookie.value !== '' && credential(cookie.name));
       if (set.length === 0) return;
       const carried = CredentialAnalyzer.sent(exchange).some((cookie) => credential(cookie.name) && cookie.value !== '' && current(cookie.name, cookie.value)?.generation !== 'anonymous');
-      const submitted = this.isCredentialSubmission(exchange, input) && !CredentialAnalyzer.#refused(exchange, input.loginPages ?? new Set());
+      const submitted = this.isCredentialSubmission(exchange, input) && !CredentialAnalyzer.#refused(exchange, input.loginPages ?? LoginPages.none());
       const authenticated = submitted || (carried && !CredentialAnalyzer.isSignOut(exchange));
       for (const cookie of set) {
         const key = CredentialEvidence.key(cookie.name, cookie.value);

@@ -22,13 +22,14 @@ function section(markdown: string, heading: RegExp): string {
 describe('Markdown and HTML show the login, the logout, the anonymous state and the login hint (L3, QL-2, QL-3, QL-6)', () => {
   test('the Markdown summary names the login and the logout with what they issue and revoke', () => {
     const markdown = new MarkdownExporter().export(LoginModels.form(ORIGIN)).content;
-    assert.match(markdown, /\| Login \| \[\\#\d+ POST \/login\]\(#\d+-post-login\): Login: sends the user name in `username` and the password in `password`, and issues the cookie `session`\. \|/);
-    assert.match(markdown, /\| Logout \| \[\\#\d+ GET \/logout\]\(#\d+-get-logout\): Logout: revokes the cookie `session`\. \|/);
+    assert.match(markdown, /\| Login \| \[\\#\d+ POST \/login\]\(#\d+-post-login\): sends the user name in `username` and the password in `password`, and issues the cookie `session`\. \|/);
+    assert.match(markdown, /\| Logout \| \[\\#\d+ GET \/logout\]\(#\d+-get-logout\): revokes the cookie `session`\. \|/);
+    assert.doesNotMatch(markdown, /\| (Login|Logout) \| [^|\n]*\): (Login|Logout): /);
   });
 
   test('an anonymous capture names the login form that was not submitted yet', () => {
     const markdown = new MarkdownExporter().export(LoginModels.anonymous(ORIGIN)).content;
-    assert.match(markdown, /\| Login \| \[\\#\d+ POST \/login\]\([^)]+\): Login: sends the user name in `username` and the password in `password`; known from a form; not submitted yet\. \|/);
+    assert.match(markdown, /\| Login \| \[\\#\d+ POST \/login\]\([^)]+\): sends the user name in `username` and the password in `password`; known from a form; not submitted yet\. \|/);
   });
 
   test('the Markdown table marks the login and logout rows and the details give role, anonymous state, seen states and the login hint', () => {
@@ -57,8 +58,10 @@ describe('Markdown and HTML show the login, the logout, the anonymous state and 
   test('the HTML report has login and logout facts, role badges, the anonymous state and the hint', () => {
     const model = LoginModels.form(ORIGIN);
     const html = new HtmlExporter().export(model).content;
-    assert.match(html, /<dt>Login<\/dt><dd><a href="#endpoint-\d+">#\d+ POST \/login<\/a>: Login: sends the user name in <code>username<\/code> and the password in <code>password<\/code>, and issues the cookie <code>session<\/code>\.<\/dd>/);
-    assert.match(html, /<dt>Logout<\/dt><dd><a href="#endpoint-\d+">#\d+ GET \/logout<\/a>: Logout: revokes the cookie <code>session<\/code>\.<\/dd>/);
+    assert.match(html, /<dt>Login<\/dt><dd><a href="#endpoint-\d+">#\d+ POST \/login<\/a>: sends the user name in <code>username<\/code> and the password in <code>password<\/code>, and issues the cookie <code>session<\/code>\.<\/dd>/);
+    assert.match(html, /<dt>Logout<\/dt><dd><a href="#endpoint-\d+">#\d+ GET \/logout<\/a>: revokes the cookie <code>session<\/code>\.<\/dd>/);
+    assert.doesNotMatch(html, /<dt>(Login|Logout)<\/dt><dd><a [^>]*>[^<]*<\/a>: (Login|Logout): /);
+    assert.match(html, /<dt>Role<\/dt><dd>Login: sends the user name in <code>username<\/code>/);
     assert.match(html, /<span class="badge role" title="the login: it issues the credential">login<\/span>/);
     assert.match(html, /<span class="badge role" title="the logout: it revokes the credential">logout<\/span>/);
     assert.match(html, /<span class="badge auth" title="anonymous access not tested">auth~<\/span>/);

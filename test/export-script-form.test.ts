@@ -131,3 +131,19 @@ describe('a request sent by a script of a form is not described as the form subm
     assert.deepEqual(har.log.entries[0]?.request.postData?.params, [{ name: 'username', value: 'caf\u00e9' }]);
   });
 });
+
+describe('a form selector that crosses a shadow root carries its notation into every export', () => {
+  test('OpenAPI, Markdown, HTML, Postman and the TS client name the >> notation next to the selector', () => {
+    const endpoint = ScriptForms.script();
+    endpoint.form = ScriptForms.form('script', { selector: 'tb-app >> form#login' });
+    const model = ExportModel.model([endpoint]);
+    const outputs = [
+      new OpenApiExporter().export(model).content,
+      new MarkdownExporter().export(model).content,
+      new HtmlExporter().export(model).content,
+      new PostmanExporter().export(model).content,
+      new TypeScriptExporter().export(model).content,
+    ];
+    for (const output of outputs) assert.ok(output.includes('enters the open shadow root of the element matched before it'), output.slice(0, 400));
+  });
+});

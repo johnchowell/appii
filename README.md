@@ -257,7 +257,10 @@ path and partition key (the cookie identity of RFC 6265bis) the capture that
 ended last wins. The start URL is the one of the earliest capture, and the
 model covers the time from the earliest start to the latest end. With more
 than one input, `source.captures` in `api.json` lists each input with its
-file, start URL, time span and number of requests. An input whose requests all
+file, start URL, time span and number of requests. The number of requests
+counts the recorded requests only, like `source.exchanges`: a request that
+`--probe-login` stopped in the browser is not one (the capture summary lists it
+under `Probed`), so the numbers in `Built from` add up to `Requests`. An input whose requests all
 come from an input given before it (the same file given twice, or a copy of
 it) adds nothing, so it is listed once, in `source.captures` and in `Built
 from`, and appii says so on stderr:
@@ -297,6 +300,13 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
   is `allowed` when a request without a logged-in credential got an answer
   that is not a failure (not 401 or 403 and not a redirect to the login page;
   a 302 or 303 to another page counts), so the credentials are optional;
+  a redirect goes to the login page when the page it led to (the request the
+  browser made for it, and the snapshots of that page taken before it loaded
+  again) showed a login form, or when its path names a sign-in
+  (`/login`, `/users/sign_in`); a page that showed the login form only while
+  logged out, such as a single-page app route that renders the login form
+  until the user logs in, does not make a later logged-in visit, or the login
+  that redirects to it, a refusal;
   `list` then shows them with a `?` (`cookie?`). It is `refused` when every
   such request failed, and `untested` when no request without credentials was
   seen, as for an endpoint known only from a form. `auth.seen` says whether
@@ -365,7 +375,13 @@ only then in a meta tag or hidden field that exists only in the page snapshot.
 A login form that a script renders with the token it fetched from
 `/api/csrf` therefore names `GET /api/csrf` and its `csrfToken` field, which
 the TypeScript client, the `curl` script and Postman fetch before they log in.
-`sessionCookies` names the cookies the token is bound to.
+`sessionCookies` names the cookies the token is bound to: the cookies that
+the request with the token sent with the same value that the token's source
+response set, or that the source request sent and the server kept, whatever
+their names (a session cookie with a name that says nothing, such as `tbk`,
+included), and the logged-in credential cookies the request sent. Analytics and
+preference cookies are never bound. `list --show` shows them under `BOUND TO`
+and its example request sends them with `-b`.
 
 The login role goes to an endpoint that accepts the password field of the
 login form (in its query or request body) or that received a credential
@@ -421,8 +437,12 @@ name (`appii-test` for `appii-test@example.com`). If a response to a logged-in
 request returns that local part (at least 3 characters) as a whole JSON string
 or as a whole HTML text node, it is personal data too, and appii replaces it
 where it is a whole value: a JSON string, a text node, a URL path segment or a
-query value equal to it. Text that merely contains it (`Hello appii-test`,
-`appii-test-notes`) is kept, so no other content is replaced.
+query value equal to it. The same holds for a user name that is too short to
+be replaced by value (3 to 5 characters, such as `nora`): when a logged-in
+response returns it as a whole JSON string or text node, it is replaced where
+it is a whole value. Text that merely contains it (`Hello appii-test`,
+`appii-test-notes`, `Ask nora about the plan`) is kept, so no other content is
+replaced.
 
 #### Path templates
 
@@ -492,15 +512,23 @@ appeared only after the login:
 ```text
 Login:       #4 POST /login with username and password, issues cookie session
 Logout:      #5 GET /logout, revokes cookie session
-After login: 2,5-7 (seen only with a logged-in credential)
+After login: 2,5-7 (seen only with a logged-in credential); 3 (found only on pages loaded while logged in; no request observed)
 ```
+
+An endpoint known only from a form (0 hits) is listed under `After login` when
+every page the form was found on loads only while logged in: the model has
+requests for that page, and they were all seen logged in or refused without
+credentials, such as a change-password form on `/account`. `--show` then says
+`Seen: not observed; its form was found only on pages loaded while logged in`.
 
 A login known only from a form says `known from a form; not submitted yet`.
 A login form whose request was not recorded, such as a form without an action
-that a script submits, has no login endpoint yet; `list` names the form:
+that a script submits, has no login endpoint yet; `list` names the form and the
+two ways to record its request, without an account (`--probe-login`) or with
+one (`--login`):
 
 ```text
-Login form:   on /login (username, password) has no action, so a script probably sends it; log in with --login to record its request
+Login form:   on /login (username, password) has no action, so a script probably sends it; record its request without an account with appii capture https://example.com/login --headless --probe-login, or log in with --login
 ```
 The `AUTH` column marks the rows `login` and `logout`. A credential label that
 ends in `?` means that the endpoint also answered a request without that
@@ -559,7 +587,13 @@ body, says where a redirect leads, and splits the cookies the endpoint needs
 from the other cookies the browser sent. A form
 field whose `<select>` options change with the page state shows
 `options vary by page state` with the options seen. Its `Form source` block
-names the page, the form and its fields; for a request that a script of the
+names the page, the form and its fields. The form selector has one CSS
+selector per tree scope: when the form is inside an open shadow root, ` >> `
+separates the selector of the shadow host from the selector inside its shadow
+root (`:root > body:nth-child(2) > tb-app:nth-child(2) >> form:nth-child(2)`),
+and a `Notation:` line says so. Playwright reads such a selector as is; in the
+DOM, run each part with `querySelector` on the shadow root of the element the
+part before it found. For a request that a script of the
 form sent (`submittedBy: script`) it says `Sent by: a script of the form, not
 the form itself` and `Sent as:` the type the script sent, instead of the
 form's own enctype and submit buttons.
@@ -696,9 +730,12 @@ logged in. The login identifier and password have no default values.
 
 In OpenAPI, the login operation has `security: []` and `x-appii-role: login`
 (the logout has `x-appii-role: logout`), and the description of each
-credential security scheme names the login operation that issues it. An
-operation whose anonymous access was not tested lists `{}` as an alternative
-to its credentials and says so.
+credential security scheme names the operations that set the cookie, the
+login operation that issues it and the logout operation that revokes it, each
+by its operationId and its method and path, for example `Session cookie
+session (HttpOnly), set by getLoginPage (GET /login), postLogin (POST /login),
+getLogout (GET /logout).` An operation whose anonymous access was not tested
+lists `{}` as an alternative to its credentials and says so.
 
 Postman orders the collection for a Collection Runner run: the folder of the
 login comes first (after the folder of the page that holds its CSRF token,
@@ -711,6 +748,12 @@ login that returns a bearer token has a test script that stores it in
 description names the login request and its folder, the variables without a
 default that you set first (the user name and the password), the variables
 that the test scripts fill, and the order.
+
+The summary of the Markdown and HTML reports has a `Login` row and a `Logout`
+row that link the endpoint and say what it sends and issues or revokes
+(`Login | #3 POST /login: sends the user name in username and the password in
+password, and issues the cookie session.`); the endpoint details say the same
+after `Role: Login:` or `Role: Logout:`.
 
 The Markdown and HTML reports name the session cookie a CSRF token is bound to
 (`csrfToken.sessionCookies`: the token is only valid with the cookie that the
@@ -727,6 +770,21 @@ function that gets it, so it never sends an empty token:
 The example in `list --show` stops the same way with the shell's own message
 (`${APPII_CSRF_TOKEN:?}`), because it folds the command to the terminal width.
 Site text in the message is percent-encoded where the shell would read it.
+
+A value that goes into a JSON body is escaped for JSON (backslash, double
+quote, and control characters as `\u00XX`) by the same `appii_json` encoder
+that the curl export uses, so a password with a quote or a backslash arrives
+as the same string. The example then sends the body from a process
+substitution that defines the encoder, and the checks for the values in that
+body come first, so an unset value stops the command before curl runs
+(encoder shortened here):
+
+```sh
+: "${APPII_USERNAME:?}" "${APPII_PASSWORD:?}" && curl -sS -X POST 'https://example.com/api/auth/login' \
+  -H 'Content-Type: application/json' \
+  --data-binary @<(appii_json() { ...; }; printf -- '{"username":"'; appii_json APPII_USERNAME; printf -- '","password":"'; appii_json APPII_PASSWORD; printf -- '"}') \
+  --compressed
+```
 For a login, and for an endpoint whose CSRF token comes from a page, a
 `Session steps` paragraph says how to get the token and gives the curl export
 commands that do it with a cookie jar, with the name of the curl function:

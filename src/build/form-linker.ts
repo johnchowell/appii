@@ -11,6 +11,7 @@ import { FormInventory } from './form-inventory.js';
 import { FormSchemaCombiner } from './form-schema-combiner.js';
 import { Helpers } from './helpers.js';
 import { HtmlPages } from './html-pages.js';
+import { LoginPages } from './login-pages.js';
 import { ObservedSubmissions } from './observed-submissions.js';
 import type { ObservedSubmission } from './observed-submissions.js';
 import { PageDocuments } from './page-documents.js';
@@ -166,14 +167,8 @@ export class FormLinker {
     return names;
   }
 
-  loginPages(capture: Capture): Set<string> {
-    const pages = new Set<string>();
-    for (const form of this.#collector.collect(capture)) {
-      if (!LoginFormDetector.isLogin(form)) continue;
-      const url = Helpers.httpUrl(form.pageUrl);
-      if (url) pages.add(url.origin + url.pathname);
-    }
-    return pages;
+  loginPages(capture: Capture): LoginPages {
+    return new LoginPages(this.#collector.pages(capture), capture.exchanges);
   }
 
   identifierFields(capture: Capture): Set<string> {

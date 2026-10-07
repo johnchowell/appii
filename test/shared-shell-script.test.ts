@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { ShellScript, Text } from '../src/shared/index.js';
+import { Curl, ShellScript, Text } from '../src/shared/index.js';
 
 function bash(command: string): Promise<string> {
   return new Promise<string>((resolve, reject) =>
@@ -41,5 +41,17 @@ describe('ShellScript', () => {
     assert.ok(Text.isAscii(command));
     assert.ok(!/[\x00-\x09\x0b-\x1f\x7f]/.test(command), command);
     assert.equal(await bash(command), value + 'x\ty');
+  });
+
+  test('oneLine joins a multi-line definition into one line that bash runs the same way', async () => {
+    assert.equal(ShellScript.oneLine(['f() {', '  if true; then', '    echo a', '  else', '    echo b', '  fi', '  for x in 1 2; do', '    case $x in', '      1) echo one ;;', '      *) echo other ;;', '    esac', '  done', '}']), 'f() { if true; then echo a; else echo b; fi; for x in 1 2; do case $x in 1) echo one ;; *) echo other ;; esac; done; }');
+    for (const encoding of ['component', 'form', 'json'] as const) {
+      const lines = Curl.encoderHelper(encoding);
+      const value = 'a "b" \\c\nd\te &=+/ \u00e9 \u007f';
+      const multi = await bash(`${lines.join('\n')}\nV=${Text.shellQuote(value)}; ${Curl.ENCODING_HELPERS[encoding]} V`);
+      const single = await bash(`${Curl.encoderDefinition(encoding)}; V=${Text.shellQuote(value)}; ${Curl.ENCODING_HELPERS[encoding]} V`);
+      assert.equal(single, multi, encoding);
+      assert.ok(!Curl.encoderDefinition(encoding).includes('\n'));
+    }
   });
 });

@@ -5,7 +5,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import type { Page } from 'playwright';
-import { CredentialAnalyzer, ModelBuilder, ModelValidator } from '../src/build/index.js';
+import { CredentialAnalyzer, FormLinker, ModelBuilder, ModelValidator } from '../src/build/index.js';
 import { CaptureMerger, CaptureSession } from '../src/capture/index.js';
 import { ExporterRegistry } from '../src/export/index.js';
 import type { ApiModel, Capture, Endpoint } from '../src/model/index.js';
@@ -201,7 +201,7 @@ function login(f: CaptureFactory, cookie: string, set: string[]): void {
 }
 
 function roles(capture: Capture): Map<string, string> {
-  const evidence = CredentialAnalyzer.create().analyze(capture, { passwordFields: new Set(['pass']), loginPages: new Set([`${CaptureFactory.ORIGIN}/login`]) });
+  const evidence = CredentialAnalyzer.create().analyze(capture, { passwordFields: new Set(['pass']), loginPages: FormLinker.create().loginPages(capture) });
   const names = new Set(capture.exchanges.flatMap((exchange) => [...CredentialAnalyzer.sent(exchange), ...CredentialAnalyzer.setCookies(exchange)].map((cookie) => cookie.name)));
   return new Map([...names].map((cookie) => [cookie, evidence.role(cookie)]));
 }

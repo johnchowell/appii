@@ -147,7 +147,7 @@ export class ModelBuilder {
   }
 
   static #recorded(capture: Capture): Capture {
-    const exchanges = capture.exchanges.filter((exchange) => !Http.isProbe(exchange));
+    const exchanges = Http.recorded(capture.exchanges);
     return exchanges.length === capture.exchanges.length ? capture : { ...capture, exchanges };
   }
 

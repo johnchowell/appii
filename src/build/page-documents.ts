@@ -57,6 +57,10 @@ export class PageDocuments {
     return documents;
   }
 
+  all(capture: Capture): readonly PageDocument[] {
+    return [...this.of(capture).filter((document) => document.page.source === 'snapshot'), ...this.served(capture)];
+  }
+
   #parse(pages: readonly HtmlPage[], known: ReadonlyMap<string, PageDocument>): PageDocument[] {
     const documents: PageDocument[] = [];
     for (const page of pages) {

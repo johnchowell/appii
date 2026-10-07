@@ -65,9 +65,31 @@ describe('declarative shadow roots in HTML (CAP-6)', () => {
     const doc = HtmlDocument.parse(html, PAGE);
     const second = doc.forms()[1];
     assert.ok(second);
-    assert.equal(new SelectorBuilder().form(doc, second), '#a > x-box:nth-child(1) > form:nth-child(2)');
+    assert.equal(new SelectorBuilder().form(doc, second), '#a > x-box:nth-child(1) >> form:nth-child(2)');
+  });
+
+  test('ids and names inside a shadow tree, and nested shadow roots, give one selector per tree scope (LV3-7)', () => {
+    const html = '<main><x-outer><template shadowrootmode="open"><section><x-inner><template shadowrootmode="open"><p>Hi</p><form name="a >> b"></form></template></x-inner></section><form id="own"></form></template></x-outer></main>';
+    const doc = HtmlDocument.parse(html, PAGE);
+    const builder = new SelectorBuilder();
+    const [named, own] = doc.forms();
+    assert.ok(named && own);
+    assert.equal(builder.form(doc, own), ':root > body:nth-child(2) > main:nth-child(1) > x-outer:nth-child(1) >> form#own');
+    assert.equal(builder.form(doc, named), ':root > body:nth-child(2) > main:nth-child(1) > x-outer:nth-child(1) >> section:nth-child(1) > x-inner:nth-child(1) >> form[name="a \\3e \\3e  b"]');
   });
 });
+
+async function resolveSelector(page: import('playwright').Page, selector: string): Promise<string | null> {
+  return page.evaluate((segments) => {
+    let scope: Document | ShadowRoot | null = document;
+    let found: Element | null = null;
+    for (const segment of segments) {
+      found = scope ? scope.querySelector(segment) : null;
+      scope = found?.shadowRoot ?? null;
+    }
+    return found ? (found.getAttribute('action') ?? found.getAttribute('id') ?? found.getAttribute('name') ?? '') : null;
+  }, selector.split(' >> '));
+}
 
 describe('declarative shadow roots match Chromium', () => {
   let browser: Browser;
@@ -99,6 +121,12 @@ describe('declarative shadow roots match Chromium', () => {
       });
       const forms = extractor.extract(DECLARATIVE, PAGE);
       const open = forms.filter((form) => new URL(form.action).pathname !== '/closed');
+      for (const form of open) {
+        const action = form.action.slice(new URL(form.action).origin.length);
+        assert.equal(await resolveSelector(page, form.selector), action, `${form.selector} in the DOM`);
+        assert.equal(await page.locator(form.selector).count(), 1, `${form.selector} in Playwright`);
+        assert.equal(await page.locator(form.selector).getAttribute('action'), action);
+      }
       assert.deepEqual(
         open.map((form) => ({
           action: new URL(form.action).pathname,
@@ -168,5 +196,15 @@ customElements.define('login-box', class extends HTMLElement {
     );
     assert.match(signin.form.selector, /login-box/);
     assert.ok(model.forms.some((form) => new URL(form.action).pathname === '/signin'));
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(server.url('/login'));
+      await page.locator('login-box input[name=user]').waitFor();
+      assert.equal(await resolveSelector(page, signin.form.selector), '/signin', `${signin.form.selector} in the DOM`);
+      assert.equal(await page.locator(signin.form.selector).count(), 1, `${signin.form.selector} in Playwright`);
+    } finally {
+      await browser.close();
+    }
   });
 });

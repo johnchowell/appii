@@ -9,6 +9,8 @@ export type CodeMarkup = (value: string) => string;
 export class LoginGuide {
   static readonly LOGIN = 'login';
   static readonly LOGOUT = 'logout';
+  static readonly LOGIN_LABEL = 'Login';
+  static readonly LOGOUT_LABEL = 'Logout';
   static readonly NOT_SUBMITTED = 'known from a form; not submitted yet';
   static readonly UNKNOWN_ISSUE = 'the capture did not show which credential it issues';
   static readonly ANONYMOUS_NOTES: Readonly<Record<string, string>> = Object.freeze({
@@ -105,18 +107,27 @@ export class LoginGuide {
     return Credentials.sets(endpoint, this.#roles).length > 0 || Credentials.refusals(endpoint, this.#roles).length > 0;
   }
 
-  describe(endpoint: Endpoint, code: CodeMarkup): string | undefined {
+  summary(endpoint: Endpoint, code: CodeMarkup): string | undefined {
     if (LoginGuide.isLogout(endpoint)) {
       const revoked = this.revokes(endpoint);
-      return revoked.length === 0 ? 'Logout: ends the session.' : `Logout: revokes the ${revoked.length === 1 ? 'cookie' : 'cookies'} ${revoked.map(code).join(', ')}.`;
+      return revoked.length === 0 ? 'ends the session.' : `revokes the ${revoked.length === 1 ? 'cookie' : 'cookies'} ${revoked.map(code).join(', ')}.`;
     }
     const login = LoginGuide.isLogin(endpoint) ? endpoint.login : undefined;
     if (!login) return undefined;
     const fields = LoginGuide.fields(login, code);
     const sends = fields === '' ? '' : `sends ${fields}`;
-    if (LoginGuide.issued(login)) return `Login: ${[sends, `issues ${LoginGuide.issues(login, code)}`].filter((part) => part !== '').join(', and ')}.`;
+    if (LoginGuide.issued(login)) return `${[sends, `issues ${LoginGuide.issues(login, code)}`].filter((part) => part !== '').join(', and ')}.`;
     const note = endpoint.count === 0 ? LoginGuide.NOT_SUBMITTED : LoginGuide.UNKNOWN_ISSUE;
-    return `Login: ${sends === '' ? note : `${sends}; ${note}`}.`;
+    return `${sends === '' ? note : `${sends}; ${note}`}.`;
+  }
+
+  describe(endpoint: Endpoint, code: CodeMarkup): string | undefined {
+    const summary = this.summary(endpoint, code);
+    return summary === undefined ? undefined : `${LoginGuide.roleLabel(endpoint)}: ${summary}`;
+  }
+
+  static roleLabel(endpoint: Endpoint): string {
+    return LoginGuide.isLogout(endpoint) ? LoginGuide.LOGOUT_LABEL : LoginGuide.LOGIN_LABEL;
   }
 
   hint(endpoint: Endpoint, label: EndpointLabel): string | undefined {

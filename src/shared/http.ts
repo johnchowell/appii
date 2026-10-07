@@ -326,6 +326,10 @@ export function isProbe(exchange: Partial<Pick<Exchange, 'source'>>): boolean {
   return exchange.source === PROBE_SOURCE;
 }
 
+export function recorded<T extends Partial<Pick<Exchange, 'source'>>>(exchanges: readonly T[]): T[] {
+  return exchanges.filter((exchange) => !isProbe(exchange));
+}
+
 export function reachedServer(exchange: Pick<Exchange, 'servedBy'> & Partial<Pick<Exchange, 'source'>>): boolean {
   return exchange.servedBy === undefined && !isProbe(exchange);
 }

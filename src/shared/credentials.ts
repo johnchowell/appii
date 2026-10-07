@@ -1,6 +1,7 @@
 import { CREDENTIAL_COOKIE_ROLES } from '../model/index.js';
-import type { AnonymousAccess, ApiModel, CookieRole, Endpoint } from '../model/index.js';
+import type { AnonymousAccess, ApiModel, CookieRole, Endpoint, SeenState } from '../model/index.js';
 import { EndpointIndex } from './endpoints.js';
+import { parseUrl } from './http.js';
 
 export type CredentialKind = 'cookie' | 'header' | 'http';
 
@@ -29,6 +30,7 @@ export class Credentials {
   static readonly UNTESTED_NOTE = 'anonymous access not tested';
   static readonly OPTIONAL_NOTE = 'optional';
   static readonly REFUSAL_STATUSES: ReadonlySet<number> = new Set([401, 403]);
+  static readonly AUTHENTICATED: SeenState = 'authenticated';
 
   static entry(kind: CredentialKind, name: string): string {
     return `${kind}:${kind === Credentials.COOKIE ? name : name.toLowerCase()}`;
@@ -99,6 +101,29 @@ export class Credentials {
 
   static schemes(endpoint: Endpoint, roles?: CookieRoles): string[] {
     return Credentials.#names(endpoint, Credentials.HTTP, roles);
+  }
+
+  static authenticatedOnly(endpoint: Endpoint): boolean {
+    const seen = endpoint.auth.seen ?? [];
+    return seen.length === 1 && seen[0] === Credentials.AUTHENTICATED;
+  }
+
+  static loggedInOnly(endpoint: Endpoint): boolean {
+    return endpoint.count > 0 && (Credentials.authenticatedOnly(endpoint) || endpoint.auth.anonymous === 'refused');
+  }
+
+  static foundAfterLogin(model: Pick<ApiModel, 'endpoints' | 'forms'>, endpoint: Endpoint): boolean {
+    const form = endpoint.form;
+    if (endpoint.count > 0 || !form) return false;
+    const linked = model.forms.filter((candidate) => candidate.endpoints?.includes(endpoint.id) === true).flatMap((candidate) => candidate.pages ?? [candidate.pageUrl]);
+    return [...new Set([form.pageUrl, ...linked])].every((page) => {
+      const url = parseUrl(page);
+      if (!url) return false;
+      const loads = model.endpoints.filter(
+        (candidate) => candidate.method.toUpperCase() === EndpointIndex.PAGE_LOAD_METHOD && candidate.origin === url.origin && EndpointIndex.matchPath(candidate.path, url.pathname) !== undefined,
+      );
+      return loads.length > 0 && loads.every((load) => Credentials.loggedInOnly(load));
+    });
   }
 
   static optional(endpoint: Endpoint): boolean {
