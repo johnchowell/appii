@@ -47,17 +47,6 @@ export interface CdpRequestWillBeSent {
   redirectHasExtraInfo?: boolean;
 }
 
-export interface CdpRequestExtraInfo {
-  requestId: string;
-  headers: CdpHeaders;
-}
-
-export interface CdpResponseExtraInfo {
-  requestId: string;
-  headers: CdpHeaders;
-  statusCode?: number;
-}
-
 export interface CdpResponseReceived {
   requestId: string;
   timestamp: number;

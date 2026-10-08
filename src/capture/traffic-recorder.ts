@@ -10,8 +10,10 @@ import type { PageNetworkTapOptions, TapBody, TapQuery, TapRecord, TapTarget } f
 import { ResourceTypeMapper } from './resource-type-mapper.js';
 import { PageTargetWatcher } from './page-target-watcher.js';
 import { ServiceWorkerRecorder } from './service-worker-recorder.js';
-import type { ServiceWorkerRecorderOptions } from './service-worker-recorder.js';
+import type { ServiceWorkerRecorderOptions, WorkerRequest } from './service-worker-recorder.js';
 import type { TargetChannel } from './target-channel.js';
+import { WorkerNetworkSwitch } from './worker-network-switch.js';
+import type { WorkerNetworkRelease } from './worker-network-switch.js';
 
 export interface TrafficRecorderOptions {
   captureBodies?: boolean;
@@ -38,6 +40,7 @@ export interface TrafficRecorderDeps {
   workers?: (options: ServiceWorkerRecorderOptions) => ServiceWorkerRecorder;
   tap?: TapOpener;
   watcher?: TargetWatcherStarter;
+  workerNetwork?: WorkerNetworkSwitch;
 }
 
 interface ResponseReads {
@@ -56,6 +59,7 @@ interface PendingRequest {
   readonly pageUrl: string | undefined;
   readonly redirectedFrom: string | undefined;
   readonly probe: ProbeCheck | undefined;
+  readonly worker: WorkerRequest | undefined;
   response?: Response;
   reads?: ResponseReads;
   finish?: () => void;
@@ -97,6 +101,7 @@ export class TrafficRecorder {
   static readonly NO_BODY_STATUSES: ReadonlySet<number> = Helpers.NO_BODY_STATUSES;
   static readonly CHUNKED = Helpers.CHUNKED;
   static readonly PASS_THROUGH_SOURCES: ReadonlySet<string> = new Set(['network', 'http-cache']);
+  static readonly HTTP_CACHE_SOURCE = 'http-cache';
   static readonly SESSION_BODY_TYPES: ReadonlySet<string> = new Set(['document', 'stylesheet', 'image', 'media', 'font', 'script', 'texttrack', 'xhr', 'fetch', 'manifest']);
 
   readonly exchanges: Exchange[] = [];
@@ -109,6 +114,8 @@ export class TrafficRecorder {
   readonly #budget: BodyBudget;
   readonly #tapOptions: PageNetworkTapOptions;
   readonly #workers: ServiceWorkerRecorder;
+  readonly #serviceWorkers: boolean;
+  readonly #workerNetwork: WorkerNetworkSwitch;
   readonly #openTap: TapOpener;
   readonly #startWatcher: TargetWatcherStarter;
   readonly #pending = new Map<Request, PendingRequest>();
@@ -127,6 +134,7 @@ export class TrafficRecorder {
   #watcher: Promise<PageTargetWatcher | undefined> = Promise.resolve(undefined);
   #generation = 0;
   #probe: ProbeCheck | undefined;
+  #releaseWorkerNetwork: WorkerNetworkRelease | undefined;
 
   constructor(options: TrafficRecorderOptions = {}, deps: TrafficRecorderDeps = {}) {
     this.#captureBodies = options.captureBodies ?? true;
@@ -138,15 +146,11 @@ export class TrafficRecorder {
     const bufferBytes = Math.max(maxTotalBodyBytes, this.#maxBodyBytes, 1);
     const resourceBufferBytes = Math.max(this.#maxBodyBytes, TrafficRecorder.MIN_RESOURCE_BUFFER_BYTES);
     this.#workers = (deps.workers ?? TrafficRecorder.workers)({
-      budget: this.#budget,
-      captureBodies: this.#captureBodies,
-      readTimeoutMs: this.#readTimeoutMs,
-      flushTimeoutMs: TrafficRecorder.FLUSH_TIMEOUT_MS,
-      bufferBytes,
-      resourceBufferBytes,
       emit: (exchange) => this.#push(exchange),
       hasPageRequest: (method, url, startMs) => this.#hasPageRequest(method, url, startMs),
     });
+    this.#serviceWorkers = options.serviceWorkers !== false;
+    this.#workerNetwork = deps.workerNetwork ?? WorkerNetworkSwitch.shared;
     this.#tapOptions = {
       bufferBytes,
       resourceBufferBytes,
@@ -154,14 +158,14 @@ export class TrafficRecorder {
       streamBytes: this.#maxBodyBytes,
       ...(options.quietMs === undefined ? {} : { quietMs: options.quietMs }),
       onSettle: (tap, record) => this.#onSettle(tap, record),
-      ...(options.serviceWorkers === false ? {} : { onWorker: (channel) => this.#onWorker(channel) }),
+      ...(this.#serviceWorkers ? { onWorker: (channel) => this.#onWorker(channel) } : {}),
     };
     this.#openTap = deps.tap ?? PageNetworkTap.open;
     this.#startWatcher = deps.watcher ?? PageTargetWatcher.start;
   }
 
   static create(options: TrafficRecorderOptions = {}): TrafficRecorder {
-    return new TrafficRecorder(options, { budget: TrafficRecorder.budget, workers: TrafficRecorder.workers, tap: PageNetworkTap.open, watcher: PageTargetWatcher.start });
+    return new TrafficRecorder(options, { budget: TrafficRecorder.budget, workers: TrafficRecorder.workers, tap: PageNetworkTap.open, watcher: PageTargetWatcher.start, workerNetwork: WorkerNetworkSwitch.shared });
   }
 
   static budget(options: BodyBudgetOptions): BodyBudget {
@@ -176,6 +180,7 @@ export class TrafficRecorder {
     if (this.#context === context) return;
     if (this.#context) throw new AppiiError('CAPTURE', 'TrafficRecorder is already attached to another browser context; call detach() first');
     this.#context = context;
+    if (this.#serviceWorkers) this.#releaseWorkerNetwork = this.#workerNetwork.hold();
     this.#watcher = this.#startWatcher(context, this.#tapOptions).catch(() => undefined);
     context.on('request', this.#onRequest);
     context.on('response', this.#onResponse);
@@ -204,7 +209,8 @@ export class TrafficRecorder {
       this.#startBuild(request, entry, { kind: 'incomplete', error });
       entry.finish?.();
     }
-    this.#workers.finish();
+    this.#releaseWorkerNetwork?.();
+    this.#releaseWorkerNetwork = undefined;
     const taps = [...this.#pages.values()].map((tracked) => tracked.tap);
     this.#pages.clear();
     this.#opened.clear();
@@ -233,7 +239,6 @@ export class TrafficRecorder {
 
   async #onWorker(channel: TargetChannel): Promise<void> {
     await Promise.allSettled([...this.#workerSetups].map((setup) => setup(channel)));
-    await this.#workers.attach(channel);
   }
 
   probe(blocked: ProbeCheck): () => void {
@@ -258,15 +263,18 @@ export class TrafficRecorder {
   }
 
   async settled(): Promise<void> {
-    while (this.#builds.size > 0 || this.#loading.size > 0 || this.#workers.busy) {
-      await Promise.allSettled([...this.#builds, ...this.#loading, this.#workers.settled()]);
+    while (this.#builds.size > 0 || this.#loading.size > 0) {
+      await Promise.allSettled([...this.#builds, ...this.#loading]);
     }
     if (!this.#context) this.#workers.flush();
   }
 
   clear(): void {
     this.#generation++;
-    for (const entry of this.#pending.values()) entry.finish?.();
+    for (const entry of this.#pending.values()) {
+      entry.finish?.();
+      if (entry.worker) this.#workers.settle(entry.worker, undefined);
+    }
     this.#pending.clear();
     this.#building.clear();
     this.#workers.clear();
@@ -277,19 +285,23 @@ export class TrafficRecorder {
 
   readonly #onRequest = (request: Request): void => {
     if (!Helpers.isNetworkUrl(request.url())) return;
+    const fromWorker = Helpers.fromServiceWorker(request);
+    if (fromWorker && !this.#serviceWorkers) return;
     const id = Http.newId();
     this.#ids.set(request, id);
     const previous = request.redirectedFrom();
+    const wallStart = Date.now();
     const entry: PendingRequest = {
       id,
       generation: this.#generation,
       method: request.method(),
       url: request.url(),
-      wallStart: Date.now(),
+      wallStart,
       resourceType: ResourceTypeMapper.fromBrowser(request.resourceType()),
       pageUrl: TrafficRecorder.#pageUrlOf(request),
       redirectedFrom: previous ? this.#ids.get(previous) : undefined,
       probe: this.#probe,
+      worker: fromWorker ? this.#workers.track(request.method(), request.url(), wallStart) : undefined,
     };
     this.#pending.set(request, entry);
   };
@@ -299,7 +311,7 @@ export class TrafficRecorder {
     if (!entry || entry.response) return;
     entry.response = response;
     entry.reads = this.#startReads(response.request(), response);
-    if (NetworkIdleMonitor.LONG_LIVED_TYPES.has(response.request().resourceType())) return;
+    if (entry.worker || NetworkIdleMonitor.LONG_LIVED_TYPES.has(response.request().resourceType())) return;
     const done = new Promise<void>((resolve) => {
       entry.finish = resolve;
     });
@@ -425,6 +437,7 @@ export class TrafficRecorder {
       .finally(() => {
         this.#builds.delete(tracked);
         this.#building.delete(entry);
+        if (entry.worker) this.#workers.settle(entry.worker, undefined);
         this.#workers.release();
       });
     this.#builds.add(tracked);
@@ -433,7 +446,7 @@ export class TrafficRecorder {
   #hasPageRequest(method: string, url: string, startMs: number): boolean {
     const key = Helpers.withoutFragment(url);
     const latest = startMs + ServiceWorkerRecorder.MATCH_TOLERANCE_MS;
-    const matches = (entry: PendingRequest): boolean => entry.method === method && entry.wallStart <= latest && Helpers.withoutFragment(entry.url) === key;
+    const matches = (entry: PendingRequest): boolean => !entry.worker && entry.method === method && entry.wallStart <= latest && Helpers.withoutFragment(entry.url) === key;
     for (const entry of this.#pending.values()) if (matches(entry)) return true;
     for (const entry of this.#building) if (matches(entry)) return true;
     return false;
@@ -470,10 +483,10 @@ export class TrafficRecorder {
     ]);
     if (entry.generation !== this.#generation) return;
 
-    const fromWorker = response !== undefined && (tapped?.record.fromServiceWorker ?? response.fromServiceWorker());
+    const fromWorker = !entry.worker && response !== undefined && (tapped?.record.fromServiceWorker ?? response.fromServiceWorker());
     const source = tapped?.record.serviceWorkerSource;
     const passThrough = fromWorker && (source === undefined || TrafficRecorder.PASS_THROUGH_SOURCES.has(source));
-    if (passThrough && (await this.#passThrough(request, entry, outcome, endedAt, body))) return;
+    if (passThrough && (await this.#passThrough(request, entry, outcome, endedAt, body, tapped))) return;
     if (entry.generation !== this.#generation) return;
 
     const reqHeaders = Helpers.stripPseudoHeaders(requestHeaders ?? Http.recordToHeaders(request.headers()));
@@ -493,7 +506,7 @@ export class TrafficRecorder {
     }
     const finished = (outcome.kind === 'finished' && !arrived) || outcome.kind === 'downloaded';
     const timing = TrafficRecorder.#timing(request, entry, finished, endedAt);
-    const probed = capturedResponse === undefined && entry.probe?.(captured.method, captured.url) === true;
+    const probed = !entry.worker && capturedResponse === undefined && entry.probe?.(captured.method, captured.url) === true;
     if (probed) {
       const startMs = TrafficRecorder.#startTime(request) || entry.wallStart;
       this.#workers.claim(captured.method, captured.url, startMs, Math.max(endedAt, startMs));
@@ -511,22 +524,31 @@ export class TrafficRecorder {
       ...(entry.redirectedFrom ? { redirectedFrom: entry.redirectedFrom } : {}),
       ...(fromWorker ? { servedBy: 'service-worker' as const } : cacheKind ? { servedBy: 'cache' as const, cacheKind } : {}),
     };
-    this.#push(exchange);
+    if (entry.worker) this.#workers.settle(entry.worker, exchange);
+    else this.#push(exchange);
   }
 
-  async #passThrough(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number, pageBody: TapBody | undefined): Promise<boolean> {
+  async #passThrough(request: Request, entry: PendingRequest, outcome: Outcome, endedAt: number, pageBody: TapBody | undefined, tapped: Tapped | undefined): Promise<boolean> {
     const startMs = TrafficRecorder.#startTime(request) || entry.wallStart;
     const worker = this.#workers.claim(entry.method, entry.url, startMs, Math.max(endedAt, startMs));
     if (!worker) return false;
     const network = worker.settled ? worker.exchange : await Helpers.settle(worker.done, outcome.kind === 'incomplete' ? TrafficRecorder.FLUSH_TIMEOUT_MS : this.#readTimeoutMs);
     if (!network || entry.generation !== this.#generation) return false;
     this.#workers.alias(network.id, entry.id);
+    const cached = tapped?.record.serviceWorkerSource === TrafficRecorder.HTTP_CACHE_SOURCE;
+    let captured = network.request;
+    if (TrafficRecorder.#unread(captured.body)) {
+      const body = await this.#requestBody(request, captured.headers, tapped);
+      if (entry.generation !== this.#generation) return true;
+      if (body && !TrafficRecorder.#unread(body)) captured = { ...captured, body };
+    }
     let response = network.response;
-    const unread = response !== undefined && (response.body === undefined || (response.body.truncated === true && response.body.data === ''));
+    const unread = response !== undefined && (response.body === undefined || TrafficRecorder.#unread(response.body));
     if (response && unread && pageBody && pageBody.bytes.length > 0) {
       const body = this.#budget.of(pageBody.bytes, Http.getHeader(response.headers, 'content-type'), undefined, pageBody.text);
       if (body) response = { ...response, body };
     }
+    if (response && cached) response = TrafficRecorder.#withoutAddress(response);
     this.#push({
       id: entry.id,
       source: network.source,
@@ -534,14 +556,23 @@ export class TrafficRecorder {
       ...(entry.pageUrl ? { pageUrl: entry.pageUrl } : {}),
       startedAt: network.startedAt,
       durationMs: network.durationMs,
-      request: network.request,
+      request: captured,
       ...(response ? { response } : {}),
       ...(network.error !== undefined ? { error: network.error } : {}),
       ...(entry.redirectedFrom ? { redirectedFrom: entry.redirectedFrom } : {}),
-      ...(network.servedBy ? { servedBy: network.servedBy } : {}),
-      ...(network.cacheKind ? { cacheKind: network.cacheKind } : {}),
+      ...(cached ? { servedBy: 'cache' as const, cacheKind: 'disk' as const } : network.servedBy ? { servedBy: network.servedBy, ...(network.cacheKind ? { cacheKind: network.cacheKind } : {}) } : {}),
     });
     return true;
+  }
+
+  static #unread(body: BodyData | undefined): boolean {
+    return body !== undefined && body.truncated === true && body.data === '';
+  }
+
+  static #withoutAddress(response: CapturedResponse): CapturedResponse {
+    const copy = { ...response };
+    delete copy.remoteAddress;
+    return copy;
   }
 
   static #arrived(outcome: Outcome, response: Response | undefined, tapped: Tapped | undefined): boolean {

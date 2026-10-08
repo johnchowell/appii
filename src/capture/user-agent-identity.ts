@@ -28,6 +28,7 @@ export class UserAgentIdentity {
   static readonly HEADED_PRODUCT = 'Chrome';
   static readonly CHROMIUM_BRAND = 'Chromium';
   static readonly PROBE_URL = 'https://appii.invalid/';
+  static readonly USER_AGENT_HEADER = 'User-Agent';
   static readonly HIGH_ENTROPY_HINTS: readonly string[] = ['architecture', 'bitness', 'formFactors', 'fullVersionList', 'model', 'platformVersion', 'wow64'];
   static readonly PROBE_FUNCTION = `async function (hints) {
   var data = navigator.userAgentData;
@@ -92,6 +93,10 @@ export class UserAgentIdentity {
     } catch {
       return false;
     }
+  }
+
+  headers(): Record<string, string> {
+    return { [UserAgentIdentity.USER_AGENT_HEADER]: this.userAgent };
   }
 
   withUserAgent(userAgent: string): UserAgentIdentity {

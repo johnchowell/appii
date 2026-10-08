@@ -1,4 +1,5 @@
 import type { BrowserContext, Request } from 'playwright';
+import { Helpers } from './helpers.js';
 
 export interface NetworkIdleMonitorOptions {
   stalledAfterMs?: number;
@@ -67,7 +68,7 @@ export class NetworkIdleMonitor {
   }
 
   readonly #onRequest = (request: Request): void => {
-    if (NetworkIdleMonitor.LONG_LIVED_TYPES.has(request.resourceType())) return;
+    if (NetworkIdleMonitor.LONG_LIVED_TYPES.has(request.resourceType()) || Helpers.fromServiceWorker(request)) return;
     const timer = setTimeout(() => this.#onDone(request), this.#stalledAfterMs);
     timer.unref();
     this.#busy.set(request, timer);

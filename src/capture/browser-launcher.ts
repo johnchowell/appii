@@ -68,7 +68,7 @@ export class BrowserLauncher {
     try {
       const headed = this.headless ? await BrowserLauncher.#headedIdentity(browser) : undefined;
       const identity = headed && this.options.userAgent ? headed.withUserAgent(this.options.userAgent) : headed;
-      const context = await browser.newContext({ ...this.contextOptions(), ...(identity ? { userAgent: identity.userAgent } : {}) });
+      const context = await browser.newContext({ ...this.contextOptions(), ...(identity ? { userAgent: identity.userAgent, extraHTTPHeaders: identity.headers() } : {}) });
       return { browser, context, ...(identity ? { identity } : {}) };
     } catch (err) {
       await browser.close().catch(() => undefined);

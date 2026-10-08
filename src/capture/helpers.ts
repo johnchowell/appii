@@ -1,4 +1,5 @@
 import { getPublicSuffix } from 'tldts';
+import type { Request } from 'playwright';
 import type { Exchange, Header } from '../model/index.js';
 import { Http } from '../shared/index.js';
 
@@ -71,6 +72,14 @@ export class Helpers {
     if (exchange.resourceType !== 'document') return false;
     const destination = (Http.getHeader(exchange.request.headers, 'sec-fetch-dest') ?? '').trim().toLowerCase();
     return !Helpers.NESTED_DESTINATIONS.has(destination);
+  }
+
+  static fromServiceWorker(request: Request): boolean {
+    try {
+      return request.serviceWorker() !== null;
+    } catch {
+      return false;
+    }
   }
 
   static isNetworkUrl(url: string): boolean {

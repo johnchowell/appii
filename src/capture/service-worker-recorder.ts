@@ -1,68 +1,55 @@
 import type { Exchange } from '../model/index.js';
-import type { BodyBudget } from './body-budget.js';
 import { Helpers } from './helpers.js';
-import type { TargetChannel } from './target-channel.js';
-import { WorkerNetworkLog } from './worker-network-log.js';
-import type { WorkerNetworkLogOptions, WorkerRequest } from './worker-network-log.js';
 
 export interface ServiceWorkerRecorderOptions {
-  budget: BodyBudget;
-  captureBodies: boolean;
-  readTimeoutMs: number;
-  flushTimeoutMs: number;
-  bufferBytes: number;
-  resourceBufferBytes: number;
   emit: (exchange: Exchange) => void;
   hasPageRequest: (method: string, url: string, startMs: number) => boolean;
 }
 
-export type WorkerNetworkLogFactory = (channel: TargetChannel, options: WorkerNetworkLogOptions) => WorkerNetworkLog;
-
-export interface ServiceWorkerRecorderDeps {
-  logs?: WorkerNetworkLogFactory;
-}
-
-interface WorkerTarget {
-  active: WorkerNetworkLog | undefined;
-  standby: TargetChannel[];
+export interface WorkerRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly startMs: number;
+  readonly done: Promise<Exchange | undefined>;
+  exchange: Exchange | undefined;
+  settled: boolean;
+  claimed: boolean;
 }
 
 export class ServiceWorkerRecorder {
   static readonly MATCH_TOLERANCE_MS = 1000;
 
   readonly #options: ServiceWorkerRecorderOptions;
-  readonly #logFactory: WorkerNetworkLogFactory;
-  readonly #targets = new Map<string, WorkerTarget>();
   readonly #requests: WorkerRequest[] = [];
+  readonly #resolvers = new WeakMap<WorkerRequest, (exchange: Exchange | undefined) => void>();
   readonly #aliases = new Map<string, string>();
-  readonly #logs = new Set<WorkerNetworkLog>();
 
-  constructor(options: ServiceWorkerRecorderOptions, deps: ServiceWorkerRecorderDeps = {}) {
+  constructor(options: ServiceWorkerRecorderOptions) {
     this.#options = options;
-    this.#logFactory = deps.logs ?? ServiceWorkerRecorder.log;
   }
 
   static create(options: ServiceWorkerRecorderOptions): ServiceWorkerRecorder {
-    return new ServiceWorkerRecorder(options, { logs: ServiceWorkerRecorder.log });
+    return new ServiceWorkerRecorder(options);
   }
 
-  static log(channel: TargetChannel, options: WorkerNetworkLogOptions): WorkerNetworkLog {
-    return new WorkerNetworkLog(channel, options);
+  track(method: string, url: string, startMs: number): WorkerRequest {
+    let resolve: (exchange: Exchange | undefined) => void = () => undefined;
+    const done = new Promise<Exchange | undefined>((settle) => {
+      resolve = settle;
+    });
+    const request: WorkerRequest = { method, url, startMs, done, exchange: undefined, settled: false, claimed: false };
+    this.#resolvers.set(request, resolve);
+    this.#requests.push(request);
+    return request;
   }
 
-  async attach(channel: TargetChannel): Promise<void> {
-    const targetId = channel.target.targetId;
-    let target = this.#targets.get(targetId);
-    if (!target) {
-      target = { active: undefined, standby: [] };
-      this.#targets.set(targetId, target);
-    }
-    channel.onClose(() => this.#detached(targetId, channel));
-    if (target.active) {
-      target.standby.push(channel);
-      return;
-    }
-    await this.#activate(target, channel);
+  settle(request: WorkerRequest, exchange: Exchange | undefined): void {
+    if (request.settled) return;
+    request.exchange = exchange;
+    request.settled = true;
+    this.#resolvers.get(request)?.(exchange);
+    this.#resolvers.delete(request);
+    this.#settle(request, exchange, false);
   }
 
   claim(method: string, url: string, fromMs: number, toMs: number): WorkerRequest | undefined {
@@ -88,23 +75,6 @@ export class ServiceWorkerRecorder {
     for (const request of [...this.#requests]) if (request.settled) this.#settle(request, request.exchange, false);
   }
 
-  get busy(): boolean {
-    return [...this.#logs].some((log) => log.busy);
-  }
-
-  async settled(): Promise<void> {
-    await Promise.allSettled([...this.#logs].map((log) => log.settled()));
-  }
-
-  finish(): void {
-    for (const target of this.#targets.values()) {
-      target.active?.finish();
-      target.active = undefined;
-      target.standby.length = 0;
-    }
-    this.#targets.clear();
-  }
-
   flush(): void {
     for (const request of [...this.#requests]) if (request.settled) this.#settle(request, request.exchange, true);
   }
@@ -112,47 +82,6 @@ export class ServiceWorkerRecorder {
   clear(): void {
     this.#requests.length = 0;
     this.#aliases.clear();
-  }
-
-  async #activate(target: WorkerTarget, channel: TargetChannel): Promise<void> {
-    const options = this.#options;
-    const log = this.#logFactory(channel, {
-      budget: options.budget,
-      captureBodies: options.captureBodies,
-      readTimeoutMs: options.readTimeoutMs,
-      flushTimeoutMs: options.flushTimeoutMs,
-      bufferBytes: options.bufferBytes,
-      resourceBufferBytes: options.resourceBufferBytes,
-      onRequest: (request) => {
-        this.#requests.push(request);
-      },
-      onExchange: (request, exchange) => this.#settle(request, exchange, false),
-    });
-    target.active = log;
-    this.#logs.add(log);
-    const started = await log.start();
-    if (started || target.active !== log) return;
-    target.active = undefined;
-    this.#logs.delete(log);
-    const next = target.standby.shift();
-    if (next && !next.closed) await this.#activate(target, next);
-  }
-
-  #detached(targetId: string, channel: TargetChannel): void {
-    const target = this.#targets.get(targetId);
-    if (!target) return;
-    if (target.active?.channel === channel) {
-      const log = target.active;
-      log.finish();
-      void log.settled().finally(() => this.#logs.delete(log));
-      target.active = undefined;
-      const next = target.standby.find((candidate) => !candidate.closed);
-      target.standby = target.standby.filter((candidate) => candidate !== next && !candidate.closed);
-      if (next) void this.#activate(target, next);
-    } else {
-      target.standby = target.standby.filter((candidate) => candidate !== channel);
-    }
-    if (!target.active && target.standby.length === 0) this.#targets.delete(targetId);
   }
 
   #settle(request: WorkerRequest, exchange: Exchange | undefined, force: boolean): void {

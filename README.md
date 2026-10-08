@@ -82,6 +82,28 @@ what was typed, checked or chosen by a trusted user action (yours, or
 the default value of a field. `-o -` writes the capture to stdout and the
 summary to stderr, so `appii capture ... -o - | jq` works.
 
+Service workers are recorded too. A request that the page sends and its
+service worker passes to the network (`fetch(event.request)`) is recorded once,
+with the page URL and the headers, body and timing of the request that reached
+the network; when the HTTP cache answers it, it is marked `servedBy: cache`. A
+response that the worker makes itself is marked `servedBy: service-worker`. The
+requests that the worker makes on its own, from its main script and the fetches
+its script makes as it starts or during `install` to later ones, are recorded
+as their own exchanges without a page URL. Playwright starts a new service
+worker as soon as it attaches to it, before a session of appii could, so appii
+has Playwright report the network of service workers itself: while a capture
+runs, appii sets `PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS=1` in its own
+process (and restores the previous value when the last capture in the process
+ends), and Playwright then enables the network events of each worker before
+the worker runs, so no request of the worker is missed. In a headless capture
+the requests of a service worker carry the User-Agent of the page from the
+first one on, because it is set on the worker before the worker runs. Two
+things keep the headless identity: the main script, which Chromium fetches
+itself, is sent with the `HeadlessChrome` User-Agent, and scripts in the worker
+read the headless `navigator.userAgent`. A Blob or stream body that the worker
+sends on its own is marked as not read (with its size), and the worker's own
+requests that the HTTP cache answers are recorded like network requests.
+
 #### Several URLs and logging in
 
 ```sh
