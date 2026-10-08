@@ -39,6 +39,7 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
   static readonly UNRECORDED_FORM = 'no request with its password was recorded';
   static readonly LOG_IN = 'or log in with --login';
   static readonly PROBE_FLAGS = '--headless --probe-login';
+  static readonly PREDICTED_HINT = `a label ending in ${Credentials.PREDICTED_MARK} means the endpoint refused every request without credentials and was never requested logged in, so the credential is predicted from what its login issues`;
   static readonly REFUSED_HINT = `a status such as 401${Credentials.UNKNOWN_MARK} means the endpoint refused a request without credentials and the credential it expects was not captured`;
 
   readonly #format: EndpointFormatter;
@@ -93,6 +94,7 @@ export class EndpointListPresenter extends BasePresenter<ApiModel> {
     const credentialed = endpoints.filter((endpoint) => Credentials.sets(endpoint, roles).length > 0);
     if (credentialed.some((endpoint) => endpoint.auth.anonymous === 'allowed')) notes.push(EndpointListPresenter.OPTIONAL_HINT);
     if (credentialed.some((endpoint) => Credentials.untested(endpoint))) notes.push(EndpointListPresenter.UNTESTED_HINT);
+    if (credentialed.some((endpoint) => Credentials.predicted(endpoint) && endpoint.auth.anonymous === 'refused')) notes.push(EndpointListPresenter.PREDICTED_HINT);
     if (endpoints.some((endpoint) => Credentials.refusals(endpoint, roles).length > 0)) notes.push(EndpointListPresenter.REFUSED_HINT);
     return this.compose([header.join('\n'), ...this.#tables(model, groups, index), this.#chart(endpoints, index), this.#statuses(endpoints), this.#session(model, endpoints, index), this.#hints(notes)]);
   }

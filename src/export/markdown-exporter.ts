@@ -39,7 +39,7 @@ export class MarkdownExporter extends BaseExporter {
   document(model: ApiModel, endpoints: Endpoint[], options: ExportOptions = {}): string {
     const opts = Helpers.normalizeOptions(options);
     const index = EndpointIndex.of(model);
-    const guide = new LoginGuide(model);
+    const guide = new LoginGuide(model, endpoints);
     const session = SessionGuide.create(model);
     const sections = [
       this.#md.heading(1, Helpers.title(model, opts)),
@@ -141,7 +141,7 @@ export class MarkdownExporter extends BaseExporter {
     if (credentials !== '') facts.push(`- **Credentials:** ${md.text(credentials)}`);
     if (credentials !== '' || endpoint.role !== undefined) facts.push(`- **Anonymous:** ${md.text(LoginGuide.anonymousNote(endpoint))}`);
     if (endpoint.auth.seen !== undefined && endpoint.auth.seen.length > 0) facts.push(`- **Seen:** ${md.text(endpoint.auth.seen.join(', '))}`);
-    const hint = guide.hint(endpoint, (login) => `[${md.text(`#${index.numberOf(login)} ${login.name}`)}](#${MarkdownExporter.anchor(index.numberOf(login), login)}) (${md.text(`${login.method} ${login.path}`)})`);
+    const hint = guide.hint(endpoint, (login) => `[${md.text(`#${index.numberOf(login)} ${login.name}`)}](#${MarkdownExporter.anchor(index.numberOf(login), login)}) (${md.text(`${login.method} ${login.path}`)})`, (value) => md.text(value));
     if (hint !== undefined) facts.push(`- **Log in:** ${hint}`);
     if (endpoint.auth.cookies.length > 0) facts.push(`- **Cookies sent:** ${endpoint.auth.cookies.map((name) => md.code(name)).join(', ')}`);
     if (endpoint.auth.bearer) facts.push('- **Bearer:** Authorization: Bearer token');

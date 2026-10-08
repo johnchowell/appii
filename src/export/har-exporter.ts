@@ -1,8 +1,9 @@
-import type { ApiModel, Endpoint, Exchange, FormDescriptor } from '../model/index.js';
+import type { ApiModel, Capture, Endpoint, Exchange, FormDescriptor } from '../model/index.js';
 import { HarConverter } from '../capture/index.js';
 import { FormLinker, SecretCollector } from '../build/index.js';
+import type { SecretValues } from '../build/index.js';
 import type { Har } from '../capture/index.js';
-import { AppiiError, FormSource, Json } from '../shared/index.js';
+import { AppiiError, FormSource, Http, Json } from '../shared/index.js';
 import { ExchangeSanitizer } from './exchange-sanitizer.js';
 import type { SanitizeContext } from './exchange-sanitizer.js';
 import { BaseExporter } from './exporter.js';
@@ -14,6 +15,7 @@ export interface HarExporterDeps {
   sanitizer?: (redact: boolean) => ExchangeSanitizer;
   postData?: HarPostDataWriter;
   secrets?: (redact: boolean) => SecretCollector;
+  forms?: (redact: boolean) => FormLinker;
 }
 
 export interface OwnedExchange {
@@ -31,6 +33,7 @@ export class HarExporter extends BaseExporter {
   readonly #sanitizer: (redact: boolean) => ExchangeSanitizer;
   readonly #postData: HarPostDataWriter;
   readonly #secrets: (redact: boolean) => SecretCollector;
+  readonly #forms: (redact: boolean) => FormLinker;
 
   static create(): HarExporter {
     return new HarExporter({
@@ -38,6 +41,7 @@ export class HarExporter extends BaseExporter {
       sanitizer: (redact: boolean) => ExchangeSanitizer.create({ redact }),
       postData: HarPostDataWriter.create(),
       secrets: (redact: boolean) => SecretCollector.create({ redact }),
+      forms: (redact: boolean) => FormLinker.create({ redact }),
     });
   }
 
@@ -47,6 +51,7 @@ export class HarExporter extends BaseExporter {
     this.#sanitizer = deps.sanitizer ?? ((redact: boolean) => ExchangeSanitizer.create({ redact }));
     this.#postData = deps.postData ?? HarPostDataWriter.create();
     this.#secrets = deps.secrets ?? ((redact: boolean) => SecretCollector.create({ redact }));
+    this.#forms = deps.forms ?? ((redact: boolean) => FormLinker.create({ redact }));
   }
 
   exchanges(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Exchange[] {
@@ -62,7 +67,7 @@ export class HarExporter extends BaseExporter {
     for (const endpoint of endpoints) for (const sample of endpoint.samples) if (!owners.has(sample.exchangeId)) owners.set(sample.exchangeId, endpoint);
     const redact = options.redact ?? true;
     const sanitizer = this.#sanitizer(redact);
-    sanitizer.useValues(this.#secrets(redact).collect(capture, FormLinker.secretNames(forms)));
+    sanitizer.useValues(this.#secretValues(capture, forms, redact));
     const contexts = new Map<Endpoint, SanitizeContext>();
     const context = (endpoint: Endpoint): SanitizeContext => {
       let found = contexts.get(endpoint);
@@ -77,6 +82,14 @@ export class HarExporter extends BaseExporter {
       const owner = owners.get(exchange.id);
       return owner ? [{ exchange: sanitizer.sanitize(exchange, context(owner)), endpoint: owner }] : [];
     });
+  }
+
+  #secretValues(capture: Capture, forms: readonly FormDescriptor[], redact: boolean): SecretValues {
+    const linker = this.#forms(redact);
+    const names = new Set([...linker.secretFields(capture), ...FormLinker.secretNames(forms)]);
+    const exchanges = Http.recorded(capture.exchanges);
+    const recorded = exchanges.length === capture.exchanges.length ? capture : { ...capture, exchanges };
+    return this.#secrets(redact).collect(recorded, names, undefined, linker.credentialInput(capture));
   }
 
   archive(endpoints: readonly Endpoint[], options: ExportOptions, forms: readonly FormDescriptor[] = []): Har {

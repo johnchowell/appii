@@ -3,6 +3,7 @@ import { FormExtractor, FormSchemaBuilder, LoginFormDetector, SubmissionRules, T
 import type { FormTarget } from '../forms/index.js';
 import { Json, Schema, Text } from '../shared/index.js';
 import { BodyParser } from './body-parser.js';
+import type { CredentialInput } from './credential-analyzer.js';
 import { ChoiceEvidence } from './choice-evidence.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointMatcher } from './endpoint-matcher.js';
@@ -52,6 +53,7 @@ interface Submission {
   readonly target: FormTarget;
   readonly url: URL;
   readonly observed: readonly ObservedSubmission[];
+  readonly scripts?: readonly ObservedSubmission[];
   readonly by?: FormSubmitter;
 }
 
@@ -161,6 +163,15 @@ export class FormLinker {
     return FormLinker.secretNames(this.#collector.collect(capture));
   }
 
+  credentialInput(capture: Capture): CredentialInput {
+    return {
+      passwordFields: this.passwordFields(capture),
+      loginPages: this.loginPages(capture),
+      identifierFields: this.identifierFields(capture),
+      personalFields: this.personalFields(capture),
+    };
+  }
+
   passwordFields(capture: Capture): Set<string> {
     const names = new Set<string>();
     for (const form of this.#collector.collect(capture)) for (const field of form.fields) if (FormLinker.SECRET_TYPES.has(field.type) && field.name !== '') names.add(field.name);
@@ -209,7 +220,7 @@ export class FormLinker {
       sent.set(form, list);
     };
     const submissions = this.#submissions(forms, observed);
-    const open = this.#choices.open(submissions);
+    const open = this.#choices.open(submissions.map((submission) => ({ form: submission.form, observed: [...submission.observed, ...(submission.scripts ?? [])] })));
     for (const submission of submissions) {
       const existing = FormLinker.#find(endpoints, submission.target.method, submission.url, matcher);
       if (existing) {
@@ -304,7 +315,9 @@ export class FormLinker {
     const url = Helpers.httpUrl(target.url);
     if (!url) return undefined;
     const seen = observed.submissions(form, target);
-    return submitter ? { form, submitter, target, url, observed: seen } : { form, target, url, observed: seen };
+    const scripts = seen.length === 0 ? observed.scriptSubmissions(form, target) : [];
+    const submission: Submission = { form, target, url, observed: seen, ...(scripts.length > 0 ? { scripts, by: FormLinker.SCRIPT } : {}) };
+    return submitter ? { ...submission, submitter } : submission;
   }
 
   #scripted(form: FormDescriptor, paths: readonly (FormField | undefined)[], observed: ObservedSubmissions): Submission | undefined {
@@ -354,14 +367,19 @@ export class FormLinker {
     const { endpoint, submissions } = link;
     const first = submissions[0];
     if (!first) return;
+    const sentAs = first.by === FormLinker.SCRIPT ? FormLinker.#entryEncoding(endpoint.requestBody) : undefined;
     const built = submissions.map((submission) => {
       const openChoices = open.get(submission.form);
-      return this.#schemas.build(submission.form, submission.submitter ?? null, openChoices ? { openChoices } : {});
+      const script = submission.by === FormLinker.SCRIPT;
+      return this.#schemas.build(submission.form, script && !FormLinker.#sendsSubmitter(submission) ? null : (submission.submitter ?? null), {
+        ...(openChoices ? { openChoices } : {}),
+        ...(script && sentAs !== undefined ? { enctype: sentAs } : {}),
+      });
     });
     const primary = built[0]!;
     const secrets = FormLinker.#secretNames(submissions);
     const schema = this.#redactor.schema(this.#combiner.combine(built.map((result) => result.schema)), secrets);
-    if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), primary.mimeType, first.by);
+    if (!endpoint.form) endpoint.form = FormLinker.#endpointForm(this.#redactor.form(first.form), first.target.enctype, first.by);
     if (link.template) endpoint.pathParams = this.#params.path(link.template, submissions.map((submission) => submission.url.pathname));
     if (endpoint.method === 'GET') {
       this.#mergeQuery(endpoint, schema, secrets);
@@ -412,6 +430,16 @@ export class FormLinker {
       ...(merged ? { schema: merged } : {}),
       examples: this.#redactor.examples(observed.examples, secrets),
     };
+  }
+
+  static #sendsSubmitter(submission: Submission): boolean {
+    const names = SubmissionRules.submitterNames(submission.submitter);
+    return names.length > 0 && (submission.scripts ?? []).some((seen) => names.every((name) => seen.entries.has(name)));
+  }
+
+  static #entryEncoding(body: Endpoint['requestBody']): FormEnctype | undefined {
+    if (!body) return undefined;
+    return (Object.keys(FormLinker.ENCTYPE_KINDS) as FormEnctype[]).find((enctype) => FormLinker.ENCTYPE_KINDS[enctype] === body.kind);
   }
 
   static #annotate(observed: JsonSchema | undefined, form: JsonSchema): JsonSchema | undefined {

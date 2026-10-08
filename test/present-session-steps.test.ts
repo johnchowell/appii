@@ -69,7 +69,9 @@ describe('list --show explains how to get a session-bound CSRF token and how to 
     assert.match(text, new RegExp(`The token csrf_token changes with the session: request GET ${ORIGIN}/login, read the hidden field csrf_token, and send it with the cookie session from the same session\\.`));
     assert.match(text, /The example above leaves these steps to you; the curl export does them with a cookie jar:/);
     assert.ok(steps.includes('  appii export api.json --format curl -o endpoints.sh'), steps.join('\n'));
-    assert.ok(steps.includes('  bash endpoints.sh postLogin username=VALUE password=VALUE'), steps.join('\n'));
+    assert.ok(steps.includes('  read -rs APPII_PASSWORD && export APPII_PASSWORD'), steps.join('\n'));
+    assert.ok(steps.includes('  bash endpoints.sh postLogin username=VALUE'), steps.join('\n'));
+    assert.ok(!text.includes('password=VALUE'), text);
     assert.match(text, /keeps the cookies the login sets in its jar/);
     assert.ok(!text.includes(CSRF) && !text.includes(ANON));
   });

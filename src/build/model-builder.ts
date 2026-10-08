@@ -9,7 +9,6 @@ import { BodyShaper } from './body-shaper.js';
 import { CookieClassifier } from './cookie-classifier.js';
 import { CookieInventory } from './cookie-inventory.js';
 import { CredentialAnalyzer } from './credential-analyzer.js';
-import type { CredentialInput } from './credential-analyzer.js';
 import { EndpointFactory } from './endpoint-factory.js';
 import { EndpointGrouper } from './endpoint-grouper.js';
 import type { GroupContext } from './endpoint-grouper.js';
@@ -154,27 +153,25 @@ export class ModelBuilder {
   build(capture: Capture): ApiModel {
     const forms = this.#parts.forms;
     const recorded = ModelBuilder.#recorded(capture);
-    const input: CredentialInput = {
-      passwordFields: forms.passwordFields(capture),
-      loginPages: forms.loginPages(capture),
-      identifierFields: forms.identifierFields(capture),
-      personalFields: forms.personalFields(capture),
-    };
+    const input = forms.credentialInput(capture);
     const evidence = this.#credentials.analyze(recorded, input);
     this.#redactor.useValues(this.#secrets.collect(recorded, forms.secretFields(capture), evidence, input));
     const chosen = this.#chosenOrigins(capture);
     const allowed = new Set(chosen);
     const exchanges = capture.exchanges.filter((exchange) => allowed.has(Helpers.originOf(exchange.request.url) ?? ''));
+    const credentials = (exchange: Exchange): string[] => this.#parts.auth.credentialSet(exchange, evidence);
+    const submitted = this.#parts.forms.submitted(capture);
+    const signOuts = this.#roles.signOuts(recorded, { evidence, input, credentials });
     const context: GroupContext = {
       forms: this.#parts.forms.targets(capture),
       encoding: this.#parts.forms.submissionEncoding(capture),
-      submitted: this.#parts.forms.submitted(capture),
-      credentials: (exchange) => this.#parts.auth.credentialSet(exchange, evidence),
+      actions: (exchange) => submitted(exchange) || signOuts.has(exchange),
+      credentials,
     };
     const grouped = this.#parts.grouper.group(exchanges, context);
     const linked = this.#parts.forms.link(grouped, capture);
     const endpoints = linked.endpoints.filter((endpoint) => allowed.has(endpoint.origin));
-    this.#roles.detect(endpoints, recorded, { evidence, input, forms: linked.targets, credentials: context.credentials });
+    this.#roles.detect(endpoints, recorded, { evidence, input, forms: linked.targets, credentials });
     this.#parts.auth.detect(endpoints, recorded, evidence);
     endpoints.sort(ModelBuilder.#compare);
     this.#parts.namer.name(endpoints);

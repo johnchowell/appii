@@ -23,7 +23,7 @@ export class BuildOptionGroup implements OptionGroup<BuildOptions> {
     origin: { value: 'url', description: 'Keep only endpoints of this origin; repeat for more (default: the first-party origins)' },
     'all-origins': { description: 'Keep endpoints of every origin, third-party ones included' },
     'include-static': { description: 'Keep static assets such as scripts, styles, images and fonts' },
-    documents: { flag: '--no-documents', description: 'Leave out HTML page loads (form submissions stay)' },
+    documents: { flag: '--no-documents', description: 'Leave out HTML page loads (form submissions and sign-outs stay)' },
     redact: { flag: '--no-redact', description: 'Keep secret values (cookies, tokens, passwords) in examples' },
   };
 

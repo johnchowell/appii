@@ -37,7 +37,8 @@ class GuardFixture {
   }
 
   static bash(script: string, env: Record<string, string>, cwd?: string): { status: number | null; stdout: string; stderr: string } {
-    const run = spawnSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; }\n${script}`], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C', ...env }, encoding: 'utf8', ...(cwd === undefined ? {} : { cwd }) });
+    const stub = `curl() { for a in "$@"; do if [[ "$a" == ?*@/dev/fd/* ]]; then printf '%s=%s\\n' "\${a%%@/dev/fd/*}" "$(cat -- "\${a#*@}")"; elif [[ "$a" == @/dev/fd/* ]]; then cat -- "\${a#@}"; else printf '%s\\n' "$a"; fi; done; }`;
+    const run = spawnSync('bash', ['-c', `${stub}\n${script}`], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C', ...env }, encoding: 'utf8', ...(cwd === undefined ? {} : { cwd }) });
     return { status: run.status, stdout: run.stdout, stderr: run.stderr };
   }
 }
@@ -60,20 +61,26 @@ describe('the one-command example needs the CSRF token and the cookies it is bou
   test('the shell example stops on an unset token or cookie; with explain the first use of each variable says where the value comes from', () => {
     const sample = Samples.requestSample(GuardFixture.login());
     const short = Curl.curlCommand(sample, { variables: 'shell' });
-    assert.match(short, /-b "session=\$\{APPII_SESSION:\?\}; theme=\$\{APPII_THEME\}"/);
-    assert.match(short, /--data-urlencode "csrf_token=\$\{APPII_CSRF_TOKEN:\?\}"/);
-    assert.match(short, /--data-urlencode "username=\$\{APPII_USERNAME:\?\}"/);
+    assert.ok(short.startsWith(': "${APPII_SESSION:?}" "${APPII_CSRF_TOKEN:?}" "${APPII_USERNAME:?}" "${APPII_PASSWORD:?}" && curl -sS -X POST'), short);
+    assert.ok(short.includes(`-H @<(printf '%s\\n' "Cookie: session=\${APPII_SESSION}\${APPII_THEME:+; theme=$APPII_THEME}")`), short);
+    assert.ok(short.includes(`--data-urlencode 'csrf_token@'<(printf '%s' "\${APPII_CSRF_TOKEN}")`), short);
+    assert.ok(short.includes(`--data-urlencode 'username@'<(printf '%s' "\${APPII_USERNAME}")`), short);
     const explained = Curl.curlCommand(sample, { variables: 'shell', explain: true });
-    assert.match(explained, /-b "session=\$\{APPII_SESSION:\?the session cookie of GET https:\/\/shop\.example\.com\/login that csrf_token is bound to; bash endpoints\.sh postLogin keeps it\}; theme=\$\{APPII_THEME\}"/);
-    assert.match(explained, /--data-urlencode "username=\$\{APPII_USERNAME:\?\}"/);
+    assert.ok(explained.startsWith(': "${APPII_SESSION:?the session cookie of GET https://shop.example.com/login that csrf_token is bound to; bash endpoints.sh postLogin keeps it}" "${APPII_CSRF_TOKEN:?the hidden field csrf_token of GET https://shop.example.com/login; bash endpoints.sh postLogin fetches it}" "${APPII_USERNAME:?}" "${APPII_PASSWORD:?}" && curl'), explained);
+    assert.ok(explained.includes('"Cookie: session=${APPII_SESSION}${APPII_THEME:+; theme=$APPII_THEME}"'), explained);
     const unset = GuardFixture.bash(explained, { APPII_USERNAME: 'u', APPII_PASSWORD: 'p', APPII_SESSION: 's' });
     assert.notEqual(unset.status, 0);
     assert.equal(unset.stdout, '');
     assert.match(unset.stderr, /APPII_CSRF_TOKEN: the hidden field csrf_token of GET https:\/\/shop\.example\.com\/login; bash endpoints\.sh postLogin fetches it/);
     const set = GuardFixture.bash(explained, { APPII_USERNAME: 'u', APPII_PASSWORD: 'p', APPII_SESSION: 's', APPII_CSRF_TOKEN: 't' });
     assert.equal(set.status, 0, set.stderr);
-    assert.ok(set.stdout.split('\n').includes('csrf_token=t'));
-    assert.ok(set.stdout.split('\n').includes('session=s; theme='));
+    assert.ok(set.stdout.split('\n').includes('csrf_token=t'), set.stdout);
+    assert.ok(set.stdout.split('\n').includes('password=p'), set.stdout);
+    assert.ok(set.stdout.split('\n').includes('Cookie: session=s'), set.stdout);
+    assert.ok(!set.stdout.includes('theme'), set.stdout);
+    const theme = GuardFixture.bash(explained, { APPII_USERNAME: 'u', APPII_PASSWORD: 'p', APPII_SESSION: 's', APPII_CSRF_TOKEN: 't', APPII_THEME: 'dark' });
+    assert.equal(theme.status, 0, theme.stderr);
+    assert.ok(theme.stdout.split('\n').includes('Cookie: session=s; theme=dark'), theme.stdout);
   });
 
   test('a double-submit token repeats its cookie: the first use carries the message and the cookie stops too', () => {
@@ -84,8 +91,8 @@ describe('the one-command example needs the CSRF token and the cookies it is bou
       auth: { cookies: ['csrf'], headers: [], anonymous: 'untested', bearer: false, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrf' }] },
     });
     const command = Curl.curlCommand(Samples.requestSample(items), { variables: 'shell', explain: true });
-    assert.match(command, /-H "x-csrf-token: \$\{APPII_CSRF:\?the cookie csrf; bash endpoints\.sh postApiItems reads it from its cookie jar\}"/);
-    assert.match(command, /-b "csrf=\$\{APPII_CSRF:\?\}"/);
+    assert.ok(command.startsWith(': "${APPII_CSRF:?the cookie csrf; bash endpoints.sh postApiItems reads it from its cookie jar}" && curl'), command);
+    assert.ok(command.includes(`-H @<(printf '%s\\n' "x-csrf-token: \${APPII_CSRF}" "Cookie: csrf=\${APPII_CSRF}")`), command);
   });
 
   test('a token from the response of another request names that request and does not promise that the script fetches it', () => {

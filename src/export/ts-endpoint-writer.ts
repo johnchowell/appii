@@ -71,6 +71,8 @@ export class TsEndpointWriter {
   static readonly TEXT_PLAIN = 'text/plain';
   static readonly URLENCODED = 'application/x-www-form-urlencoded';
   static readonly SCRIPT_CHARSET = 'UTF-8';
+  static readonly COMMENT_END: RegExp = /\*\//g;
+  static readonly COMMENT_END_SAFE = '*\\/';
   static readonly PLAIN: TokenSourceMarkup = Object.freeze({ text: (value: string) => value, code: (value: string) => value, url: (value: string) => value });
   static readonly NAVIGATE_TYPES: ReadonlySet<string> = new Set(['document']);
   static readonly CORS_TYPES: ReadonlySet<string> = new Set(['fetch', 'xhr', 'eventsource']);
@@ -228,7 +230,7 @@ export class TsEndpointWriter {
           : `Sends a bearer token when the client has one: the one a login through this client returned, or accessToken in the client options or in the request.${anonymous === 'untested' ? ' Anonymous access was not tested: every captured request sent one.' : ''}`,
       );
     }
-    const hint = guide.hint(endpoint, call);
+    const hint = guide.hint(endpoint, call, (value) => value.replace(TsEndpointWriter.COMMENT_END, TsEndpointWriter.COMMENT_END_SAFE));
     if (hint !== undefined) lines.push(hint);
     const form = Helpers.formSource(endpoint, TsEndpointWriter.PLAIN);
     if (form !== undefined) lines.push(form);
@@ -244,7 +246,12 @@ export class TsEndpointWriter {
     const code = (value: string): string => value;
     const role = guide.describe(endpoint, code);
     if (role === undefined) return [];
-    if (LoginGuide.isLogout(endpoint)) return [`${role} The cookie jar of the client takes the new cookies, and the client forgets the bearer token that a login returned.`];
+    if (LoginGuide.isLogout(endpoint)) {
+      const effects: string[] = [];
+      if (guide.revokes(endpoint).length > 0) effects.push('The cookie jar of the client takes the new cookies.');
+      if (guide.logins().some((login) => LoginGuide.tokens(login).length > 0)) effects.push('The client forgets the bearer token that a login returned.');
+      return [[role, ...effects].join(' ')];
+    }
     const login = endpoint.login;
     if (!login) return [role];
     const inputs = TsEndpointWriter.#loginInputs(endpoint).map(([name]) => name);

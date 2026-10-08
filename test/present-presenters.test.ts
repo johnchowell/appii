@@ -502,20 +502,20 @@ describe('EndpointDetailPresenter', () => {
     const wide = section(detail(4, { width: 200 }), 'Example request (curl)');
     const command = wide.slice(0, wide.indexOf(''));
     assert.deepEqual(command, [
-      "curl -sS -X POST 'https://shop.example.com/api/items' \\",
-      '  -H "x-csrf-token: ${APPII_CSRF:?}" \\',
+      ': "${APPII_CSRF:?}" && curl -sS -X POST \'https://shop.example.com/api/items\' \\',
       "  -H 'Content-Type: application/json' \\",
-      '  -b "auth=${APPII_AUTH}; csrf=${APPII_CSRF:?}" \\',
+      `  -H @<(printf '%s\\n' "x-csrf-token: \${APPII_CSRF}" "Cookie: \${APPII_AUTH:+auth=$APPII_AUTH; }csrf=\${APPII_CSRF}") \\`,
       `  --data-raw '{"name":"Thing","price":5}' \\`,
       '  --compressed',
     ]);
     assert.equal(wide[wide.length - 1], 'Variables: APPII_AUTH APPII_CSRF');
-    const unset = spawnSync('sh', ['-c', command.join('\n').replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a' }, encoding: 'utf8' });
+    const stub = `curl() { for a in "$@"; do if [[ "$a" == *@/dev/fd/* ]]; then printf '<%s@%s>\\n' "\${a%%@/dev/fd/*}" "$(cat -- "\${a#*@}")"; else printf '<%s>\\n' "$a"; fi; done; }\n`;
+    const unset = spawnSync('bash', ['-c', stub + command.join('\n')], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a' }, encoding: 'utf8' });
     assert.notEqual(unset.status, 0);
     assert.equal(unset.stdout, '');
     assert.match(unset.stderr, /APPII_CSRF/);
     const argv = (script: string) =>
-      execFileSync('sh', ['-c', script.replace(/^curl\b/, "printf '<%s>\\n'")], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_CSRF_TOKEN: 'k', APPII_SID: 's', APPII_THEME: 't', APPII_EMAIL: 'e', APPII_PASSWORD: 'p' } }).toString();
+      execFileSync('bash', ['-c', stub + script], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', APPII_AUTH: 'a', APPII_CSRF: 'c c', APPII_CSRF_TOKEN: 'k', APPII_SID: 's', APPII_THEME: 't', APPII_EMAIL: 'e', APPII_PASSWORD: 'p' } }).toString();
     for (const ref of [4, 9, 12]) {
       const reference = section(detail(ref, { width: 400 }), 'Example request (curl)');
       const expected = argv(reference.slice(0, reference.indexOf('')).join('\n'));
@@ -530,14 +530,16 @@ describe('EndpointDetailPresenter', () => {
 
   test('bearer endpoints get a Bearer placeholder and multipart text fields are sent as literal strings', () => {
     const bearer = detail('createOrder', { width: 200 }, MIXED);
-    assert.match(bearer, /-H "authorization: Bearer \$\{APPII_ACCESS_TOKEN\}"/);
+    assert.ok(bearer.includes(`-H @<(printf '%s\\n' "\${APPII_ACCESS_TOKEN:+authorization: Bearer $APPII_ACCESS_TOKEN}")`), bearer);
     assert.match(bearer, /Variables: APPII_ACCESS_TOKEN/);
     const signup = detail(12, { width: 200 });
     assert.match(signup, /--form-string 'username=username'/);
     assert.match(signup, /--form-string 'interests=a' \\\n {2}--form-string 'interests=c'/);
     const login = detail(9, { width: 200 });
-    assert.match(login, /--data-urlencode "csrf_token=\$\{APPII_CSRF_TOKEN:\?\}"/);
-    assert.match(login, /-b "sid=\$\{APPII_SID:\?\}; theme=\$\{APPII_THEME\}"|-b "[^"]*sid=\$\{APPII_SID:\?\}/);
+    assert.ok(login.includes(`: "\${APPII_SID:?}" "\${APPII_CSRF_TOKEN:?}" "\${APPII_EMAIL:?}" "\${APPII_PASSWORD:?}" && curl -sS -X POST`), login);
+    assert.ok(login.includes(`-H @<(printf '%s\\n' "Cookie: sid=\${APPII_SID}")`), login);
+    assert.ok(login.includes(`--data-urlencode 'csrf_token@'<(printf '%s' "\${APPII_CSRF_TOKEN}")`), login);
+    assert.ok(login.includes(`--data-urlencode 'password@'<(printf '%s' "\${APPII_PASSWORD}")`), login);
   });
 
   test('exampleRequest links double-submit cookies and leaves other placeholders alone', () => {
@@ -559,7 +561,8 @@ describe('EndpointDetailPresenter', () => {
     assert.deepEqual(root.headers, []);
     assert.equal(root.body, undefined);
     const detail = new EndpointDetailPresenter({ width: 200 }).render({ model: FIXTURE, ref: 4 });
-    assert.equal(detail.split(' -b ').length - 1, 1, detail);
+    assert.equal(detail.split('"Cookie: ').length - 1, 1, detail);
+    assert.ok(!detail.includes(' -b '), detail);
   });
 
   test('create() builds the default collaborators', () => {

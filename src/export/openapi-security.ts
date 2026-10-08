@@ -24,11 +24,11 @@ export class OpenApiSecurity {
   readonly #guide: LoginGuide;
   readonly #operations: ReadonlyMap<string, string>;
 
-  constructor(model: ApiModel, components: OpenApiComponents, operations: ReadonlyMap<string, string> = new Map()) {
+  constructor(model: ApiModel, components: OpenApiComponents, operations: ReadonlyMap<string, string> = new Map(), exported: readonly Endpoint[] = model.endpoints) {
     this.#model = model;
     this.#components = components;
     this.#roles = Credentials.roles(model);
-    this.#guide = new LoginGuide(model);
+    this.#guide = new LoginGuide(model, exported);
     this.#operations = operations;
   }
 
@@ -37,11 +37,17 @@ export class OpenApiSecurity {
   }
 
   operation(endpoint: Endpoint): string {
-    return LoginGuide.label(endpoint, this.#operations.get(endpoint.id));
+    return this.#guide.reference(endpoint, (target) => LoginGuide.label(target, this.#operations.get(target.id)));
   }
 
   get roles(): CookieRoles {
     return this.#roles;
+  }
+
+  predicted(endpoint: Endpoint): string | undefined {
+    if (!Credentials.predicted(endpoint) || Credentials.optional(endpoint)) return undefined;
+    const issuers = Credentials.issuers(this.#model, endpoint).map((login) => this.operation(login));
+    return Credentials.describe(endpoint, this.#roles, issuers.join(' or '));
   }
 
   requirements(endpoint: Endpoint): SecurityRequirement[] {
@@ -101,7 +107,7 @@ export class OpenApiSecurity {
   #names(ids: readonly string[]): string[] {
     const names = ids.map((id) => {
       const endpoint = this.#guide.endpoint(id);
-      return endpoint === undefined ? id : this.operation(endpoint);
+      return endpoint === undefined ? id : LoginGuide.label(endpoint, this.#operations.get(endpoint.id));
     });
     return [...new Set(names)];
   }

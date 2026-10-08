@@ -153,7 +153,7 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     assert.deepEqual(account.auth.seen, ['anonymous', 'authenticated']);
     assert.deepEqual(openapi(model).paths['/account']?.get?.security, [{ sessionCookie: [] }]);
     assert.deepEqual(EndpointFormatter.authLabels(account, Credentials.roles(model)), ['cookie']);
-    assert.ok(example(model, account).includes('-b "session=${APPII_SESSION}"'), example(model, account));
+    assert.ok(example(model, account).includes(`-H @<(printf '%s\\n' "Cookie: \${APPII_SESSION:+session=$APPII_SESSION}")`), example(model, account));
   });
 
   test('a page seen with and without the login is marked optional in every output', () => {
@@ -176,7 +176,7 @@ describe('a cookie is an auth requirement only with evidence (QTS-5, WIKI-5)', (
     assert.deepEqual(login.auth.sets, []);
     const token = login.auth.csrf.find((candidate) => candidate.name === 'csrf_token');
     assert.deepEqual(token?.sessionCookies, ['session']);
-    assert.ok(example(model, login).includes('-b "session=${APPII_SESSION:?}"'), example(model, login));
+    assert.ok(example(model, login).includes('"${APPII_SESSION:?}"') && example(model, login).includes(`"Cookie: session=\${APPII_SESSION}"`), example(model, login));
     assert.deepEqual(endpoint(model, 'GET', '/logout').auth.sets, [['cookie:session']]);
   });
 
@@ -302,7 +302,7 @@ describe('credentials sent together are one requirement, and HTTP schemes keep t
     assert.deepEqual(spec.components?.securitySchemes?.basicAuth, { type: 'http', scheme: 'basic', description: 'HTTP Basic authentication: a user name and password in the Authorization header.' });
     assert.deepEqual(spec.paths['/basic-auth/user/pass']?.get?.security, [{ basicAuth: [] }]);
     const command = example(model, basic);
-    assert.ok(command.includes('-u "${APPII_USERNAME}:${APPII_PASSWORD}"'), command);
+    assert.ok(command.includes(`appii_config user "\${APPII_USERNAME}:\${APPII_PASSWORD}")`) && !command.includes(' -u '), command);
     assert.ok(!/authorization:/i.test(command), command);
     const postman = JSON.parse(ExporterRegistry.default().export(model, 'postman').content) as { item: { item?: { name: string; request: { auth?: { type: string } } }[]; name: string; request?: { auth?: { type: string } } }[] };
     const items = postman.item.flatMap((entry) => entry.item ?? [entry]);

@@ -223,7 +223,10 @@ endpoint and why: requests to other origins, static assets, CORS preflights,
 WebSocket handshakes, service worker responses, answers from the browser cache
 and, with `--no-documents`, page loads. A navigation that an HTML form produced
 (a GET search form, for example) is a form submission, not a page load, so
-`--no-documents` keeps it. A GET form that was never submitted becomes an
+`--no-documents` keeps it. A sign-out navigation is an action too: a link such
+as `GET /logout` that gets the logout role (see Credentials) stays with
+`--no-documents`, so the model keeps the logout, its name (`getLogout`) and the
+cookies it revokes (`revokedBy`). A GET form that was never submitted becomes an
 endpoint (with 0 hits) only when it names an `action` that the capture did not
 load as a page; a form without an `action`, such as a banner that page script
 intercepts, and a form that targets a page that was loaded never do, with or
@@ -318,6 +321,25 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
   credentials)`, the example request and the `curl` function carry a note,
   and the OpenAPI operation has no `security` (instead of `security: []`) and
   `x-appii-auth: required-unobserved`.
+- When such an endpoint was refused without credentials and never requested
+  logged in, while a login of the model issued a credential that the browser
+  would send to it (a cookie in `login.issues.cookies` whose domain, path and
+  `Secure` flag match its URL, or, for a request that a script made to the
+  origin of the login, the bearer token in `login.issues.tokens`), appii
+  predicts that credential: `auth.sets` holds it, `auth.predicted` is `true`,
+  `auth.anonymous` stays `refused` and `auth.seen` stays `anonymous`. A page
+  load never carries a bearer token that a script holds, so a page gets no
+  bearer prediction. When the logins issue different credentials for the
+  endpoint, the evidence is ambiguous and nothing is predicted. `list` marks
+  the label with `*` (`cookie*`), `--show` says `probably cookie session
+  (issued by #4 POST /login; not observed on this endpoint)`, the Markdown,
+  HTML and Postman descriptions say the same with `issued by the login`, the
+  HTML badge is `auth*`, and the OpenAPI operation requires that credential in
+  its `security`, has `x-appii-predicted: true` and says in its description
+  `Credential: probably cookie session (issued by postLogin (POST /login); not
+  observed on this endpoint).`
+  The credentials of an endpoint known only from a form (see below) are
+  predicted too and carry `auth.predicted: true`.
 - A session or auth cookie (by name) is a credential when the value that was
   sent came from a login: a response to a request with a password field, an
   `Authorization` header or an OAuth callback code set it, or a response to a
@@ -348,8 +370,10 @@ TypeScript client) follows the same rule, stored in `auth.sets`:
   401, 403 or a redirect to the login page without them and the server kept
   their values.
 - `Authorization: Basic ...` maps to the OpenAPI `http`/`basic` scheme, and
-  the example uses `curl -u "${APPII_USERNAME}:${APPII_PASSWORD}"`. Other
-  schemes keep their name (`http`/`bearer`, `http`/`digest`).
+  the example gives curl the user name and password from `APPII_USERNAME`
+  and `APPII_PASSWORD` as its `user` option in a config on a file descriptor
+  (`-K <(...)`), not as `-u` on the command line. Other schemes keep their
+  name (`http`/`bearer`, `http`/`digest`).
 
 `auth.cookies` still lists every cookie that the browser sent. The example
 request sends only the credential cookies and the cookies that a CSRF token
@@ -391,12 +415,24 @@ submits, is never the login; when no request of the form was recorded,
 starts a sign-out request is a page, not the logout: the logout is the request
 that revoked the credential.
 
-When a script of the form, not the form itself, sent the request (the request
-carries the form fields but not to the form's own action, method or enctype),
-the endpoint has `form.submittedBy: script` and its request body keeps the
-type that the script sent (such as `application/json`). The form's own
-`action`, `method` and `enctype` stay in `form` as facts about the form, but
-they are not how the endpoint is called.
+When a script of the form, not the form itself, sent the request, the
+endpoint has `form.submittedBy: script` and its request body keeps the type
+that the script sent (such as `application/json`). That is a `fetch` or
+`XMLHttpRequest` from the page of the form that carries every field the form
+always submits (an unchecked checkbox or radio button and a multiple select
+with nothing selected may be missing, as in the form data set of the HTML
+standard): for a form without an `action`, a request to whatever URL the
+script chose; for a form with an `action`, a request to that action with the
+form's method while no navigation submitted the form, such as
+`fetch(form.action, { method: 'POST', body: new FormData(form) })`. When the
+script sent the fields as form data (`multipart/form-data`,
+`application/x-www-form-urlencoded` or `text/plain`), they are the form's own
+entries, so the request body keeps the field rules of the form (types,
+`required`, lengths, patterns, select options and defaults) in the type that
+was sent; a JSON body, which the script built itself, gets only the labels and
+HTML hints of the form fields. The form's own `action`, `method`
+and `enctype` stay in `form` as facts about the form, but they are not how the
+endpoint is called.
 
 A request that appii stopped while it probed a login form with placeholder
 values (an exchange with `source: probe`, which has no response because it
@@ -534,8 +570,10 @@ The `AUTH` column marks the rows `login` and `logout`. A credential label that
 ends in `?` means that the endpoint also answered a request without that
 credential (`auth.anonymous` is `allowed`), a label that ends in `~` means that
 every request seen carried it, so anonymous access was not tested (`untested`),
-and a label without a mark means that requests without it were refused
-(`refused`). A refusal can be a 401, a 403 or a redirect to the login page
+a label that ends in `*` means that requests without it were refused and that
+the credential is predicted from what the login issues (`auth.predicted`, see
+Credentials), and a label without a mark means that requests without it were
+refused (`refused`). A refusal can be a 401, a 403 or a redirect to the login page
 (`302?` when no credential was captured). `--show` prints the role, the login
 fields and what the login issues, `Anonymous: allowed | refused | not tested`
 and `Seen: anonymous, authenticated`. Its CSRF table has a `BOUND TO` column
@@ -653,8 +691,26 @@ uses `--compressed`. `APPII_BASE_URL` sets the base URL and `APPII_COOKIE` sets
 the Cookie header. An endpoint that received more than one body type has one
 function per type (`postPost`, `postPostJson`, `postPostMultipart`), listed
 below it. A multipart file part reads the file in `APPII_<FIELD>_FILE`
-(default: the captured file name in the current directory). Sourcing the
-script defines the functions without changing the options of your shell.
+(default: the captured file name in the current directory); when the function
+cannot read that file it stops with exit code 2 and names the variable before
+it sends anything. Sourcing the script defines the functions without changing
+the options of your shell.
+
+No credential value is an argument of curl or of another process that the
+script starts. A function writes a request body and the headers that can hold
+a password, a token or another credential with shell builtins into a file
+descriptor that curl reads (`--data-binary @<(...)`, `-H @<(...)`), so the
+value is not in a process list. The cookie value in `APPII_COOKIE` and the
+HTTP Basic user name and password go to curl the same way, as the `cookie`
+and `user` options of a curl config on a file descriptor
+(`-K <(appii_config cookie "$APPII_COOKIE")`); `appii_config` escapes `\`,
+`"` and line breaks for the config syntax. The cookies of the jar are read
+from its file. The one-command examples of `list --show`, Markdown and HTML
+send their cookies as a `Cookie` line of the `-H @<(...)` header file. Give
+the password in its variable rather than as an argument
+(`bash endpoints.sh postLogin password=...` puts it on the command line of
+bash); `read -rs` reads it without showing it and keeps it out of the shell
+history.
 
 The script keeps a cookie jar like a browser: every function reads and writes
 the file in `APPII_COOKIE_JAR` (default: `<api name>-cookies.txt` in the
@@ -665,13 +721,14 @@ the same shell without copying a cookie or a token:
 
 ```sh
 source endpoints.sh
-postLogin username=me password="$MY_PASSWORD"
+read -rs APPII_PASSWORD && export APPII_PASSWORD
+postLogin username=me
 getAccount
 ```
 
-The login identifier and the password have no default value: give them as
-arguments or in `APPII_USERNAME` and `APPII_PASSWORD` (the variable names come
-from the field names), or the function stops with a message that names the
+The login identifier and the password have no default value: give them in
+`APPII_USERNAME` and `APPII_PASSWORD` (the variable names come from the field
+names) or as arguments, or the function stops with a message that names the
 variable. A token that only JavaScript puts into the page cannot be read from
 the HTML; the function then prints a warning that names the URL it requested
 (under `APPII_BASE_URL` when you set it) and the variable to set.
@@ -686,7 +743,8 @@ function work in the same shell like the cookie jar does:
 
 ```sh
 source endpoints.sh
-postAuthLogin username=me password="$MY_PASSWORD"
+read -rs APPII_PASSWORD && export APPII_PASSWORD
+postAuthLogin username=me
 getProfile
 ```
 
@@ -699,6 +757,15 @@ anonymous access is allowed sends it without the header. An `Authorization`
 header given as a curl argument (`-H`) is sent instead of the token. A login
 response without the token leaves the token file as it was and says so, and
 the logout function deletes the token file after its request.
+
+The login function lets curl write the response into a file of its own and
+reads the token from there, so it saves the token whatever output arguments
+you add: with `-o FILE` (also `--output FILE`, `-oFILE`, `-so FILE` or
+`-o -`) it then writes the response where they say, and when it cannot write
+that file it says so, keeps the token and returns 23 as curl would. The curl
+options that choose the output file themselves (`-O`, `--remote-name`,
+`--remote-name-all`, `-J`, `--remote-header-name`, `--output-dir`) stop the
+login function with exit code 2 before it sends anything.
 
 The `typescript` client fills CSRF tokens from the pages and responses that
 the site uses. It keeps a page while the cookies for that page stay the same.
@@ -721,7 +788,11 @@ The client types a redirect that it follows as the response of the endpoint
 the redirect leads to (`responses[].redirectTo` in the model), so the 302 of a
 login form is typed as the page it leads to; with `redirect: 'manual'` the
 client returns the redirect itself. Method comments say which credential
-cookies, bearer token or Basic credentials an endpoint needs.
+cookies, bearer token or Basic credentials an endpoint needs. The comment of
+a logout says only what the model shows: that the cookie jar takes the new
+cookies when the logout revokes a cookie (`revokedBy`), and that the client
+forgets the bearer token only when a login returns one
+(`login.issues.tokens`).
 
 After `client.<login>(...)` the client's cookie jar holds the cookies that the
 login issued, and a JSON token that the login returns (`login.issues.tokens`)
@@ -736,6 +807,14 @@ by its operationId and its method and path, for example `Session cookie
 session (HttpOnly), set by getLoginPage (GET /login), postLogin (POST /login),
 getLogout (GET /logout).` An operation whose anonymous access was not tested
 lists `{}` as an alternative to its credentials and says so.
+
+An export of a subset that leaves out the login (or the logout) names it by
+method and path and says how to add it, in every format, instead of linking
+an endpoint that is not there: `Log in first with POST /login (not in this
+export; add it with --endpoints postLogin).` In OpenAPI the security scheme
+says `The login operation POST /login (not in this export; add it with
+--endpoints postLogin) issues it.` An export of all endpoints links the login
+as before.
 
 Postman orders the collection for a Collection Runner run: the folder of the
 login comes first (after the folder of the page that holds its CSRF token,
@@ -757,19 +836,34 @@ after `Role: Login:` or `Role: Logout:`.
 
 The Markdown and HTML reports name the session cookie a CSRF token is bound to
 (`csrfToken.sessionCookies`: the token is only valid with the cookie that the
-same response set). Their example request is one curl command. It stops
-before it sends anything when the CSRF token or a cookie the token is bound to
+same response set). Their example request is one curl command for bash or
+zsh (it uses process substitution). It stops before it sends anything when
+the CSRF token, a cookie the token is bound to, the user name or the password
 is not set, with a message that names where the value comes from and the curl
-function that gets it, so it never sends an empty token:
+function that gets it, so it never sends an empty token. A form field or a
+header whose value comes from a variable reaches curl through a file
+descriptor, not as an argument:
 
 ```sh
--b "session=${APPII_SESSION:?the session cookie of GET https://quotes.toscrape.com/login that csrf_token is bound to; bash endpoints.sh postLogin keeps it}"
---data-urlencode "csrf_token=${APPII_CSRF_TOKEN:?the hidden field csrf_token of GET https://quotes.toscrape.com/login; bash endpoints.sh postLogin fetches it}"
+: "${APPII_CSRF_TOKEN:?the hidden field csrf_token of GET https://quotes.toscrape.com/login; bash endpoints.sh postLogin fetches it}" "${APPII_USERNAME:?}" "${APPII_PASSWORD:?}" && curl -sS -X POST 'https://quotes.toscrape.com/login' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -b "session=${APPII_SESSION:?the session cookie of GET https://quotes.toscrape.com/login that csrf_token is bound to; bash endpoints.sh postLogin keeps it}" \
+  --data-urlencode 'csrf_token@'<(printf '%s' "${APPII_CSRF_TOKEN}") \
+  --data-urlencode 'username@'<(printf '%s' "${APPII_USERNAME}") \
+  --data-urlencode 'password@'<(printf '%s' "${APPII_PASSWORD}") \
+  --compressed
 ```
 
 The example in `list --show` stops the same way with the shell's own message
 (`${APPII_CSRF_TOKEN:?}`), because it folds the command to the terminal width.
 Site text in the message is percent-encoded where the shell would read it.
+
+A cookie that no CSRF token is bound to is optional in the examples: it is
+sent only when its variable is set, and the Cookie header holds exactly the
+pairs that are set (no header when none is), for example
+`-b "${APPII_SESSION:+session=$APPII_SESSION}${APPII_THEME:+${APPII_SESSION:+; }theme=$APPII_THEME}"`.
+A bearer token is sent the same way only when `APPII_ACCESS_TOKEN` is set:
+`-H @<(printf '%s\n' "${APPII_ACCESS_TOKEN:+authorization: Bearer $APPII_ACCESS_TOKEN}")`.
 
 A value that goes into a JSON body is escaped for JSON (backslash, double
 quote, and control characters as `\u00XX`) by the same `appii_json` encoder
@@ -787,11 +881,13 @@ body come first, so an unset value stops the command before curl runs
 ```
 For a login, and for an endpoint whose CSRF token comes from a page, a
 `Session steps` paragraph says how to get the token and gives the curl export
-commands that do it with a cookie jar, with the name of the curl function:
+commands that do it with a cookie jar, with the name of the curl function. The
+password is read into its variable, not given as an argument:
 
 ```sh
 appii export api.json --format curl -o endpoints.sh
-bash endpoints.sh postLogin username=VALUE password=VALUE
+read -rs APPII_PASSWORD && export APPII_PASSWORD
+bash endpoints.sh postLogin username=VALUE
 ```
 
 An endpoint that a script of a form sends (`form.submittedBy: "script"`, for
@@ -814,7 +910,11 @@ their parameters, and uses base64 only for bytes that are not text. It
 replaces each distinct cookie value with its own placeholder (`<redacted>1`,
 `<redacted>2`, ... per cookie name, the same in `Cookie` and `Set-Cookie`), so
 `capture --from-har` of the export keeps which session each request carried
-and builds the same credentials.
+and builds the same credentials. The `har` export finds the values to hide
+with the same credential input that `build` uses (the password, login page,
+login identifier and personal fields of the forms), so a login identifier
+that a response echoes, such as `"login":"mara.k"`, is `<redacted>` in the
+HAR as it is in the model.
 
 For a subset of the endpoints, the `json` export keeps only the cookies and
 forms of the selected endpoints, and `setBy` and `usedBy` name only selected

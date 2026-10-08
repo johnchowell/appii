@@ -44,7 +44,7 @@ export interface EndpointGrouperDeps {
 export interface GroupContext {
   forms?: ReadonlyMap<string, PathEvidence>;
   encoding?: (exchange: Exchange) => string | undefined;
-  submitted?: (exchange: Exchange) => boolean;
+  actions?: (exchange: Exchange) => boolean;
   credentials?: CredentialLookup;
 }
 
@@ -191,7 +191,7 @@ export class EndpointGrouper {
     if (EndpointGrouper.SKIPPED_TYPES.has(e.resourceType)) return 'websocket';
     if (this.isPreflight(e)) return 'preflight';
     if (!this.#options.includeStatic && this.isStaticAsset(e)) return 'static';
-    if (!this.#options.includeDocuments && this.isDocument(e) && context.submitted?.(e) !== true) return 'document';
+    if (!this.#options.includeDocuments && this.isDocument(e) && context.actions?.(e) !== true) return 'document';
     return undefined;
   }
 

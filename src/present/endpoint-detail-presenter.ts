@@ -204,6 +204,13 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
     return model !== undefined && Credentials.foundAfterLogin(model, endpoint) ? `not observed; ${EndpointDetailPresenter.FOUND_AFTER_LOGIN}` : 'not observed';
   }
 
+  static issuedBy(model: ApiModel, endpoint: Endpoint): string {
+    const index = EndpointIndex.of(model);
+    return Credentials.issuers(model, endpoint)
+      .map((login) => `#${index.numberOf(login)} ${login.method} ${login.path}`)
+      .join(', ');
+  }
+
   static role(endpoint: Endpoint): string | undefined {
     if (endpoint.role === 'logout') return 'logout, signs out';
     if (endpoint.role !== 'login' || !endpoint.login) return undefined;
@@ -234,7 +241,7 @@ export class EndpointDetailPresenter extends BasePresenter<EndpointDetailInput> 
       this.heading('Auth'),
       ...this.definitions([
         ...this.#session(model, endpoint),
-        ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles)) || 'none'],
+        ['Credentials', this.ansi.clean(Credentials.describe(endpoint, roles, EndpointDetailPresenter.issuedBy(model, endpoint))) || 'none'],
         ['Anonymous', EndpointDetailPresenter.anonymous(endpoint, roles)],
         ['Seen', EndpointDetailPresenter.seen(endpoint, model)],
         ['Credential cookies', credentialCookies.size > 0 ? this.ansi.clean([...credentialCookies].join(', ')) : 'none'],

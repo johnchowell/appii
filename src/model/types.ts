@@ -259,6 +259,7 @@ export interface EndpointAuth {
   seen?: SeenState[];
   schemes?: string[];
   sets?: string[][];
+  predicted?: boolean;
 }
 
 export type EndpointRole = (typeof ENDPOINT_ROLES)[number];

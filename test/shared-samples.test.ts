@@ -52,10 +52,10 @@ test('requestSample fills path, query, csrf header and json body', () => {
   const literal = Curl.curlCommand(s);
   assert.match(literal, /^curl -sS -X POST 'https:\/\/api\.example\.com\/api\/items\/42\?page=1&q=a%20b' \\\n  -H 'x-csrf-token: \{\{csrf\}\}'/);
   const shell = Curl.curlCommand(s, { variables: 'shell', cookie: SampleText.placeholder('cookie'), multiline: false });
-  assert.ok(shell.startsWith('curl -sS '), shell);
-  assert.ok(shell.includes(`-H "x-csrf-token: \${APPII_CSRF:?}"`), shell);
+  assert.ok(shell.startsWith(': "${APPII_CSRF:?}" && curl -sS '), shell);
+  assert.ok(shell.includes(`-H @<(printf '%s\\n' "x-csrf-token: \${APPII_CSRF}" "Cookie: \${APPII_COOKIE}")`), shell);
   assert.ok(shell.includes(`--data-binary @<(${Curl.encoderDefinition('json')}; printf -- '{"name":"Thing","password":"'; appii_json APPII_PASSWORD; printf -- '"}')`), shell);
-  assert.ok(shell.includes(`-b "\${APPII_COOKIE}"`), shell);
+  assert.ok(!shell.includes(' -b '), shell);
   assert.deepEqual(Curl.placeholderNames(s), ['APPII_CSRF', 'APPII_PASSWORD']);
   assert.equal(String(s.cookie), 'csrf={{csrf}}');
   const out = execFileSync('bash', ['-c', `curl() { printf '%s\\n' "$@"; for a; do if [[ $a == @/dev/fd/* ]]; then cat "\${a#@}"; fi; done; }; APPII_CSRF=t1 APPII_PASSWORD='p "q\\' APPII_COOKIE='sid=1'; ${shell}`]).toString();

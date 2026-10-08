@@ -255,15 +255,16 @@ describe('a single-page app whose routes render the login form while logged out 
     assert.equal(token?.source, 'response');
     assert.deepEqual(token?.sessionCookies, ['tbk']);
     const detail = new EndpointDetailPresenter({ width: 200 }).render({ model, ref: login.id }).split('\n');
-    const start = detail.findIndex((line) => line.startsWith('curl '));
+    const start = detail.findIndex((line) => /^(?:: [^\n]* && )?curl /.test(line));
     const end = detail.findIndex((line, at) => at > start && !line.endsWith('\\'));
     const example = detail.slice(start, end + 1).join('\n');
-    assert.match(example, /-b "tbk=\$\{APPII_TBK:\?\}"/);
+    assert.match(example, /^: "\$\{APPII_TBK:\?\}" /);
+    assert.match(example, /-H @<\(printf '%s\\n' "Cookie: tbk=\$\{APPII_TBK\}"\)/);
     const source = await fetch(`${board!.origin}/api/csrf`);
     const cookie = /^tbk=([^;]*)/.exec(source.headers.get('set-cookie') ?? '')?.[1];
     const { csrfToken } = (await source.json()) as { csrfToken: string };
     assert.ok(cookie);
-    const run = await LoginShell.run(['-c', `${example.replace(/^curl -sS/, 'curl -sS -o /dev/null -w "%{http_code}"')}`], process.cwd(), {
+    const run = await LoginShell.run(['-c', `${example.replace(/curl -sS/, 'curl -sS -o /dev/null -w "%{http_code}"')}`], process.cwd(), {
       APPII_TBK: cookie,
       APPII_CSRF: csrfToken,
       APPII_LOGIN: 'dana',

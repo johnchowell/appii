@@ -134,6 +134,7 @@ export class ModelValidator {
       this.#array(problems, auth, 'sets', at + 'auth.', (item, p) => {
         if (!Array.isArray(item) || item.some((entry) => typeof entry !== 'string' || !Credentials.ENTRY.test(entry))) problems.push(`${p}: expected an array of credential entries such as cookie:<name>, header:<name> or http:<scheme>`);
       }, { optional: true });
+      this.#boolean(problems, auth, 'predicted', at + 'auth.', { optional: true });
       this.#array(problems, auth, 'csrf', at + 'auth.', (item, p) => {
         const token = this.#object(problems, item, p);
         if (!token) return;

@@ -5,7 +5,7 @@ export interface LiteralPart {
   readonly text: string;
 }
 
-export type PlaceholderEncoding = 'component' | 'form' | 'json';
+export type PlaceholderEncoding = 'component' | 'form' | 'json' | 'filename';
 
 export interface PlaceholderPart {
   readonly kind: 'placeholder';
@@ -92,6 +92,26 @@ export class SampleText {
 
   requiring(label: string): SampleText {
     return new SampleText(this.parts.map((part): SamplePart => (part.kind === 'placeholder' && part.required === undefined ? { ...part, required: label } : part)));
+  }
+
+  split(separator: string): SampleText[] {
+    const out: SamplePart[][] = [[]];
+    for (const part of this.parts) {
+      const last = out[out.length - 1] ?? [];
+      if (part.kind === 'placeholder') {
+        last.push(part);
+        continue;
+      }
+      part.text.split(separator).forEach((piece, i) => {
+        if (i > 0) out.push([]);
+        (out[out.length - 1] ?? []).push({ kind: 'literal', text: piece });
+      });
+    }
+    return out.map((parts) => new SampleText(parts));
+  }
+
+  unguarded(): SampleText {
+    return new SampleText(this.parts.map((part): SamplePart => (part.kind === 'placeholder' ? (part.encoding === undefined ? { kind: 'placeholder', name: part.name } : { kind: 'placeholder', name: part.name, encoding: part.encoding }) : part)));
   }
 
   withMissing(messages: ReadonlyMap<string, string>): SampleText {

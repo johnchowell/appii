@@ -52,7 +52,7 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     assert.match(none.stderr, /postLogin: no value for the user name \(username\)\. Give username=VALUE or set APPII_USERNAME\./);
     const password = await bash([file, 'postLogin', 'username=reader'], dir, { APPII_COOKIE_JAR: join(dir, 'none.txt') });
     assert.equal(password.code, 2);
-    assert.match(password.stderr, /no value for the password \(password\)\. Give password=VALUE or set APPII_PASSWORD\./);
+    assert.match(password.stderr, /no value for the password \(password\)\. Set APPII_PASSWORD to it, for example with: read -rs APPII_PASSWORD && export APPII_PASSWORD \(as password=VALUE it would be on the command line\)\./);
     assert.deepEqual(site.requests, []);
   });
 
@@ -110,13 +110,15 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     }
     assert.match(script, /local APPII_USERNAME="\$\{APPII_USERNAME:-\}"/);
     assert.match(script, /local APPII_PASSWORD="\$\{APPII_PASSWORD:-\}"/);
-    assert.match(markdown, /--data-urlencode "password=\$\{APPII_PASSWORD:\?\}"/);
-    assert.match(markdown, /--data-urlencode "username=\$\{APPII_USERNAME:\?\}"/);
+    assert.ok(markdown.includes(`" "\${APPII_CSRF_TOKEN:?the hidden field csrf_token of GET ${site.origin}/login; bash endpoints.sh postLogin fetches it}" "\${APPII_USERNAME:?}" "\${APPII_PASSWORD:?}" && curl -sS -X POST`), markdown);
+    assert.ok(markdown.includes(`: "\${APPII_SESSION:?the session cookie of GET ${site.origin}/login that csrf_token is bound to; bash endpoints.sh postLogin keeps it}" "\${APPII_CSRF_TOKEN:?`), markdown);
+    assert.ok(markdown.includes(`--data-urlencode 'password@'<(printf '%s' "\${APPII_PASSWORD}")`), markdown);
+    assert.ok(markdown.includes(`--data-urlencode 'username@'<(printf '%s' "\${APPII_USERNAME}")`), markdown);
   });
 
   test('the documented example of the login stops with a message naming the variable', async () => {
     const markdown = new MarkdownExporter().export(model).content;
-    const block = /```bash\n(curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
+    const block = /```bash\n((?:: [^\n]* && )?curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
     assert.ok(block, markdown);
     const run = await bash(['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`], dir, { APPII_CSRF_TOKEN: 't', APPII_SESSION: 's', APPII_USERNAME: 'u' });
     assert.notEqual(run.code, 0);
@@ -126,9 +128,9 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
 
   test('the documented example stops when the CSRF token or the session cookie it is bound to is not set, and names the page and the curl function (P3b)', async () => {
     const markdown = new MarkdownExporter().export(model).content;
-    const block = /```bash\n(curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
+    const block = /```bash\n((?:: [^\n]* && )?curl -sS -X POST [^\n]*\/login'?"?[\s\S]*?)\n```/.exec(markdown)?.[1];
     assert.ok(block, markdown);
-    const script = ['-c', `curl() { printf '%s\\n' "$@"; }\n${block}`];
+    const script = ['-c', `curl() { for arg in "$@"; do if [[ "$arg" == *@/dev/fd/* ]]; then printf '%s=%s\\n' "\${arg%%@*}" "$(cat -- "\${arg#*@}")"; else printf '%s\\n' "$arg"; fi; done; }\n${block}`];
     const credentials = { APPII_USERNAME: 'u', APPII_PASSWORD: 'p' };
     const noSession = await bash(script, dir, { ...credentials, APPII_CSRF_TOKEN: 't' });
     assert.notEqual(noSession.code, 0);
@@ -140,7 +142,7 @@ describe('the curl script logs in and keeps the session in a cookie jar (L3, QL-
     assert.match(noToken.stderr, new RegExp(`APPII_CSRF_TOKEN: the hidden field csrf_token of GET ${site.origin.replace(/[.]/g, '\\.')}/login; bash endpoints\\.sh postLogin fetches it`));
     const all = await bash(script, dir, { ...credentials, APPII_SESSION: 's1', APPII_CSRF_TOKEN: 't1' });
     assert.equal(all.code, 0, all.stderr);
-    assert.ok(all.stdout.split('\n').includes('session=s1'), all.stdout);
+    assert.ok(all.stdout.split('\n').includes('=Cookie: session=s1'), all.stdout);
     assert.ok(all.stdout.split('\n').includes('csrf_token=t1'), all.stdout);
   });
 

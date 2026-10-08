@@ -172,6 +172,11 @@ describe('the curl script and list --show send every request media type (HTTPBIN
     const chosen = await bash(['postPostMultipart'], { APPII_UPLOAD_FILE: join(dir, 'other.txt') });
     assert.equal(chosen.code, 0, chosen.stderr);
     assert.match(received.at(-1)?.body ?? '', /name="upload"; filename="other\.txt"\r\nContent-Type: text\/plain\r\n\r\nanother file\n/);
+    const count = received.length;
+    const missing = await bash(['postPostMultipart'], { APPII_UPLOAD_FILE: join(dir, 'missing.txt') });
+    assert.equal(missing.code, 2);
+    assert.equal(missing.stderr, `postPostMultipart: cannot read the file ${join(dir, 'missing.txt')} to upload: set APPII_UPLOAD_FILE to a file that you can read.\n`);
+    assert.equal(received.length, count, 'nothing is sent without the file');
   });
 
   test('list --show prints one curl example per media type', () => {

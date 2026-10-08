@@ -90,7 +90,7 @@ export class PostmanExporter extends BaseExporter {
       }
     }
     const pathVariables = PostmanPathVariables.create([...origins.values(), ...placeholders]);
-    const guide = new LoginGuide(model);
+    const guide = new LoginGuide(model, endpoints);
     const scripts = this.#scripts.plan(model, endpoints);
     const sources = new Map<string, Endpoint>();
     for (const user of endpoints) {

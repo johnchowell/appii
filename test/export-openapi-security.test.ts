@@ -45,6 +45,20 @@ describe('OpenAPI security requirements', () => {
     assert.deepEqual(doc.paths['/']?.get?.security, []);
   });
 
+  test('only a refused endpoint gets the predicted-credential line; a form-only endpoint with predicted cookies stays untested', () => {
+    const auth = { cookies: ['sid'], headers: [], bearer: false, csrf: [], sets: [['cookie:sid']], predicted: true };
+    const refused = ExportModel.endpoint({ method: 'GET', path: '/account', auth: { ...auth, anonymous: 'refused', seen: ['anonymous'] } });
+    const formOnly = ExportModel.endpoint({ method: 'POST', path: '/search', count: 0, auth: { ...auth, anonymous: 'untested' } });
+    const doc = JSON.parse(new OpenApiExporter().export(ExportModel.model([refused, formOnly])).content) as { paths: Record<string, Record<string, { description?: string; security?: unknown[]; 'x-appii-predicted'?: boolean }>> };
+    const account = doc.paths['/account']?.get;
+    const search = doc.paths['/search']?.post;
+    assert.equal(account?.['x-appii-predicted'], true);
+    assert.match(account?.description ?? '', /Credential: probably cookie sid \(issued by the login; not observed on this endpoint\)\./);
+    assert.equal(search?.['x-appii-predicted'], true);
+    assert.doesNotMatch(search?.description ?? '', /Credential:|probably/);
+    assert.deepEqual(search?.security?.at(-1), {});
+  });
+
   test('an endpoint that also answered a request without credentials, or was never requested without them, accepts no credentials as an alternative; a refused one does not', () => {
     const f = new CaptureFactory();
     f.document('/', CaptureFactory.page('Home', ''));

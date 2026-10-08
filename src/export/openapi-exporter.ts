@@ -55,7 +55,7 @@ export class OpenApiExporter extends BaseExporter {
     const top = primary === '' ? '' : Helpers.originBase(model, primary, opts);
     const result = this.#planner.plan(endpoints, { base: (origin) => Helpers.originBase(model, origin, opts) });
     const ids = OpenApiExporter.operationIds(result.plans, endpoints);
-    const security = new OpenApiSecurity(model, components, ids.operations);
+    const security = new OpenApiSecurity(model, components, ids.operations, endpoints);
     const paths: Record<string, OpenApiObject> = {};
     const tags: string[] = [];
     for (const plan of result.plans) {

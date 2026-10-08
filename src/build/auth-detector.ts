@@ -1,5 +1,5 @@
 import { SEEN_STATES } from '../model/index.js';
-import type { AnonymousAccess, Capture, Cookie, CookieRole, CsrfToken, Endpoint, Exchange, SeenState } from '../model/index.js';
+import type { AnonymousAccess, Capture, Cookie, CookieRole, CsrfToken, Endpoint, Exchange, ResourceType, SeenState } from '../model/index.js';
 import { CookieParser } from '../capture/index.js';
 import { FormExtractor, TokenDetector } from '../forms/index.js';
 import { Credentials, Http, Json, Text } from '../shared/index.js';
@@ -54,6 +54,13 @@ interface CredentialSets {
   readonly sets: string[][];
   readonly anonymous: AnonymousAccess;
   readonly seen: SeenState[];
+  readonly predicted: boolean;
+}
+
+interface Issuer {
+  readonly origin: string;
+  readonly cookies: readonly Cookie[];
+  readonly bearer: boolean;
 }
 
 export class AuthDetector {
@@ -61,6 +68,8 @@ export class AuthDetector {
   static readonly BODY_FIELD_KINDS: ReadonlySet<string> = new Set(['form', 'multipart', 'json']);
   static readonly PROXY_AUTHORIZATION = 'proxy-authorization';
   static readonly LOGIN_ROLE = 'login';
+  static readonly NAVIGATION: ResourceType = 'document';
+  static readonly BEARER_ENTRY = Credentials.entry(Credentials.HTTP, Credentials.BEARER);
   static readonly ALLOWED: AnonymousAccess = 'allowed';
   static readonly REFUSED: AnonymousAccess = 'refused';
   static readonly UNTESTED: AnonymousAccess = 'untested';
@@ -116,6 +125,8 @@ export class AuthDetector {
     const resolve = (): CsrfSourceResolver => (resolver ??= this.#sources(capture));
     let timeline: CookieJarTimeline | undefined;
     const jar = (): CookieJarTimeline => (timeline ??= new CookieJarTimeline(capture, { parser: this.#parser }));
+    let issued: Issuer[] | undefined;
+    const issuers = (): Issuer[] => (issued ??= this.#issuers(endpoints, groups, evidence));
     for (const endpoint of endpoints) {
       const exchanges = (groups.get(endpoint) ?? []).filter((exchange) => Http.reachedServer(exchange));
       const state: EndpointAuthState = { cookies: new Set(), headers: new Set(), schemes: new Set(), bearer: false, csrf: new Map() };
@@ -124,18 +135,52 @@ export class AuthDetector {
       for (const cookie of predicted.flat()) state.cookies.add(cookie.name);
       const sent = exchanges.length > 0 ? exchanges.flatMap((exchange) => CredentialAnalyzer.sent(exchange)) : predicted.flat();
       this.#formTokens(state, endpoint, sent, resolve, evidence);
-      const found = exchanges.length > 0 ? this.#credentialSets(exchanges, evidence) : AuthDetector.#predictedSets(predicted, evidence);
+      const observed = exchanges.length > 0 ? this.#credentialSets(exchanges, evidence) : AuthDetector.#predictedSets(predicted, evidence);
+      const found = AuthDetector.#unexplained(endpoint, observed) ? AuthDetector.#issuedSets(endpoint, observed, issuers()) : observed;
       endpoint.auth = {
         cookies: [...state.cookies].sort(Text.compare),
         headers: [...state.headers].sort(Text.compare),
-        bearer: state.bearer,
+        bearer: state.bearer || (found.predicted && found.sets.some((set) => set.includes(AuthDetector.BEARER_ENTRY))),
         csrf: [...state.csrf.values()],
         anonymous: endpoint.role === AuthDetector.LOGIN_ROLE && exchanges.length > 0 ? AuthDetector.ALLOWED : found.anonymous,
         ...(found.seen.length > 0 ? { seen: found.seen } : {}),
         ...(state.schemes.size > 0 ? { schemes: [...state.schemes].sort(Text.compare) } : {}),
         sets: found.sets,
+        ...(found.predicted ? { predicted: true } : {}),
       };
     }
+  }
+
+  #issuers(endpoints: readonly Endpoint[], groups: ReadonlyMap<Endpoint, readonly Exchange[]>, evidence: CredentialEvidence): Issuer[] {
+    const out: Issuer[] = [];
+    for (const endpoint of endpoints) {
+      const login = endpoint.role === AuthDetector.LOGIN_ROLE ? endpoint.login : undefined;
+      if (!login || (login.issues.cookies.length === 0 && login.issues.tokens.length === 0)) continue;
+      const names = new Set(login.issues.cookies);
+      const cookies = (groups.get(endpoint) ?? [])
+        .filter((exchange) => Http.reachedServer(exchange))
+        .flatMap((exchange) => this.#parser.replay([exchange]).filter((cookie) => names.has(cookie.name) && evidence.issued(cookie.name, cookie.value, exchange) === 'authenticated'));
+      out.push({ origin: endpoint.origin, cookies, bearer: login.issues.tokens.length > 0 });
+    }
+    return out;
+  }
+
+  static #unexplained(endpoint: Endpoint, observed: CredentialSets): boolean {
+    return observed.anonymous === AuthDetector.REFUSED && observed.sets.length === 0 && endpoint.role !== AuthDetector.LOGIN_ROLE;
+  }
+
+  static #issuedSets(endpoint: Endpoint, observed: CredentialSets, issuers: readonly Issuer[]): CredentialSets {
+    const url = Helpers.httpUrl(endpoint.origin + endpoint.path);
+    if (!url || issuers.length === 0) return observed;
+    const navigated = endpoint.resourceTypes.every((type) => type === AuthDetector.NAVIGATION);
+    const sets = new Map<string, string[]>();
+    for (const issuer of issuers) {
+      const cookies = AuthDetector.#sendable(endpoint, url, issuer.cookies, Number.NaN).map((cookie) => Credentials.entry(Credentials.COOKIE, cookie.name));
+      const bearer = issuer.bearer && issuer.origin === endpoint.origin && !navigated ? [AuthDetector.BEARER_ENTRY] : [];
+      const set = Helpers.distinct([...cookies, ...bearer]).sort(Text.compare);
+      if (set.length > 0) sets.set(JSON.stringify(set), set);
+    }
+    return sets.size === 1 ? { ...observed, sets: [...sets.values()], predicted: true } : observed;
   }
 
   isAnonymous(exchange: Exchange, evidence: CredentialEvidence): boolean {
@@ -184,6 +229,7 @@ export class AuthDetector {
       sets: [...sets.values()].sort((a, b) => a.length - b.length || Text.compare(a.join(' '), b.join(' '))),
       anonymous,
       seen: SEEN_STATES.filter((state) => states.has(state)),
+      predicted: false,
     };
   }
 
@@ -213,7 +259,8 @@ export class AuthDetector {
       const set = Helpers.distinct(cookies.filter((cookie) => evidence.isCredential(cookie.name, cookie.value)).map((cookie) => Credentials.entry(Credentials.COOKIE, cookie.name))).sort(Text.compare);
       if (set.length > 0) sets.set(JSON.stringify(set), set);
     }
-    return { sets: [...sets.values()].sort((a, b) => a.length - b.length || Text.compare(a.join(' '), b.join(' '))), anonymous: AuthDetector.UNTESTED, seen: [] };
+    const list = [...sets.values()].sort((a, b) => a.length - b.length || Text.compare(a.join(' '), b.join(' ')));
+    return { sets: list, anonymous: AuthDetector.UNTESTED, seen: [], predicted: list.length > 0 };
   }
 
   static predictCookies(endpoint: Endpoint, capture: Capture): string[] {

@@ -63,7 +63,7 @@ describe('CurlExporter against the fixture site', () => {
     for (const name of ['APPII_CSRF_TOKEN', 'APPII_PASSWORD']) assert.ok(content.includes(`\n  local ${name}="\${${name}:-}"\n`), name);
     assert.ok(!content.includes('X_CSRF_TOKEN'));
     assert.match(content, /\ncreateItem\(\) \{\n {2}local appii_value\n {2}local APPII_CSRF="\$\{APPII_CSRF:-\$\(appii_unpct "\$\(appii_cookie 'csrf'\)"\)\}"\n/);
-    assert.match(content, /\n {2}appii_curl_args 'createItem' 'Arguments: \[name=\] \[price=\]\. [^\n]+' "\$@" \|\| return 2\n(?: {2}[^\n]*\n)*? {2}appii_jar \|\| return 2\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n {4}-H [^\n]+\n(?: {4}-H [^\n]+\n)* {4}-b "\$\{APPII_COOKIE\}" \\\n {4}-b "\$APPII_COOKIE_JAR" -c "\$APPII_COOKIE_JAR" \\\n/);
+    assert.match(content, /\n {2}appii_curl_args 'createItem' 'Arguments: \[name=\] \[price=\]\. [^\n]+' "\$@" \|\| return 2\n(?: {2}[^\n]*\n)*? {2}appii_jar \|\| return 2\n {2}curl -sS -X POST "\$\{APPII_BASE_URL\}\/api\/items" \\\n {4}-H [^\n]+\n(?: {4}-H [^\n]+\n)* {4}-K <\(appii_config cookie "\$\{APPII_COOKIE\}"\) \\\n {4}-b "\$APPII_COOKIE_JAR" -c "\$APPII_COOKIE_JAR" \\\n/);
     assert.match(content, /\nappii_default_cookie_jar="\$\(pwd\)"\/'[a-z0-9-]+-cookies\.txt'\nAPPII_COOKIE_JAR="\$\{APPII_COOKIE_JAR:-\$appii_default_cookie_jar\}"\n/);
     const syntax = await new Promise<RunResult>((resolve) =>
       execFile('bash', ['-n', script], (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout, stderr })),
@@ -178,7 +178,7 @@ describe('CurlExporter keeps captured text literal', () => {
       const bin = join(dir, 'bin');
       await mkdir(bin);
       await writeFile(file, text);
-      await writeFile(join(bin, 'curl'), '#!/usr/bin/env bash\nfor arg in "$@"; do printf \'ARG[%s]\\n\' "$arg"; done\n', { mode: 0o755 });
+      await writeFile(join(bin, 'curl'), '#!/usr/bin/env bash\nfor arg in "$@"; do if [[ "$arg" == @/dev/fd/* ]]; then arg="$(cat -- "${arg#@}")"; fi; printf \'ARG[%s]\\n\' "$arg"; done\n', { mode: 0o755 });
       const env = { ...LiteralPlaceholderSite.LEAK_ENV, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}` };
       const list = await run(file, [], env);
       assert.equal(list.code, 0, list.stderr);
@@ -195,8 +195,7 @@ describe('CurlExporter keeps captured text literal', () => {
         'https://evil.example.com/api/search?q=%7B%7Baws_secret_access_key%7D%7D',
         'x-trace: {{github_token}}',
         '{"note":"{{home}}","n2":"x{{path}}y"}',
-        'comment=%7B%7Buser%7D%7D',
-        'c=%7B%7B1%7D%7D',
+        'comment=%7B%7Buser%7D%7D&c=%7B%7B1%7D%7D',
       ]) {
         assert.ok(all.includes(`ARG[${arg}]`), arg);
       }
@@ -219,9 +218,9 @@ describe('CurlExporter request variables agree with the other renderers', () => 
     });
     const text = new CurlExporter().export(ExportModel.model([me])).content;
     assert.ok(text.includes(': "${APPII_ACCESS_TOKEN:=}"\n'), text);
-    assert.ok(text.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), text);
+    assert.ok(text.includes(`-H @<([[ -z "$appii_bearer_send" ]] || printf '%s\\n' "authorization: Bearer \${APPII_ACCESS_TOKEN}")`), text);
     assert.ok(text.includes(`local APPII_CSRFTOKEN="\${APPII_CSRFTOKEN:-$(appii_unpct "$(appii_cookie 'csrftoken')")}"`), text);
-    assert.ok(text.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN}"'), text);
+    assert.ok(text.includes(`-H @<(printf '%s\\n' "x-csrf-token: \${APPII_CSRFTOKEN}")`), text);
     assert.ok(!text.includes('AUTHORIZATION'));
     assert.ok(!text.includes('X_CSRF_TOKEN'));
   });

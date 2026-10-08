@@ -224,8 +224,7 @@ describe('Markdown and HTML show the command of list --show (HTTPBIN-12)', () =>
     });
     const model = ExportModel.model([endpoint]);
     const shell = Curl.curlCommand(Samples.requestSample(endpoint, { baseUrl: ExportModel.ORIGIN }), { variables: 'shell' });
-    assert.match(shell, /-H "authorization: Bearer \$\{APPII_ACCESS_TOKEN\}"/);
-    assert.match(shell, /-b "session=\$\{APPII_SESSION\}"/);
+    assert.ok(shell.includes(`-H @<(printf '%s\\n' "\${APPII_ACCESS_TOKEN:+authorization: Bearer $APPII_ACCESS_TOKEN}" "Cookie: \${APPII_SESSION:+session=$APPII_SESSION}")`), shell);
     const markdown = new MarkdownExporter().export(model).content;
     assert.ok(markdown.includes(`\`\`\`bash\n${shell}\n\`\`\`\n\nVariables: \`APPII_ACCESS_TOKEN\` \`APPII_SESSION\``), markdown);
     assert.ok(!markdown.includes('{{'), markdown);

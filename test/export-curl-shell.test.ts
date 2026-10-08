@@ -1,6 +1,5 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -11,6 +10,7 @@ import { ModelBuilder } from '../src/build/index.js';
 import { CurlExporter } from '../src/export/index.js';
 import type { ApiModel, Endpoint } from '../src/model/index.js';
 import { CaptureFactory } from './helpers/capture-factory.js';
+import { LoginShell } from './helpers/login-shell.js';
 
 interface RunResult {
   code: number;
@@ -41,29 +41,11 @@ class CountingSite {
 }
 
 function run(file: string, args: string[], env: Record<string, string> = {}): Promise<RunResult> {
-  return new Promise((resolve) => {
-    const clean: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C', ...env };
-    execFile('bash', [file, ...args], { cwd: dirname(file), env: clean, timeout: 20_000, encoding: 'utf8' }, (err, stdout, stderr) => {
-      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr });
-    });
-  });
+  return LoginShell.run([file, ...args], dirname(file), env);
 }
 
 function shell(args: string[], input: string, cwd?: string): Promise<RunResult> {
-  return new Promise((resolve) => {
-    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/tmp', LANG: 'C' };
-    const child = spawn('bash', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
-    child.stdin.end(input);
-  });
+  return LoginShell.run(args, cwd ?? process.cwd(), {}, input);
 }
 
 function booksModel(origin: string): ApiModel {

@@ -94,7 +94,7 @@ export class HtmlExporter extends BaseExporter {
     for (const capture of source.captures ?? []) {
       facts.push(['Capture', `<code>${esc(capture.file ?? capture.startUrl ?? '')}</code>: ${esc(`${Text.plural(capture.exchanges, 'exchange')}, ${capture.capturedFrom} to ${capture.capturedTo}`)}`]);
     }
-    const guide = new LoginGuide(model);
+    const guide = new LoginGuide(model, endpoints);
     const index = EndpointIndex.of(model);
     const code = (value: string): string => `<code>${esc(value)}</code>`;
     const link = (endpoint: Endpoint): string => `<a href="#endpoint-${index.numberOf(endpoint)}">#${index.numberOf(endpoint)} ${esc(`${endpoint.method} ${endpoint.path}`)}</a>`;
@@ -148,7 +148,7 @@ export class HtmlExporter extends BaseExporter {
       `<span id="count" aria-live="polite">${endpoints.length} of ${endpoints.length} endpoints</span>`,
       '</div>',
     ].join('');
-    const guide = new LoginGuide(model);
+    const guide = new LoginGuide(model, endpoints);
     const session = SessionGuide.create(model);
     const items = endpoints.map((endpoint) => this.#endpoints.item(endpoint, { model, index, options, guide, session })).join('\n');
     return `<section id="endpoints"><h2>Endpoints</h2>${filters}<ol class="endpoints">\n${items}\n</ol>${endpoints.length === 0 ? '<p class="empty">No endpoints selected.</p>' : ''}</section>`;

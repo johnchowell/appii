@@ -134,8 +134,51 @@ describe('the curl script carries the bearer token from the login function to th
     const run = await LoginShell.run([file, login, 'username=x', 'password=pw', '--data-raw', 'not-json'], dir, { APPII_COOKIE_JAR: join(dir, 'kept-jar.txt'), APPII_TOKEN_FILE: tokenFile });
     assert.equal(run.code, 0, run.stderr);
     assert.equal(run.stdout, '{"error":"bad json"}');
-    assert.equal(run.stderr.trim(), `${login}: warning: the response has no bearer token in token, so APPII_TOKEN_FILE was not changed.`);
+    assert.equal(run.stderr.trim(), `${login}: warning: the response has no bearer token in token, so APPII_TOKEN_FILE was not changed.\n${login}: the curl arguments --data-raw change the request or the response.`);
     assert.equal(await readFile(tokenFile, 'utf8'), 'earlier-token\n');
+  });
+
+  test('the login function saves the token whatever curl output arguments are given, and writes the response where they say (LV4-4)', async () => {
+    const env = (name: string) => ({ APPII_COOKIE_JAR: join(dir, `${name}-jar.txt`), APPII_TOKEN_FILE: join(dir, `${name}-token.txt`), APPII_USERNAME: `${name}-user`, APPII_PASSWORD: 'pw' });
+    const saved = async (name: string): Promise<string> => (await readFile(join(dir, `${name}-token.txt`), 'utf8')).trim();
+    for (const [name, args] of [
+      ['short', ['-o', join(dir, 'short.json')]],
+      ['long', ['--output', join(dir, 'long.json')]],
+      ['joined', [`-o${join(dir, 'joined.json')}`]],
+      ['cluster', ['-so', join(dir, 'cluster.json')]],
+      ['silent', ['-s', '-S', '-o', join(dir, 'silent.json'), '--compressed']],
+    ] as const) {
+      site.reset();
+      const run = await LoginShell.run([file, login, ...args], dir, env(name));
+      assert.equal(run.code, 0, `${name}: ${run.stderr}`);
+      assert.equal(run.stdout, '', name);
+      assert.equal(run.stderr, '', name);
+      const written = JSON.parse(await readFile(join(dir, `${name}.json`), 'utf8')) as { token: string };
+      assert.equal(await saved(name), written.token, name);
+      const profile = await LoginShell.run([file, me], dir, env(name));
+      assert.deepEqual(JSON.parse(profile.stdout), { name: `${name}-user` }, name);
+    }
+    site.reset();
+    const dash = await LoginShell.run([file, login, '-o', '-'], dir, env('dash'));
+    assert.equal(dash.code, 0, dash.stderr);
+    assert.equal(await saved('dash'), (JSON.parse(dash.stdout) as { token: string }).token);
+    site.reset();
+    const headers = await LoginShell.run([file, login, '-i', '-o', join(dir, 'headers.txt')], dir, env('headers'));
+    assert.equal(headers.code, 0, headers.stderr);
+    assert.match(await readFile(join(dir, 'headers.txt'), 'utf8'), /^HTTP\/1\.1 200 OK\r\n[\s\S]*\r\n\r\n\{"token":"/);
+    assert.ok((await saved('headers')).length > 0);
+    site.reset();
+    const unwritable = await LoginShell.run([file, login, '-o', join(dir, 'missing-dir', 'out.json')], dir, env('unwritable'));
+    assert.equal(unwritable.code, 23);
+    assert.equal(unwritable.stderr, `${login}: cannot write the response to ${join(dir, 'missing-dir', 'out.json')}.\n`);
+    assert.ok((await saved('unwritable')).length > 0, 'the login happened, so its token is kept');
+    for (const option of [['-O'], ['--remote-name'], ['-J'], ['--output-dir', dir], ['-sO']]) {
+      site.reset();
+      const refused = await LoginShell.run([file, login, ...option], dir, env('refused'));
+      assert.equal(refused.code, 2, option.join(' '));
+      assert.match(refused.stderr, new RegExp(`^${login}: the curl option -?-?[A-Za-z-]+ is not supported here: the function reads the response to save the bearer token\\. Use -o FILE to keep the response\\.\\n$`), option.join(' '));
+      assert.deepEqual(site.requests, [], option.join(' '));
+    }
   });
 
   test('the script documents the token file and its default, and never names a captured token or password', async () => {

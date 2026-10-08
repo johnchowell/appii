@@ -6,6 +6,8 @@ export type EndpointLabel = (endpoint: Endpoint) => string;
 
 export type CodeMarkup = (value: string) => string;
 
+export type TextMarkup = (value: string) => string;
+
 export class LoginGuide {
   static readonly LOGIN = 'login';
   static readonly LOGOUT = 'logout';
@@ -13,6 +15,7 @@ export class LoginGuide {
   static readonly LOGOUT_LABEL = 'Logout';
   static readonly NOT_SUBMITTED = 'known from a form; not submitted yet';
   static readonly UNKNOWN_ISSUE = 'the capture did not show which credential it issues';
+  static readonly NOT_EXPORTED = 'not in this export; add it with --endpoints';
   static readonly ANONYMOUS_NOTES: Readonly<Record<string, string>> = Object.freeze({
     allowed: 'allowed: a request without credentials was answered',
     refused: 'refused: every request without credentials failed',
@@ -22,11 +25,25 @@ export class LoginGuide {
   readonly #model: ApiModel;
   readonly #roles: CookieRoles;
   readonly #byId: ReadonlyMap<string, Endpoint>;
+  readonly #exported: ReadonlySet<string>;
 
-  constructor(model: ApiModel) {
+  constructor(model: ApiModel, exported: readonly Endpoint[] = model.endpoints) {
     this.#model = model;
     this.#roles = Credentials.roles(model);
     this.#byId = new Map(model.endpoints.map((endpoint) => [endpoint.id, endpoint]));
+    this.#exported = new Set(exported.map((endpoint) => endpoint.id));
+  }
+
+  exported(endpoint: Endpoint): boolean {
+    return this.#exported.has(endpoint.id);
+  }
+
+  reference(endpoint: Endpoint, label: EndpointLabel, text: TextMarkup = (value) => value): string {
+    return this.exported(endpoint) ? label(endpoint) : text(LoginGuide.missing(endpoint));
+  }
+
+  static missing(endpoint: Endpoint): string {
+    return `${endpoint.method} ${endpoint.path} (${LoginGuide.NOT_EXPORTED} ${endpoint.name})`;
   }
 
   get roles(): CookieRoles {
@@ -130,12 +147,13 @@ export class LoginGuide {
     return LoginGuide.isLogout(endpoint) ? LoginGuide.LOGOUT_LABEL : LoginGuide.LOGIN_LABEL;
   }
 
-  hint(endpoint: Endpoint, label: EndpointLabel): string | undefined {
+  hint(endpoint: Endpoint, label: EndpointLabel, text: TextMarkup = (value) => value): string | undefined {
     if (!this.needsLogin(endpoint)) return undefined;
     const issuers = this.issuers(endpoint);
     const chosen = issuers.length > 0 ? issuers : this.logins();
     if (chosen.length === 0) return undefined;
-    return `Log in first with ${chosen.map(label).join(' or ')}${issuers.length > 0 ? '' : ', which the capture did not show issuing this credential'}.`;
+    const names = chosen.map((login) => this.reference(login, label, text));
+    return `Log in first with ${names.join(' or ')}${issuers.length > 0 ? '' : ', which the capture did not show issuing this credential'}.`;
   }
 
   static label(endpoint: Endpoint, name: string | undefined): string {

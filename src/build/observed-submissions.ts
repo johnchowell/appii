@@ -79,9 +79,21 @@ export class ObservedSubmissions {
     return out;
   }
 
+  scriptSubmissions(form: FormDescriptor, target: Pick<FormTarget, 'method' | 'url'>): ObservedSubmission[] {
+    const url = Helpers.httpUrl(target.url);
+    if (!url) return [];
+    const key = ObservedSubmissions.key(form.pageUrl, target.method, url);
+    return this.scripted(form)
+      .filter((exchange) => {
+        const sent = Helpers.httpUrl(exchange.request.url);
+        return sent !== undefined && exchange.pageUrl !== undefined && ObservedSubmissions.key(exchange.pageUrl, exchange.request.method, sent) === key;
+      })
+      .map((exchange) => ({ exchange, entries: this.entries(exchange, form.charset) ?? new Map<string, readonly string[]>() }));
+  }
+
   scripted(form: FormDescriptor): Exchange[] {
     const tokens = new Set(form.tokenFields);
-    const names = SubmissionRules.fieldNames(form);
+    const names = SubmissionRules.entryNames(form);
     if (!names.some((name) => !tokens.has(name))) return [];
     return (this.#scripts.get(HtmlPages.documentKey(form.pageUrl)) ?? []).filter((exchange) => {
       const carried = this.#names(exchange, form.charset);

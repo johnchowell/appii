@@ -18,6 +18,7 @@ export interface FormSchema {
 export interface FormBuildOptions {
   documentEncoding?: string | undefined;
   openChoices?: ReadonlyMap<string, readonly string[]>;
+  enctype?: FormEnctype;
 }
 
 export interface FormTarget {
@@ -82,8 +83,9 @@ export class FormSchemaBuilder {
     }
     const tokens = this.tokenNames(form);
     const charset = this.charset(form, options);
+    const enctype = target.method === 'POST' ? (options.enctype ?? target.enctype) : target.enctype;
     const context: SlotContext = {
-      multipart: target.method === 'POST' && target.enctype === 'multipart/form-data',
+      multipart: target.method === 'POST' && enctype === 'multipart/form-data',
       validate: !form.noValidate && active?.formNoValidate !== true,
       tokens,
       charset,
@@ -102,7 +104,7 @@ export class FormSchemaBuilder {
     if (required.length > 0) schema.required = required;
     if (!context.validate) schema['x-html-novalidate'] = true;
     return {
-      mimeType: target.enctype,
+      mimeType: enctype,
       method: target.method,
       action: target.url,
       charset,

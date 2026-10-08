@@ -75,7 +75,7 @@ export class EndpointRoleDetector {
     const groups = new EndpointMatcher(endpoints, { body: this.#body }).group(capture.exchanges);
     const timeline = EndpointRoleDetector.#timeline(capture.exchanges);
     const forms = this.#loginForms(endpoints, context.forms ?? new Map());
-    const delegated = this.#delegated(capture.exchanges, context);
+    const signOuts = this.signOuts(capture, context);
     for (const endpoint of endpoints) {
       delete endpoint.role;
       delete endpoint.login;
@@ -84,10 +84,15 @@ export class EndpointRoleDetector {
       if (login) {
         endpoint.role = 'login';
         endpoint.login = login;
-      } else if (exchanges.some((exchange) => this.#signsOut(exchange, context, delegated))) {
+      } else if (exchanges.some((exchange) => signOuts.has(exchange))) {
         endpoint.role = 'logout';
       }
     }
+  }
+
+  signOuts(capture: Pick<Capture, 'exchanges'>, context: RoleContext): Set<Exchange> {
+    const delegated = this.#delegated(capture.exchanges, context);
+    return new Set(capture.exchanges.filter((exchange) => Http.reachedServer(exchange) && this.#signsOut(exchange, context, delegated)));
   }
 
   #login(endpoint: Endpoint, exchanges: readonly Exchange[], forms: LoginForms, timeline: Timeline, context: RoleContext): EndpointLogin | undefined {

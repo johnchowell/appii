@@ -105,23 +105,25 @@ describe('Markdown and HTML show the CSRF binding and point the login example to
     const login = section(new MarkdownExporter().export(LoginModels.form(ORIGIN)).content, /\n### \d+\. postLogin/);
     const steps = login.slice(login.indexOf('**Session steps**'));
     assert.match(steps, /The token `csrf_token` changes with the session: request GET `https:\/\/quotes\.example\.test\/login`, read the hidden field `csrf_token`, and send it with the cookie `session` from the same session\. The example above leaves these steps to you; the curl export does them with a cookie jar:/);
-    assert.ok(steps.includes('```bash\nappii export api.json --format curl -o endpoints.sh\nbash endpoints.sh postLogin username=VALUE password=VALUE\n```'), steps);
-    assert.match(steps, /It keeps the cookies the login sets in its jar, so the functions you call after it are logged in\. It stops and names the variable when the user name or the password is missing\./);
+    assert.ok(steps.includes('```bash\nappii export api.json --format curl -o endpoints.sh\nread -rs APPII_PASSWORD && export APPII_PASSWORD\nbash endpoints.sh postLogin username=VALUE\n```'), steps);
+    assert.ok(!steps.includes('password=VALUE'), steps);
+    assert.match(steps, /It keeps the cookies the login sets in its jar, so the functions you call after it are logged in\. The read -rs command reads the password without showing it, so it is in no command line, process list or shell history, and the login sends it to curl through a file descriptor\. It stops and names the variable when the user name or the password is missing\./);
     const html = new HtmlExporter().export(LoginModels.form(ORIGIN)).content;
     assert.match(html, /<h3>Session steps<\/h3><p>The token <code>csrf_token<\/code> changes with the session: request GET <code>https:\/\/quotes\.example\.test\/login<\/code>, read the hidden field <code>csrf_token<\/code>, and send it with the cookie <code>session<\/code> from the same session\./);
-    assert.ok(html.includes(Text.escapeHtml('appii export api.json --format curl -o endpoints.sh\nbash endpoints.sh postLogin username=VALUE password=VALUE')), 'the HTML report has the same commands');
+    assert.ok(html.includes(Text.escapeHtml('appii export api.json --format curl -o endpoints.sh\nread -rs APPII_PASSWORD && export APPII_PASSWORD\nbash endpoints.sh postLogin username=VALUE')), 'the HTML report has the same commands');
   });
 
   test('the documented curl command logs in against a live server and the next function is logged in', async () => {
     const model = LoginModels.form(site.origin);
     const markdown = new MarkdownExporter().export(model).content;
-    const command = /\nbash endpoints\.sh (\S+) username=VALUE password=VALUE\n/.exec(markdown);
-    assert.ok(command?.[1], markdown);
+    const block = /```bash\nappii export [^\n]*\n(read -rs APPII_PASSWORD && export APPII_PASSWORD\nbash endpoints\.sh \S+ username=VALUE)\n```/.exec(markdown)?.[1];
+    assert.ok(block, markdown);
     await writeFile(join(dir, 'endpoints.sh'), new CurlExporter().export(model).content);
     site.reset();
     const env = { APPII_COOKIE_JAR: join(dir, 'docs-jar.txt') };
-    const login = await LoginShell.run(['endpoints.sh', command[1], 'username=docs-user', 'password=pw', '-o', '/dev/null'], dir, env);
+    const login = await LoginShell.run(['-c', `${block.replace('username=VALUE', 'username=docs-user')} -o /dev/null`], dir, env, 'pw\n');
     assert.equal(login.code, 0, login.stderr);
+    assert.equal(new URLSearchParams(site.requests[1]?.body ?? '').get('password'), 'pw');
     const account = await LoginShell.run(['endpoints.sh', LoginModels.endpoint(model, 'GET', '/account').name], dir, env);
     assert.match(account.stdout, /Account of docs-user/);
     assert.deepEqual(site.requests.map((request) => `${request.method} ${request.path}`), ['GET /login', 'POST /login', 'GET /account']);
@@ -131,7 +133,7 @@ describe('Markdown and HTML show the CSRF binding and point the login example to
     const model = LoginModels.form(ORIGIN);
     LoginModels.endpoint(model, 'POST', '/login').name = 'list';
     const markdown = new MarkdownExporter().export(model).content;
-    assert.ok(markdown.includes('\nbash endpoints.sh listEndpoint username=VALUE password=VALUE\n'), markdown);
+    assert.ok(markdown.includes('\nbash endpoints.sh listEndpoint username=VALUE\n'), markdown);
     assert.match(new CurlExporter().export(model).content, /\nlistEndpoint\(\) \{/);
   });
 

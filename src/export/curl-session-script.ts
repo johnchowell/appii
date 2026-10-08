@@ -1,5 +1,5 @@
 import type { ApiModel } from '../model/index.js';
-import { Samples, Text } from '../shared/index.js';
+import { Curl, Samples, Text } from '../shared/index.js';
 
 export class CurlSessionScript {
   static readonly JAR_VARIABLE = 'APPII_COOKIE_JAR';
@@ -243,7 +243,7 @@ END {
       '  local appii_url="$1"',
       '  shift',
       `  ${CurlSessionScript.JAR_HELPER} || return 2`,
-      `  curl -sS -L --compressed -H ${Text.shellQuote(`Accept: ${CurlSessionScript.DOCUMENT_ACCEPT}`)} -b "$${cookieVariable}" -b "$${jar}" -c "$${jar}" "$@" "$appii_url"`,
+      `  curl -sS -L --compressed -H ${Text.shellQuote(`Accept: ${CurlSessionScript.DOCUMENT_ACCEPT}`)} ${Curl.CONFIG_FLAG} <(${Curl.CONFIG_HELPER} ${Curl.CONFIG_COOKIE} "$${cookieVariable}") -b "$${jar}" -c "$${jar}" "$@" "$appii_url"`,
       '}',
       '',
       `${CurlSessionScript.SCAN_HELPER}() {`,

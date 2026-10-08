@@ -240,13 +240,13 @@ describe('example requests in every format send the cookies of the endpoint', ()
     const literal = Curl.curlCommand(sample);
     assert.match(literal, /-b 'auth=\{\{auth\}\}; sid=\{\{sid\}\}'/);
     const shell = Curl.curlCommand(sample, { variables: 'shell' });
-    assert.match(shell, /-b "auth=\$\{APPII_AUTH\}; sid=\$\{APPII_SID\}"/);
+    assert.ok(shell.includes(`-H @<(printf '%s\\n' "Cookie: \${APPII_AUTH:+auth=$APPII_AUTH}\${APPII_SID:+\${APPII_AUTH:+; }sid=$APPII_SID}")`), shell);
     assert.deepEqual(Curl.placeholderNames(sample), ['APPII_AUTH', 'APPII_SID']);
     const markdown = new MarkdownExporter().export(model).content;
     assert.ok(markdown.includes(shell), markdown);
     assert.ok(!markdown.includes('{{'), markdown);
     const html = new HtmlExporter().export(model).content;
-    assert.ok(html.includes('-b &quot;auth=${APPII_AUTH}; sid=${APPII_SID}&quot;'), html);
+    assert.ok(html.includes('-H @&lt;(printf &#39;%s\\n&#39; &quot;Cookie: ${APPII_AUTH:+auth=$APPII_AUTH}${APPII_SID:+${APPII_AUTH:+; }sid=$APPII_SID}&quot;)'), html);
     assert.ok(!html.includes('{{auth}}'), html);
   });
 });

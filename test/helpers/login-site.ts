@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomBytes } from 'node:crypto';
 
@@ -9,6 +9,7 @@ export interface SiteRequest {
   cookie: string;
   authorization: string;
   body: string;
+  headers: IncomingHttpHeaders;
 }
 
 interface Session {
@@ -64,7 +65,7 @@ export class LoginSite {
     const url = new URL(req.url ?? '/', this.origin);
     const cookie = req.headers.cookie ?? '';
     const authorization = req.headers.authorization ?? '';
-    this.requests.push({ method: req.method ?? 'GET', path: url.pathname, cookie, authorization, body });
+    this.requests.push({ method: req.method ?? 'GET', path: url.pathname, cookie, authorization, body, headers: { ...req.headers } });
     const sid = LoginSite.cookie(cookie, 'session');
     const session = sid === undefined ? undefined : this.sessions.get(sid);
     const html = (status: number, content: string, headers: Record<string, string> = {}): void => {

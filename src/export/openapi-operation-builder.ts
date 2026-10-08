@@ -40,6 +40,7 @@ export class OpenApiOperationBuilder {
   static readonly ROLE_KEY = 'x-appii-role';
   static readonly LOGIN_KEY = 'x-appii-login';
   static readonly ANONYMOUS_KEY = 'x-appii-anonymous';
+  static readonly PREDICTED_KEY = 'x-appii-predicted';
   static readonly ANONYMOUS_LINES: Readonly<Record<string, string>> = Object.freeze({
     allowed: 'Anonymous access: allowed. A request without the credential was also answered, so the credential is optional.',
     refused: 'Anonymous access: refused. Every request without the credential failed, so the credential is required.',
@@ -74,6 +75,7 @@ export class OpenApiOperationBuilder {
     if (endpoint.role !== undefined) operation[OpenApiOperationBuilder.ROLE_KEY] = endpoint.role;
     if (endpoint.login !== undefined && LoginGuide.isLogin(endpoint)) operation[OpenApiOperationBuilder.LOGIN_KEY] = Json.clone(endpoint.login);
     if (OpenApiOperationBuilder.#authMatters(endpoint, ctx.security.roles)) operation[OpenApiOperationBuilder.ANONYMOUS_KEY] = endpoint.auth.anonymous;
+    if (Credentials.predicted(endpoint)) operation[OpenApiOperationBuilder.PREDICTED_KEY] = true;
     if (endpoint.auth.csrf.length > 0) operation['x-appii-csrf'] = Json.clone(endpoint.auth.csrf);
     const form = Helpers.formFacts(endpoint);
     if (form) operation['x-appii-form'] = form;
@@ -100,6 +102,8 @@ export class OpenApiOperationBuilder {
     const refusals = Credentials.refusals(endpoint, roles);
     if (refusals.length > 0) lines.push(`Answered ${refusals.join(' and ')} to requests without credentials; the credential this endpoint expects was not captured.`);
     if (!LoginGuide.isLogin(endpoint) && Credentials.sets(endpoint, roles).length > 0) lines.push(OpenApiOperationBuilder.ANONYMOUS_LINES[endpoint.auth.anonymous] ?? '');
+    const predicted = security?.predicted(endpoint);
+    if (predicted !== undefined) lines.push(`Credential: ${predicted}. It was never requested logged in, so the security requirement is predicted from what the login issues.`);
     const hint = security?.guide.hint(endpoint, (login) => security.operation(login));
     if (hint !== undefined) lines.push(hint);
     const form = Helpers.formSource(endpoint, OpenApiOperationBuilder.MARKUP);

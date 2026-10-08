@@ -19,7 +19,7 @@ export interface CurlOptions {
   extraArgs?: readonly string[];
 }
 
-export type RawChunk = { readonly kind: 'text'; readonly text: SampleText; readonly charset?: string } | { readonly kind: 'file'; readonly path: string };
+export type RawChunk = { readonly kind: 'text'; readonly text: SampleText; readonly charset?: string } | { readonly kind: 'file'; readonly path: SampleText };
 
 export interface RawBody {
   readonly contentType?: string;
@@ -44,14 +44,23 @@ export const SAFE_UPLOAD_NAME: RegExp = /^[A-Za-z0-9._+-]+$/;
 export const CONTINUATION = ' \\\n  ';
 export const SAFE_WORD: RegExp = /^[A-Za-z0-9_.-]+$/;
 export const DOUBLE_QUOTE_SPECIAL: RegExp = /[!"$\\`]/;
-export const ENCODING_HELPERS: Readonly<Record<PlaceholderEncoding, string>> = Object.freeze({ component: 'appii_pct', form: 'appii_form', json: 'appii_json' });
+export const ENCODING_HELPERS: Readonly<Record<PlaceholderEncoding, string>> = Object.freeze({ component: 'appii_pct', form: 'appii_form', json: 'appii_json', filename: 'appii_filename' });
 export const COPY_BYTE = `printf -v byte '%b' "\\\\x$byte"`;
 export const PERCENT_BYTE = `printf -v byte '%%%02X' "0x$byte"`;
 export const ENCODER_CASES: Readonly<Record<PlaceholderEncoding, readonly string[]>> = Object.freeze({
   component: [`2d|2e|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]|7e) ${COPY_BYTE} ;;`, `*) ${PERCENT_BYTE} ;;`],
   form: ["20) byte='+' ;;", `2a|2d|2e|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]) ${COPY_BYTE} ;;`, `*) ${PERCENT_BYTE} ;;`],
   json: [`22) byte='\\"' ;;`, `5c) byte='\\\\' ;;`, `[01][0-9a-f]|7f) printf -v byte '\\\\u%04x' "0x$byte" ;;`, `*) ${COPY_BYTE} ;;`],
+  filename: ["22) byte='%22' ;;", "0d) byte='%0D' ;;", "0a) byte='%0A' ;;", `*) ${COPY_BYTE} ;;`],
 });
+export const NAME_LOCAL = 'appii_name';
+export const ENCODER_INPUTS: Readonly<Record<PlaceholderEncoding, readonly string[]>> = Object.freeze({
+  component: [],
+  form: [],
+  json: [],
+  filename: [`local ${NAME_LOCAL}="\${!1-}"`, `${NAME_LOCAL}="\${${NAME_LOCAL}##*[\\\\/]}"`, `case "$${NAME_LOCAL}" in ''|.|..) ${NAME_LOCAL}=${shellQuote(DEFAULT_UPLOAD)} ;; esac`],
+});
+export const ENCODER_VALUES: Readonly<Record<PlaceholderEncoding, string>> = Object.freeze({ component: '"${!1-}"', form: '"${!1-}"', json: '"${!1-}"', filename: `"$${NAME_LOCAL}"` });
 export const BOUNDARY_PREFIX = '----appiiFormBoundary';
 export const BOUNDARY_LENGTH = 16;
 export const MULTIPART_CONTENT_TYPE = 'multipart/form-data; boundary=';
@@ -92,6 +101,25 @@ export const VALUE_SHORT_OPTIONS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
 export const TRANSFER_OPTIONS: readonly string[] = Object.freeze(['--url', '--next']);
 export const NEXT_SHORT_OPTION = ':';
 export const VALUE_OPTIONS_PER_LINE = 6;
+export const HEADER_FILE_FLAG = '-H';
+export const HEADER_LINES = "printf '%s\\n'";
+export const COOKIE_PAIR_SEPARATOR = '; ';
+export const COOKIE_HEADER = 'Cookie: ';
+export const CONDITIONAL_COOKIE_NAME: RegExp = /^[A-Za-z0-9!#%&'*+.^_|~-]+$/;
+export const CONDITIONAL_SAFE: RegExp = /^[^!"$\\`}]*$/;
+export const FILE_COMMAND = 'cat --';
+export const FIELD_FILE = '@';
+export const CONFIG_FLAG = '-K';
+export const CONFIG_HELPER = 'appii_config';
+export const CONFIG_USER = 'user';
+export const CONFIG_COOKIE = 'cookie';
+export const CONFIG_VALUE = 'appii_value';
+export const CONFIG_ESCAPES: readonly (readonly [string, string])[] = Object.freeze([
+  ['\\\\', '\\\\\\\\'],
+  ['\\"', '\\\\\\"'],
+  ["$'\\n'", '\\\\n'],
+  ["$'\\r'", '\\\\r'],
+] as const);
 
 export const HELPER_FUNCTIONS: readonly string[] = Object.freeze([
   ...encoderHelper('component'),
@@ -100,13 +128,35 @@ export const HELPER_FUNCTIONS: readonly string[] = Object.freeze([
   '',
   ...encoderHelper('json'),
   '',
+  ...encoderHelper('filename'),
+  '',
+  ...configHelper(),
+  '',
   ...argumentHelper(),
 ]);
+
+export function configHelper(): string[] {
+  return [
+    `${CONFIG_HELPER}() {`,
+    '  [[ -n "${2-}" ]] || return 0',
+    `  local ${CONFIG_VALUE}="$2"`,
+    ...CONFIG_ESCAPES.map(([from, to]) => `  ${CONFIG_VALUE}=\${${CONFIG_VALUE}//${from}/${to}}`),
+    `  printf '%s = "%s"\\n' "$1" "$${CONFIG_VALUE}"`,
+    '}',
+  ];
+}
+
+export function configFile(entries: readonly (readonly [string, string])[], vars: VariableMode): string {
+  const calls = entries.map(([option, word]) => `${CONFIG_HELPER} ${option} ${word}`);
+  const definition = vars === 'script' ? [] : [ShellScript.oneLine(configHelper())];
+  return `<(${[...definition, ...calls].join(ShellScript.STATEMENT_SEPARATOR)})`;
+}
 
 export function encoderHelper(encoding: PlaceholderEncoding): string[] {
   return [
     `${ENCODING_HELPERS[encoding]}() {`,
-    `  printf '%s' "\${!1-}" | od -An -v -tx1 | while read -r line; do`,
+    ...ENCODER_INPUTS[encoding].map((line) => `  ${line}`),
+    `  printf '%s' ${ENCODER_VALUES[encoding]} | od -An -v -tx1 | while read -r line; do`,
     '    for byte in $line; do',
     '      case $byte in',
     ...ENCODER_CASES[encoding].map((line) => `        ${line}`),
@@ -236,21 +286,37 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   const variable = opts.variable ?? variableName;
   const explain = firstUse(opts.explain === true);
   const arg = (text: SampleTextInput): string => shellArg(text, vars, variable, explain);
-  const raw = rawBody(sample.body) ?? (vars === 'shell' ? encodedBody(sample.body) : undefined);
-  const guards = vars === 'shell' && raw ? rawGuards(raw, variable, explain) : [];
+  const piped = vars === 'shell' || vars === 'script';
+  const fields = vars === 'shell' ? variableFields(sample.body) : undefined;
+  const raw = rawBody(sample.body) ?? (piped && fields === undefined ? variableBody(sample.body) : undefined);
+  const lines = sample.headers.map((header) => SampleText.concat(`${header.name}: `, header.value));
+  const variableLines = piped ? lines.filter((line) => !line.isLiteral) : [];
+  const cookie = opts.cookie ?? sample.cookie;
+  const configured = piped ? [sample.user, cookie].filter((text): text is SampleText => text !== undefined && !text.isLiteral) : [];
+  const guards = vars === 'shell' ? guardWords([...variableLines, ...configured, ...rawTexts(raw), ...(fields ?? []).map((entry) => entry.value)], variable, explain) : [];
   const head: string[] = ['curl', '-sS'];
   if (sample.method === HEAD_METHOD) head.push(HEAD_FLAG);
   else if (sample.method !== GET_METHOD || sample.body) head.push('-X', shellWord(sample.method));
   head.push(arg(sample.url));
   const groups: string[][] = [head];
-  for (const header of sample.headers) groups.push(['-H', arg(SampleText.concat(`${header.name}: `, header.value))]);
+  for (const line of lines) if (!variableLines.includes(line)) groups.push(['-H', arg(line)]);
+  const cookieHeader = vars === 'shell' && cookie !== undefined && configured.includes(cookie);
+  const headerWords = variableLines.map((line) => headerWord(line, vars, variable));
+  if (cookie && cookieHeader) headerWords.push(cookieWord(cookie, variable, COOKIE_HEADER) ?? shellArg(SampleText.concat(COOKIE_HEADER, cookie).unguarded(), vars, variable));
+  if (headerWords.length > 0) groups.push([HEADER_FILE_FLAG, headerFile(headerWords)]);
   if (raw?.contentType !== undefined) groups.push(['-H', arg(`Content-Type: ${raw.contentType}`)]);
-  if (sample.user) groups.push([USER_FLAG, arg(sample.user)]);
-  const cookie = opts.cookie ?? sample.cookie;
-  if (cookie) groups.push(['-b', arg(cookie)]);
+  const config: [string, string][] = [];
+  const word = (text: SampleText): string => (vars === 'shell' ? shellArg(text.unguarded(), vars, variable) : arg(text));
+  if (sample.user && configured.includes(sample.user)) config.push([CONFIG_USER, word(sample.user)]);
+  else if (sample.user) groups.push([USER_FLAG, arg(sample.user)]);
+  if (cookie && configured.includes(cookie)) {
+    if (!cookieHeader) config.push([CONFIG_COOKIE, word(cookie)]);
+  } else if (cookie) groups.push(['-b', arg(cookie)]);
+  if (config.length > 0) groups.push([CONFIG_FLAG, configFile(config, vars)]);
   if (opts.jar !== undefined) groups.push(['-b', opts.jar, '-c', opts.jar]);
   if (raw) groups.push([BINARY_FLAG, `@<(${printfCommands(raw, vars, variable)})`]);
-  else groups.push(...bodyGroups(sample.body, arg, vars));
+  else if (fields) groups.push(...fieldGroups(fields, sample.body?.charset, arg, variable));
+  else groups.push(...bodyGroups(sample.body, arg));
   groups.push([COMPRESSED_FLAG]);
   for (const extra of opts.extraArgs ?? []) groups.push([extra]);
   const parts = groups.map((group) => group.join(' '));
@@ -258,10 +324,105 @@ export function curlCommand(sample: RequestSample, opts: CurlOptions = {}): stri
   return ShellScript.ascii(guards.length > 0 ? `${GUARD_COMMAND} ${guards.join(' ')} ${GUARD_JOIN} ${command}` : command);
 }
 
-export function encodedBody(body: SampleBody | undefined): RawBody | undefined {
+export function variableBody(body: SampleBody | undefined): RawBody | undefined {
+  if (!body || body.value === undefined) return undefined;
+  const charset = body.charset === undefined ? {} : { charset: body.charset };
+  if ((body.kind === 'form' || body.kind === 'multipart') && isRecord(body.value)) {
+    const entries = formEntries(body.value);
+    if (entries.every((entry) => entry.value.isLiteral)) return undefined;
+    if (body.kind === 'multipart') return multipartBody(entries, body.charset);
+    const encoder = CharsetEncoder.for(body.charset);
+    const encode = (text: string): string => encoder.formComponent(text);
+    const pairs = entries.map((entry) => SampleText.concat(`${encode(entry.name)}=`, entry.value.mapLiterals(encode).encoded('form')));
+    return { chunks: [{ kind: 'text', text: SampleText.join(pairs, '&'), ...charset }] };
+  }
   const text = bodyText(body);
-  if (!body || !text || !text.parts.some((part) => part.kind === 'placeholder' && part.encoding !== undefined)) return undefined;
-  return { chunks: [{ kind: 'text', text, ...(body.charset === undefined ? {} : { charset: body.charset }) }] };
+  return text === undefined || text.isLiteral ? undefined : { chunks: [{ kind: 'text', text, ...charset }] };
+}
+
+export function variableFields(body: SampleBody | undefined): FormEntry[] | undefined {
+  if (body?.kind !== 'form' || !isRecord(body.value)) return undefined;
+  const entries = formEntries(body.value);
+  return entries.every((entry) => entry.value.isLiteral) ? undefined : entries;
+}
+
+export function fieldGroups(entries: readonly FormEntry[], charset: string | undefined, arg: (text: SampleTextInput) => string, variable: (name: string) => string): string[][] {
+  const encoder = CharsetEncoder.for(charset);
+  const encode = (text: string): string => encoder.formComponent(text);
+  return entries.map((entry) => {
+    const name = encode(entry.name);
+    if (entry.value.isLiteral) return [RAW_FLAG, arg(`${name}=${encode(entry.value.toString())}`)];
+    return [FORM_FLAG, `${shellQuote(`${name}${FIELD_FILE}`)}<(printf '%s' ${shellArg(entry.value.unguarded(), 'shell', variable)})`];
+  });
+}
+
+export function headerWord(line: SampleText, vars: VariableMode, variable: (name: string) => string): string {
+  return conditionalWord(line, variable) ?? shellArg(line.unguarded(), vars, variable);
+}
+
+export function headerFile(words: readonly string[]): string {
+  return `@<(${HEADER_LINES} ${words.join(' ')})`;
+}
+
+export function conditionalWord(text: SampleText, variable: (name: string) => string): string | undefined {
+  const last = text.parts[text.parts.length - 1];
+  const prefix = text.parts.slice(0, -1);
+  if (last?.kind !== 'placeholder' || guarded(last) || last.encoding !== undefined) return undefined;
+  if (!prefix.every((part) => part.kind === 'literal' && CONDITIONAL_SAFE.test(part.text) && [...part.text].every((ch) => ShellScript.isLiteralSafe(ch) && ch !== '\n'))) return undefined;
+  const name = variable(last.name);
+  return `"\${${name}:+${prefix.map((part) => (part.kind === 'literal' ? part.text : '')).join('')}$${name}}"`;
+}
+
+export function cookieWord(cookie: SampleText, variable: (name: string) => string, prefix = ''): string | undefined {
+  const pairs = cookie.split(COOKIE_PAIR_SEPARATOR).map((pair) => ({ pair, conditional: conditionalPair(pair, variable) }));
+  if (pairs.every((item) => item.conditional === undefined)) return undefined;
+  if (!pairs.every((item) => item.pair.parts.every((part) => part.kind === 'placeholder' || CONDITIONAL_SAFE.test(part.text)))) return undefined;
+  const fixed = (pair: SampleText): string => pair.unguarded().render({ literal: (text) => text, placeholder: (name, part) => variableReference(name, part, 'shell', variable) });
+  const anchor = pairs.findIndex((item) => item.conditional === undefined);
+  if (anchor < 0) return `"${prefix}${conditionalPairs(pairs.flatMap((item) => (item.conditional === undefined ? [] : [item.conditional])))}"`;
+  const words = pairs.map((item, i) => {
+    if (item.conditional === undefined) return i === anchor ? fixed(item.pair) : `${COOKIE_PAIR_SEPARATOR}${fixed(item.pair)}`;
+    const { name, value } = item.conditional;
+    return i < anchor ? `\${${value}:+${name}=$${value}${COOKIE_PAIR_SEPARATOR}}` : `\${${value}:+${COOKIE_PAIR_SEPARATOR}${name}=$${value}}`;
+  });
+  return `"${prefix}${words.join('')}"`;
+}
+
+interface ConditionalPair {
+  readonly name: string;
+  readonly value: string;
+}
+
+function conditionalPair(pair: SampleText, variable: (name: string) => string): ConditionalPair | undefined {
+  const [first, second, ...rest] = pair.parts;
+  if (rest.length > 0 || first?.kind !== 'literal' || second?.kind !== 'placeholder' || guarded(second) || second.encoding !== undefined) return undefined;
+  const name = first.text.endsWith('=') ? first.text.slice(0, -1) : '';
+  return CONDITIONAL_COOKIE_NAME.test(name) ? { name, value: variable(second.name) } : undefined;
+}
+
+function conditionalPairs(pairs: readonly ConditionalPair[]): string {
+  const [first, second, ...rest] = pairs;
+  if (first === undefined) return '';
+  const { name, value } = first;
+  if (second === undefined) return `\${${value}:+${name}=$${value}}`;
+  if (rest.length === 0) return `\${${value}:+${name}=$${value}}\${${second.value}:+\${${value}:+${COOKIE_PAIR_SEPARATOR}}${second.name}=$${second.value}}`;
+  const later = [second, ...rest].map((pair) => `\${${pair.value}:+${COOKIE_PAIR_SEPARATOR}${pair.name}=$${pair.value}}`).join('');
+  return `\${${value}:+${name}=}\${${value}:-${conditionalPairs([second, ...rest])}}\${${value}:+${later}}`;
+}
+
+function guardWords(texts: readonly SampleText[], variable: (name: string) => string, explain: (variable: string) => boolean): string[] {
+  const guards = new Map<string, string>();
+  for (const text of texts) {
+    for (const part of text.parts) {
+      if (part.kind !== 'placeholder' || !guarded(part) || guards.has(variable(part.name))) continue;
+      guards.set(variable(part.name), `"${variableReference(part.name, { ...part, encoding: undefined }, 'shell', variable, explain)}"`);
+    }
+  }
+  return [...guards.values()];
+}
+
+function rawTexts(raw: RawBody | undefined): SampleText[] {
+  return (raw?.chunks ?? []).flatMap((chunk) => (chunk.kind === 'text' ? [chunk.text] : [chunk.path]));
 }
 
 export function bodyText(body: SampleBody | undefined): SampleText | undefined {
@@ -270,19 +431,7 @@ export function bodyText(body: SampleBody | undefined): SampleText | undefined {
   return body.value instanceof SampleText ? body.value : jsonText(body.value);
 }
 
-function rawGuards(raw: RawBody, variable: (name: string) => string, explain: (variable: string) => boolean): string[] {
-  const guards = new Map<string, string>();
-  for (const chunk of raw.chunks) {
-    if (chunk.kind !== 'text') continue;
-    for (const part of chunk.text.parts) {
-      if (part.kind !== 'placeholder' || !guarded(part) || guards.has(variable(part.name))) continue;
-      guards.set(variable(part.name), `"${variableReference(part.name, { ...part, encoding: undefined }, 'shell', variable, explain)}"`);
-    }
-  }
-  return [...guards.values()];
-}
-
-function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) => string, vars: VariableMode): string[][] {
+function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) => string): string[][] {
   if (!body || body.value === undefined) return [];
   if (body.kind === 'form' && isRecord(body.value)) {
     const encoder = CharsetEncoder.for(body.charset);
@@ -290,7 +439,6 @@ function bodyGroups(body: SampleBody | undefined, arg: (text: SampleTextInput) =
     return formEntries(body.value).map((entry) => {
       const name = encode(entry.name);
       if (entry.value.isLiteral) return [RAW_FLAG, arg(`${name}=${encode(entry.value.toString())}`)];
-      if (vars === 'script') return [RAW_FLAG, arg(SampleText.concat(`${name}=`, entry.value.mapLiterals(encode).encoded('form')))];
       return [FORM_FLAG, arg(SampleText.concat(`${name}=`, entry.value))];
     });
   }
@@ -311,17 +459,19 @@ function fileField(entry: FormEntry): SampleTextInput {
 
 function multipartBody(entries: readonly FormEntry[], charset: string | undefined): RawBody {
   const text = (value: SampleTextInput): RawChunk => ({ kind: 'text', text: SampleText.of(value), ...(charset === undefined ? {} : { charset }) });
-  const parts: { head: string; value: RawChunk | undefined }[] = entries.map((entry) => {
+  const parts: { head: SampleText; value: RawChunk | undefined }[] = entries.map((entry) => {
     const disposition = `Content-Disposition: form-data; name="${multipartName(entry.name)}"`;
-    if (!entry.file) return { head: `${disposition}\r\n\r\n`, value: text(entry.value) };
-    const filename = entry.value.toString();
+    if (!entry.file) return { head: SampleText.literal(`${disposition}\r\n\r\n`), value: text(entry.value) };
     const type = entry.contentType?.isLiteral === true && entry.contentType.toString() !== '' ? entry.contentType.toString() : BINARY_MIME;
-    return { head: `${disposition}; filename="${multipartName(filename)}"\r\nContent-Type: ${type}\r\n\r\n`, value: filename === '' ? undefined : { kind: 'file', path: uploadName(filename) } };
+    const tail = `"\r\nContent-Type: ${type}\r\n\r\n`;
+    if (!entry.value.isLiteral) return { head: SampleText.concat(`${disposition}; filename="`, entry.value.unguarded().encoded('filename'), tail), value: { kind: 'file', path: entry.value } };
+    const filename = entry.value.toString();
+    return { head: SampleText.literal(`${disposition}; filename="${multipartName(filename)}${tail}`), value: filename === '' ? undefined : { kind: 'file', path: SampleText.literal(uploadName(filename)) } };
   });
   const mark = boundary(SampleText.concat(...parts.flatMap((part) => [part.head, part.value?.kind === 'text' ? part.value.text : ''])));
   const chunks: RawChunk[] = [];
   for (const part of parts) {
-    chunks.push(text(`--${mark}\r\n${part.head}`));
+    chunks.push(text(SampleText.concat(`--${mark}\r\n`, part.head)));
     if (part.value) chunks.push(part.value);
     chunks.push(text('\r\n'));
   }
@@ -343,7 +493,7 @@ function printfCommands(raw: RawBody, vars: VariableMode, variable: (name: strin
   for (const chunk of raw.chunks) {
     if (chunk.kind === 'file') {
       flush();
-      commands.push(`cat ${shellQuote(chunk.path)}`);
+      commands.push(`${FILE_COMMAND} ${chunk.path.isLiteral ? shellQuote(chunk.path.toString()) : shellArg(chunk.path.unguarded(), vars === 'literal' ? 'literal' : 'shell', variable)}`);
       continue;
     }
     const encoder = CharsetEncoder.for(chunk.charset);

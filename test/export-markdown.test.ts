@@ -60,7 +60,8 @@ describe('MarkdownExporter', () => {
     assert.match(login, /- \*\*Form:\*\* Submitted by the form `form#login` on `http:\/\/127\.0\.0\.1:\d+\/login` \(application\/x-www-form-urlencoded\)\./);
     assert.match(login, /\n\| `password` \| string \| yes \| html password; length 8\.\. \| Password \|\n/);
     assert.match(login, /\n\| 303 See Other \| 1 \| - \| `location`, `set-cookie: auth` \|\n/);
-    assert.match(login, /\*\*Example request\*\*\n\n```bash\ncurl -sS -X POST 'http:\/\/127\.0\.0\.1:\d+\/login' \\\n {2}-H 'Content-Type: application\/x-www-form-urlencoded' \\\n/);
+    assert.match(login, /\*\*Example request\*\*\n\n```bash\n: "[^\n]*" && curl -sS -X POST 'http:\/\/127\.0\.0\.1:\d+\/login' \\\n {2}-H 'Content-Type: application\/x-www-form-urlencoded' \\\n/);
+    assert.match(login, /\n {2}--data-urlencode 'password@'<\(printf '%s' "\$\{APPII_PASSWORD\}"\) \\\n/);
     const list = section(markdown, '### 3. listItems: GET /api/items');
     assert.match(list, /\n\| `page` \| query \| yes \| integer \| - \| `1`, `2` \|\n/);
     assert.match(list, /\*Response 200 fields\*\n\n\| Field \| Type \| Required \| Constraints \| Label \|\n/);
@@ -161,9 +162,9 @@ describe('MarkdownExporter request examples agree with the other renderers', () 
       auth: { cookies: ['csrftoken'], headers: ['authorization'], anonymous: 'untested', bearer: true, csrf: [{ location: 'header', name: 'x-csrf-token', source: 'cookie', sourceName: 'csrftoken' }] },
     });
     const markdown = new MarkdownExporter().export(ExportModel.model([me])).content;
-    assert.ok(markdown.includes('-H "authorization: Bearer ${APPII_ACCESS_TOKEN}"'), markdown);
-    assert.ok(markdown.includes('-H "x-csrf-token: ${APPII_CSRFTOKEN:?the cookie csrftoken; bash endpoints.sh postApiMe reads it from its cookie jar}"'), markdown);
-    assert.ok(markdown.includes('-b "csrftoken=${APPII_CSRFTOKEN:?}"'), markdown);
+    assert.ok(markdown.includes('```bash\n: "${APPII_CSRFTOKEN:?the cookie csrftoken; bash endpoints.sh postApiMe reads it from its cookie jar}" && curl -sS -X POST'), markdown);
+    assert.ok(markdown.includes(`-H @<(printf '%s\\n' "\${APPII_ACCESS_TOKEN:+authorization: Bearer $APPII_ACCESS_TOKEN}" "x-csrf-token: \${APPII_CSRFTOKEN}" "Cookie: csrftoken=\${APPII_CSRFTOKEN}")`), markdown);
+    assert.ok(!markdown.includes(' -b '), markdown);
     assert.ok(markdown.includes('Variables: `APPII_ACCESS_TOKEN` `APPII_CSRFTOKEN`'), markdown);
     assert.ok(!markdown.includes('APPII_AUTHORIZATION'));
     assert.ok(!markdown.includes('APPII_X_CSRF_TOKEN'));

@@ -26,6 +26,11 @@ export class Credentials {
   static readonly OPTIONAL_MARK = '?';
   static readonly UNTESTED_MARK = '~';
   static readonly UNKNOWN_MARK = '?';
+  static readonly PREDICTED_MARK = '*';
+  static readonly PREDICTED_NOTE = 'not observed on this endpoint';
+  static readonly PREDICTED_PREFIX = 'probably';
+  static readonly PREDICTED_SOURCE = 'the login';
+  static readonly LOGIN_ROLE = 'login';
   static readonly ANONYMOUS_LABELS: Readonly<Record<AnonymousAccess, string>> = Object.freeze({ allowed: 'allowed', refused: 'refused', untested: 'not tested' });
   static readonly UNTESTED_NOTE = 'anonymous access not tested';
   static readonly OPTIONAL_NOTE = 'optional';
@@ -134,6 +139,24 @@ export class Credentials {
     return endpoint.auth.anonymous === 'untested';
   }
 
+  static predicted(endpoint: Endpoint): boolean {
+    return endpoint.auth.predicted === true;
+  }
+
+  static issuers(model: Pick<ApiModel, 'endpoints'>, endpoint: Endpoint): Endpoint[] {
+    if (!Credentials.predicted(endpoint)) return [];
+    const entries = Credentials.sets(endpoint).flat();
+    return model.endpoints.filter((candidate) => {
+      const login = candidate.role === Credentials.LOGIN_ROLE ? candidate.login : undefined;
+      if (!login || entries.length === 0) return false;
+      return entries.every((entry) => {
+        const credential = Credentials.parse(entry);
+        if (credential?.kind === Credentials.COOKIE) return login.issues.cookies.includes(credential.name);
+        return credential?.kind === Credentials.HTTP && credential.name === Credentials.BEARER && login.issues.tokens.length > 0 && candidate.origin === endpoint.origin;
+      });
+    });
+  }
+
   static anonymousLabel(endpoint: Endpoint): string {
     return Credentials.ANONYMOUS_LABELS[endpoint.auth.anonymous];
   }
@@ -167,11 +190,17 @@ export class Credentials {
       const refusals = Credentials.refusals(endpoint, roles);
       return refusals.length === 0 ? [] : [refusals.join('/') + Credentials.UNKNOWN_MARK];
     }
-    const marker = Credentials.untested(endpoint) ? Credentials.UNTESTED_MARK : Credentials.optional(endpoint) ? Credentials.OPTIONAL_MARK : '';
+    const marker = Credentials.untested(endpoint)
+      ? Credentials.UNTESTED_MARK
+      : Credentials.optional(endpoint)
+        ? Credentials.OPTIONAL_MARK
+        : Credentials.predicted(endpoint)
+          ? Credentials.PREDICTED_MARK
+          : '';
     return out.map((kind) => kind + marker);
   }
 
-  static describe(endpoint: Endpoint, roles?: CookieRoles): string {
+  static describe(endpoint: Endpoint, roles?: CookieRoles, issuedBy?: string): string {
     const sets = Credentials.sets(endpoint, roles).map((set) =>
       set
         .map((entry) => Credentials.parse(entry))
@@ -182,7 +211,9 @@ export class Credentials {
     if (sets.length === 0) return Credentials.refusalNote(endpoint, roles);
     const text = sets.join(' or ');
     if (Credentials.untested(endpoint)) return `${text} (${Credentials.UNTESTED_NOTE})`;
-    return Credentials.optional(endpoint) ? `${text} (${Credentials.OPTIONAL_NOTE})` : text;
+    if (Credentials.optional(endpoint)) return `${text} (${Credentials.OPTIONAL_NOTE})`;
+    if (!Credentials.predicted(endpoint)) return text;
+    return `${Credentials.PREDICTED_PREFIX} ${text} (issued by ${issuedBy !== undefined && issuedBy !== '' ? issuedBy : Credentials.PREDICTED_SOURCE}; ${Credentials.PREDICTED_NOTE})`;
   }
 
   static exampleCookies(endpoint: Endpoint, roles?: CookieRoles): string[] {

@@ -4,6 +4,9 @@ import { EntrySlotFactory } from './entry-slot-factory.js';
 
 export class SubmissionRules {
   static readonly IMAGE_TYPE = 'image';
+  static readonly CHECKABLE_TYPES: ReadonlySet<string> = new Set(['checkbox', 'radio']);
+  static readonly MULTIPLE_SELECT = 'select-multiple';
+  static readonly SELECT_KIND = 'select';
 
   static paths(form: FormDescriptor): (FormField | undefined)[] {
     const enabled = form.submitters.filter((submitter) => !submitter.disabled);
@@ -27,6 +30,17 @@ export class SubmissionRules {
   static fieldNames(form: Pick<FormDescriptor, 'fields'>): string[] {
     const names = form.fields.filter((field) => !field.disabled && field.name !== '').map((field) => field.name);
     return [...new Set(names)];
+  }
+
+  static entryNames(form: Pick<FormDescriptor, 'fields'>): string[] {
+    const names = form.fields.filter((field) => !field.disabled && field.name !== '' && SubmissionRules.alwaysEntered(field)).map((field) => field.name);
+    return [...new Set(names)];
+  }
+
+  static alwaysEntered(field: FormField): boolean {
+    if (SubmissionRules.CHECKABLE_TYPES.has(field.type) || field.type === SubmissionRules.MULTIPLE_SELECT) return false;
+    if (field.kind !== SubmissionRules.SELECT_KIND || field.options === undefined) return true;
+    return field.options.some((option) => !option.disabled);
   }
 
   static submitterNames(submitter: FormField | undefined): string[] {

@@ -69,7 +69,9 @@ export class HtmlEndpointRenderer {
           ? `<span class="badge auth" title="anonymous access not tested">auth${Credentials.UNTESTED_MARK}</span>`
           : Credentials.optional(endpoint)
             ? '<span class="badge auth" title="credentials are optional">auth?</span>'
-            : '<span class="badge auth">auth</span>',
+            : Credentials.predicted(endpoint)
+              ? `<span class="badge auth" title="predicted: never requested logged in; the login issues this credential">auth${Credentials.PREDICTED_MARK}</span>`
+              : '<span class="badge auth">auth</span>',
       );
     }
     else if (refusals.length > 0) badges.push(`<span class="badge auth" title="answered ${refusals.join(' and ')} without credentials; the credential was not captured">${refusals.join('/')}${Credentials.UNKNOWN_MARK}</span>`);
@@ -107,7 +109,7 @@ export class HtmlEndpointRenderer {
     if (credentials !== '') meta.push(['Credentials', esc(credentials)]);
     if (credentials !== '' || endpoint.role !== undefined) meta.push(['Anonymous', esc(LoginGuide.anonymousNote(endpoint))]);
     if (endpoint.auth.seen !== undefined && endpoint.auth.seen.length > 0) meta.push(['Seen', esc(endpoint.auth.seen.join(', '))]);
-    const hint = guide.hint(endpoint, (login) => `<a href="#endpoint-${ctx.index.numberOf(login)}">#${ctx.index.numberOf(login)} <code>${esc(login.name)}</code></a> (${esc(`${login.method} ${login.path}`)})`);
+    const hint = guide.hint(endpoint, (login) => `<a href="#endpoint-${ctx.index.numberOf(login)}">#${ctx.index.numberOf(login)} <code>${esc(login.name)}</code></a> (${esc(`${login.method} ${login.path}`)})`, esc);
     if (hint !== undefined) meta.push(['Log in', hint]);
     if (endpoint.auth.cookies.length > 0) meta.push(['Cookies sent', endpoint.auth.cookies.map((name) => `<code>${esc(name)}</code>`).join(', ')]);
     if (endpoint.auth.bearer) meta.push(['Bearer', 'Authorization: Bearer token']);
