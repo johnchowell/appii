@@ -3,8 +3,8 @@
 Turn any website into a usable API description. Browse a site in a real
 Chromium while appii records the traffic, then get a list of its endpoints with
 their parameters, JSON schemas, cookies, CSRF tokens and HTML form validation
-rules, and export it as OpenAPI, Postman, curl, a typed TypeScript client and
-more.
+rules, and export it as OpenAPI, Postman, curl, a typed TypeScript client, a
+Playwright browser client and more.
 
 ## Install
 
@@ -689,6 +689,7 @@ list the formats:
 | `postman` | `.json` | `postman-collection` | Postman Collection v2.1 with folders, variables and saved example responses |
 | `curl` | `.sh` | `bash`, `sh`, `shell` | Bash script with one curl function per endpoint, a list command and a dispatcher |
 | `typescript` | `.ts` | `client`, `ts` | Typed TypeScript client with cookie, CSRF and form validation handling |
+| `playwright` | `.pw.mjs` | `browser`, `pw` | Playwright browser client that drives the page so the page sends each request |
 | `har` | `.har` |  | HAR 1.2 archive with the captured sample exchanges of the selected endpoints |
 | `html` | `.html` | `report` | Self-contained HTML report with charts, a searchable endpoint list and details |
 | `markdown` | `.md` | `md` | Markdown documentation with endpoint tables, details and cookies |
@@ -805,6 +806,38 @@ Send the request again only if the server can safely receive it two times.
 The client does not check a form pattern that can take exponential or
 high-degree polynomial time, such as `(a+)+b` or `(.*a){25}`, unless you pass
 `unsafePatterns: true`.
+
+The `playwright` client sends each request a second way: through the real
+browser. The `curl` script and the `typescript` client rebuild the HTTP
+request and send it themselves. The `playwright` client instead opens the page
+and does what a user does, so the page's own code sends the request. A GET
+document endpoint is a `page.goto`. A form endpoint loads the form page, fills
+each visible field, and clicks the submit button, so the browser or the page
+script sends the body. An endpoint that only a script sends (an XHR with no
+recorded gesture) loads its page and then calls `fetch` in that page, so the
+request still carries the live session. Because the request leaves the real
+page, the session cookie, the CSRF token in a hidden field and any header the
+page computes are the ones the site issued, not values that appii saved; the
+client never fills a hidden or token field. Each request is awaited with
+`page.waitForResponse`, and every wait is for a real condition (the page to
+load, or the response to arrive), so a run repeats.
+
+Install Playwright (`npm install playwright`) to run the client. It needs no
+build step. `node client.pw.mjs --list` prints the endpoint names, and `node
+client.pw.mjs <endpoint> [name=value ...]` runs one and prints the status, URL
+and body. The client also exports its class, so you can `import` it and call
+one method at a time. `APPII_BASE_URL` sets the base URL, `APPII_HEADFUL=1`
+shows the window, and `APPII_PROXY` routes the browser through a proxy.
+`APPII_BASE_URL` moves the first-party requests to a new host; an endpoint
+recorded on another origin keeps its own host. Path
+and field values come from `name=value` arguments or the `APPII_<NAME>`
+environment variable, and fall back to the captured example; a credential
+field has no captured value, so give it with `name=value` or `APPII_<NAME>`.
+A script-only endpoint sends the captured request body, which you can
+replace with the `__body` argument.
+No credential value is written into the client. When the capture has a login,
+the client adds a `login()` method that drives the login form, and
+`APPII_LOGIN=1` (or `__login=1`) runs it before the chosen endpoint.
 
 The client types a redirect that it follows as the response of the endpoint
 the redirect leads to (`responses[].redirectTo` in the model), so the 302 of a

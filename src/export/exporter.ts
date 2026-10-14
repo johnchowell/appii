@@ -2,7 +2,7 @@ import type { ApiModel, Capture, Endpoint } from '../model/index.js';
 import { AppiiError, EndpointIndex, Text } from '../shared/index.js';
 import { Helpers } from './helpers.js';
 
-export type ExportFormat = 'openapi' | 'openapi-yaml' | 'postman' | 'curl' | 'typescript' | 'har' | 'html' | 'markdown' | 'json';
+export type ExportFormat = 'openapi' | 'openapi-yaml' | 'postman' | 'curl' | 'typescript' | 'playwright' | 'har' | 'html' | 'markdown' | 'json';
 
 export interface ExportOptions {
   capture?: Capture;

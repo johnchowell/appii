@@ -490,6 +490,7 @@ describe('cli commands', () => {
       postman: 'postman_collection.json',
       curl: 'endpoints.sh',
       typescript: 'shop-example-com-client.ts',
+      playwright: 'shop-example-com.pw.mjs',
       har: 'capture.har',
       html: 'report.html',
       markdown: 'API.md',
@@ -586,7 +587,7 @@ describe('cli commands', () => {
     test('export errors', async () => {
       const unknown = await cli.run(['export', 'api.json', '--format', 'wsdl-xml']);
       assert.equal(unknown.code, 2);
-      assert.match(unknown.stderr, /^error: --format must be one of openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json; got 'wsdl-xml'\nusage: appii export /);
+      assert.match(unknown.stderr, /^error: --format must be one of openapi, openapi-yaml, postman, curl, typescript, playwright, har, html, markdown, json; got 'wsdl-xml'\nusage: appii export /);
       const typo = await cli.run(['export', 'api.json', '--format', 'opnapi', '-o', '-']);
       assert.equal(typo.code, 2);
       assert.equal(typo.stdout, '');
@@ -631,7 +632,7 @@ describe('cli commands', () => {
       const tail = run.stdout.slice(run.stdout.lastIndexOf('\nNext: ') + 1);
       assert.ok(tail.endsWith('\n'));
       assert.ok(CliHarness.widest(tail) <= 100);
-      assert.equal(tail.replace(/\s+/g, ' ').trim(), 'Next: appii export pipeline/api.json --format <format>, where <format> is one of openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json');
+      assert.equal(tail.replace(/\s+/g, ' ').trim(), 'Next: appii export pipeline/api.json --format <format>, where <format> is one of openapi, openapi-yaml, postman, curl, typescript, playwright, har, html, markdown, json');
       assert.ok(!run.stdout.includes('Next: appii build'));
       assert.equal(run.stdout.match(/appii export /g)?.length, 1, run.stdout);
       assert.doesNotMatch(run.stdout, /\nDetails: /);

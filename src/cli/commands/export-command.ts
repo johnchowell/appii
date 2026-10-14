@@ -38,7 +38,7 @@ export class ExportCommand extends Command {
     const app = Meta.APP_NAME;
     this.spec = {
       name: 'export',
-      summary: 'Export to OpenAPI, Postman, curl, a TypeScript client, HAR, HTML, Markdown or JSON',
+      summary: 'Export to OpenAPI, Postman, curl, a TypeScript client, a Playwright browser client, HAR, HTML, Markdown or JSON',
       usage: `${app} export <api.json|capture.json|file.har> --format <format> [options]\n${app} export --formats`,
       options: {
         format: { type: 'string', short: 'f' },

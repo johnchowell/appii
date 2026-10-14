@@ -38,7 +38,7 @@ describe('ExporterRegistry and BaseExporter', () => {
     ExportModel.endpoint({ method: 'GET', path: '/c', name: 'getC', id: 'get-c' }),
   ]);
 
-  test('default() registers all nine formats in a stable order', () => {
+  test('default() registers all ten formats in a stable order', () => {
     const registry = ExporterRegistry.default();
     assert.deepEqual(
       registry.list().map((e) => [e.format, e.extension]),
@@ -48,6 +48,7 @@ describe('ExporterRegistry and BaseExporter', () => {
         ['postman', 'json'],
         ['curl', 'sh'],
         ['typescript', 'ts'],
+        ['playwright', 'pw.mjs'],
         ['har', 'har'],
         ['html', 'html'],
         ['markdown', 'md'],
@@ -68,7 +69,7 @@ describe('ExporterRegistry and BaseExporter', () => {
     assert.throws(
       () => registry.get('pdf'),
       (err: unknown) =>
-        isCode('BAD_INPUT')(err) && /Unknown export format 'pdf'\. Available formats: openapi, openapi-yaml, postman, curl, typescript, har, html, markdown, json/.test((err as Error).message),
+        isCode('BAD_INPUT')(err) && /Unknown export format 'pdf'\. Available formats: openapi, openapi-yaml, postman, curl, typescript, playwright, har, html, markdown, json/.test((err as Error).message),
     );
     assert.throws(() => registry.export(model, 'nope'), isCode('BAD_INPUT'));
   });
@@ -77,7 +78,7 @@ describe('ExporterRegistry and BaseExporter', () => {
     const echo = new EchoExporter('echo');
     const registry = ExporterRegistry.default().register(echo);
     assert.equal(registry.get('json'), echo);
-    assert.equal(registry.list().length, 9);
+    assert.equal(registry.list().length, 10);
     const result = registry.export(model, 'model', { endpoints: ['getC', '1'], title: '  ' });
     assert.deepEqual(result, { format: 'json', filename: 'shop-example-com.txt', mimeType: 'text/plain', content: 'echo', endpointCount: 2 });
     assert.deepEqual(echo.seen[0], { endpoints: ['getA', 'getC'], options: { endpoints: ['getC', '1'] } });

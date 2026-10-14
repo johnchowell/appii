@@ -8,6 +8,7 @@ import { JsonExporter } from './json-exporter.js';
 import { MarkdownExporter } from './markdown-exporter.js';
 import { OpenApiExporter } from './openapi-exporter.js';
 import { OpenApiYamlExporter } from './openapi-yaml-exporter.js';
+import { PlaywrightExporter } from './playwright-exporter.js';
 import { PostmanExporter } from './postman-exporter.js';
 import { TypeScriptExporter } from './typescript-exporter.js';
 
@@ -24,6 +25,8 @@ export class ExporterRegistry {
     shell: 'curl',
     ts: 'typescript',
     client: 'typescript',
+    pw: 'playwright',
+    browser: 'playwright',
     md: 'markdown',
     report: 'html',
     model: 'json',
@@ -39,6 +42,7 @@ export class ExporterRegistry {
       .register(PostmanExporter.create())
       .register(new CurlExporter())
       .register(TypeScriptExporter.create())
+      .register(PlaywrightExporter.create())
       .register(HarExporter.create())
       .register(HtmlExporter.create())
       .register(MarkdownExporter.create())

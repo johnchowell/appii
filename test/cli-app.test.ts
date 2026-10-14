@@ -548,13 +548,13 @@ describe('Commands, registry and help', () => {
   test('ExportFormatsPresenter lists every format with aliases', () => {
     const registry = ExporterRegistry.default();
     const rows = ExportFormatsPresenter.rows(registry);
-    assert.deepEqual(rows.map((row) => row.format), ['openapi', 'openapi-yaml', 'postman', 'curl', 'typescript', 'har', 'html', 'markdown', 'json']);
+    assert.deepEqual(rows.map((row) => row.format), ['openapi', 'openapi-yaml', 'postman', 'curl', 'typescript', 'playwright', 'har', 'html', 'markdown', 'json']);
     assert.deepEqual(rows.find((row) => row.format === 'openapi-yaml')?.aliases, ['openapi-yml', 'yaml', 'yml']);
     assert.equal(rows.find((row) => row.format === 'typescript')?.extension, '.ts');
     for (const width of [40, 60, 120]) {
       const text = new ExportFormatsPresenter({ width }).render(registry);
       assert.ok(CliHarness.widest(text) <= width, String(width));
-      assert.match(text, /^Export formats: 9/);
+      assert.match(text, /^Export formats: 10/);
     }
     assert.match(ExportFormatsPresenter.markdown(registry), /^\| Format \| Extension \| Aliases \| Description \|\n\| --- \| --- \| --- \| --- \|\n\| `openapi` \| `\.json` \| `oas`, `openapi-json`, `swagger` \| OpenAPI 3\.1 document \(JSON\) \|/);
   });
